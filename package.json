@@ -1,0 +1,32 @@
+{
+  "name": "monorepo-starter",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "db:generate": "turbo db:generate",
+    "db:push": "turbo db:push",
+    "db:seed": "turbo db:seed",
+    "db:studio": "turbo db:studio",
+    "db:reset": "turbo db:reset",
+    "clean": "turbo clean && rm -rf node_modules .turbo",
+    "kill-ports": "./scripts/kill-ports.sh",
+    "dev:restart": "./scripts/kill-ports.sh && turbo dev",
+    "docker:dev": "docker compose up -d",
+    "docker:prod": "docker compose -f docker-compose.prod.yml up -d",
+    "setup": "./scripts/setup.sh"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "@repo/prettier-config": "workspace:*",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.3.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3"
+  }
+}

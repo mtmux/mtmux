@@ -1,0 +1,43 @@
+{
+  "name": "@app/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbopack --port 14100",
+    "build": "next build",
+    "start": "next start --port 14100",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/config": "workspace:*",
+    "@repo/logger": "workspace:*",
+    "@repo/protocol": "workspace:*",
+    "@repo/ui": "workspace:*",
+    "@t3-oss/env-nextjs": "^0.12",
+    "@xterm/xterm": "^5",
+    "@xterm/addon-fit": "^0.10",
+    "@xterm/addon-webgl": "^0.18",
+    "@xterm/addon-search": "^0.15",
+    "@xterm/addon-unicode11": "^0.8",
+    "@xterm/addon-web-links": "^0.11",
+    "lucide-react": "^0.469",
+    "next": "^15",
+    "react": "^19",
+    "react-dom": "^19",
+    "sonner": "^2",
+    "zod": "^3",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/tsconfig": "workspace:*",
+    "@tailwindcss/postcss": "^4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "tw-animate-css": "^1",
+    "typescript": "^5.8"
+  }
+}

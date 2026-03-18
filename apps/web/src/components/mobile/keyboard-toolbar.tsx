@@ -1,0 +1,175 @@
+"use client";
+
+import { useState, useCallback, useRef } from "react";
+import { Search, Zap, Columns2, Rows2, ScrollText } from "lucide-react";
+import { cn } from "@repo/ui/lib/utils";
+import { triggerHaptic } from "@repo/ui/components/haptic-button";
+import { useSettingsStore } from "@/stores/settings-store";
+import { useCommandStore } from "@/stores/command-store";
+import { usePaneStore } from "@/stores/pane-store";
+import { getRelayClient } from "@/hooks/use-websocket";
+
+interface KeyboardToolbarProps {
+  className?: string;
+  /** #6: Callback to trigger terminal search */
+  onSearchOpen?: () => void;
+}
+
+export function KeyboardToolbar({ className, onSearchOpen }: KeyboardToolbarProps) {
+  const { toolbarKeys, hapticEnabled } = useSettingsStore();
+  const [stickyCtrl, setStickyCtrl] = useState(false);
+  const [stickyAlt, setStickyAlt] = useState(false);
+  const [copyModeActive, setCopyModeActive] = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const sendKey = useCallback(
+    (key: string) => {
+      const client = getRelayClient();
+      if (!client) return;
+
+      if (hapticEnabled) triggerHaptic();
+
+      let data = key;
+
+      // Apply sticky modifiers
+      if (stickyCtrl && key.length === 1) {
+        // Convert to ctrl code
+        const code = key.toUpperCase().charCodeAt(0) - 64;
+        if (code > 0 && code < 27) {
+          data = String.fromCharCode(code);
+        }
+        setStickyCtrl(false);
+      } else if (stickyAlt) {
+        data = "\x1b" + key;
+        setStickyAlt(false);
+      }
+
+      client.send({ type: "terminal:input", data });
+    },
+    [stickyCtrl, stickyAlt, hapticEnabled],
+  );
+
+  const handleKeyPress = useCallback(
+    (id: string, key: string) => {
+      if (id === "ctrl") {
+        setStickyCtrl((prev) => !prev);
+        if (hapticEnabled) triggerHaptic(20);
+        return;
+      }
+      if (id === "alt") {
+        setStickyAlt((prev) => !prev);
+        if (hapticEnabled) triggerHaptic(20);
+        return;
+      }
+      sendKey(key);
+    },
+    [sendKey, hapticEnabled],
+  );
+
+  const handleTouchStart = useCallback(
+    (id: string) => {
+      longPressTimer.current = setTimeout(() => {
+        // Long press variants could show a popup
+        if (hapticEnabled) triggerHaptic(30);
+      }, 500);
+    },
+    [hapticEnabled],
+  );
+
+  const handleTouchEnd = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const iconBtnClass =
+    "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground transition-colors active:bg-accent/80 active:scale-95";
+
+  const visibleKeys = toolbarKeys.filter((k) => k.visible);
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-0.5 overflow-x-auto px-1 py-1 scrollbar-none",
+        className,
+      )}
+    >
+      {/* Search button */}
+      {onSearchOpen && (
+        <button className={iconBtnClass} onClick={onSearchOpen}>
+          <Search className="h-4 w-4" />
+        </button>
+      )}
+      {/* Command palette */}
+      <button
+        className={iconBtnClass}
+        onClick={() => useCommandStore.getState().setPaletteOpen(true)}
+      >
+        <Zap className="h-4 w-4" />
+      </button>
+      {/* Split horizontal */}
+      <button
+        className={iconBtnClass}
+        onClick={() => {
+          getRelayClient()?.send({ type: "pane:split", direction: "h" });
+          if (useSettingsStore.getState().autoZoom) {
+            usePaneStore.getState().setPendingAutoZoom(true);
+          }
+          if (hapticEnabled) triggerHaptic();
+        }}
+      >
+        <Columns2 className="h-4 w-4" />
+      </button>
+      {/* Split vertical */}
+      <button
+        className={iconBtnClass}
+        onClick={() => {
+          getRelayClient()?.send({ type: "pane:split", direction: "v" });
+          if (useSettingsStore.getState().autoZoom) {
+            usePaneStore.getState().setPendingAutoZoom(true);
+          }
+          if (hapticEnabled) triggerHaptic();
+        }}
+      >
+        <Rows2 className="h-4 w-4" />
+      </button>
+      {/* Copy mode toggle */}
+      <button
+        className={cn(
+          iconBtnClass,
+          copyModeActive && "border-primary bg-primary/20 text-primary",
+        )}
+        onClick={() => {
+          getRelayClient()?.send({ type: "tmux:copy-mode" });
+          setCopyModeActive((prev) => !prev);
+          if (hapticEnabled) triggerHaptic();
+        }}
+      >
+        <ScrollText className="h-4 w-4" />
+      </button>
+      {visibleKeys.map((key) => {
+        const isSticky =
+          (key.id === "ctrl" && stickyCtrl) || (key.id === "alt" && stickyAlt);
+
+        return (
+          <button
+            key={key.id}
+            className={cn(
+              "flex h-9 min-w-[40px] shrink-0 items-center justify-center rounded-md border px-2 text-xs font-medium transition-colors select-none",
+              "active:bg-accent/80 active:scale-95",
+              isSticky
+                ? "border-primary bg-primary/20 text-primary"
+                : "border-border bg-background text-foreground",
+            )}
+            onClick={() => handleKeyPress(key.id, key.key)}
+            onTouchStart={() => handleTouchStart(key.id)}
+            onTouchEnd={handleTouchEnd}
+          >
+            {key.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}

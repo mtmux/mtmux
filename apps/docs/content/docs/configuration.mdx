@@ -1,0 +1,42 @@
+---
+title: Configuration Reference
+description: All environment variables for the relay server and web app.
+---
+
+## Relay Server
+
+Configure via environment variables or `.env` file in `apps/relay/`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RELAY_PORT` | `14300` | WebSocket server port |
+| `RELAY_HOST` | `0.0.0.0` | Host to bind to |
+| `AUTH_TOKEN` | `change-me-in-production` | Authentication token clients must provide |
+| `ALLOWED_PATHS` | `/home` | Comma-separated directories clients can browse |
+| `TMUX_SOCKET` | _(default)_ | Custom tmux socket path |
+| `TMUX_DEFAULT_SHELL` | `/bin/bash` | Default shell for new sessions |
+| `WS_RATE_LIMIT` | `100` | Max messages per rate-limit window |
+| `IDLE_TIMEOUT_MINUTES` | `30` | Idle connection timeout in minutes |
+| `CORS_ORIGINS` | `http://localhost:14100` | Comma-separated allowed CORS origins |
+
+### Security Notes
+
+- **Always change `AUTH_TOKEN`** before deploying. The default value is insecure.
+- **`ALLOWED_PATHS`** restricts which directories clients can browse. Use this to limit access to specific directories (e.g., `/home/deploy,/var/log`).
+- Path traversal is prevented — clients cannot escape allowed directories.
+
+## Web App
+
+Configure via environment variables or `.env.local` file in `apps/web/`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEXT_PUBLIC_RELAY_URL` | `ws://localhost:14300` | Relay server WebSocket URL |
+
+### Production
+
+For production, use `wss://` (WebSocket over TLS) and point to your relay server's public address:
+
+```bash
+NEXT_PUBLIC_RELAY_URL=wss://relay.example.com
+```

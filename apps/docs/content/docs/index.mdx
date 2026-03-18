@@ -1,0 +1,52 @@
+---
+title: Getting Started
+description: Set up TermBridge and connect to your first terminal session.
+---
+
+## What is TermBridge?
+
+TermBridge lets you access your server's terminal from any browser. It connects a modern web UI to remote tmux sessions over WebSocket, giving you a full terminal with session management, file browsing, and mobile support.
+
+## Prerequisites
+
+- **Node.js** 22+
+- **pnpm** 9+
+- **tmux** 3.0+
+- **Docker** (optional, for dev services like Temporal and MinIO)
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone <repo-url> termbridge
+cd termbridge
+
+# Install dependencies
+pnpm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env — at minimum, set AUTH_TOKEN to a secure value
+
+# Generate Prisma client
+pnpm db:generate
+
+# Start development servers
+pnpm dev
+```
+
+## First Session Walkthrough
+
+1. Open `http://localhost:14100` in your browser
+2. Enter your `AUTH_TOKEN` value and click **Connect**
+3. Once connected, click **Create Session** in the sidebar
+4. Give your session a name (or leave blank for auto-naming) and click **Create**
+5. You're now attached to a live tmux session — type commands, resize the window, and browse files
+
+## Ports
+
+| App | Port | Description |
+|-----|------|-------------|
+| Web | 14100 | Terminal web client |
+| Docs | 14102 | Documentation (this site) |
+| Relay | 14300 | WebSocket relay server |

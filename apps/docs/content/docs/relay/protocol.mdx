@@ -1,0 +1,156 @@
+---
+title: Protocol Reference
+description: All WebSocket message types and their schemas.
+---
+
+## Overview
+
+The TermBridge protocol is defined in `packages/protocol` using Zod discriminated unions. All messages are JSON-serialized and validated on both ends.
+
+## Client Messages (Browser → Relay)
+
+### Authentication
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `auth` | `token: string` | Authenticate with the relay server |
+
+### Keep-alive
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `ping` | `timestamp: number` | Ping for latency measurement |
+
+### Session Operations
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `session:list` | — | Request list of all tmux sessions |
+| `session:create` | `name?, cwd?, command?` | Create a new session |
+| `session:attach` | `name, size?` | Attach to a session |
+| `session:detach` | — | Detach from current session |
+| `session:kill` | `name` | Kill a session |
+| `session:rename` | `oldName, newName` | Rename a session |
+
+### Terminal I/O
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `terminal:input` | `data: string` | Send keystrokes to the terminal |
+| `terminal:resize` | `size: {cols, rows}` | Resize the terminal |
+
+### Commands
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `command:send` | `command: string` | Send a command (appends Enter) |
+| `command:interrupt` | — | Send Ctrl+C |
+| `command:eof` | — | Send Ctrl+D |
+| `command:clear` | — | Clear the screen |
+| `command:suspend` | — | Send Ctrl+Z |
+
+### File Operations
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `file:list` | `path: string` | List directory contents |
+| `file:read` | `path: string` | Read file content |
+| `file:stat` | `path: string` | Get file metadata |
+| `file:watch` | `path: string` | Watch directory for changes |
+| `file:unwatch` | `path: string` | Stop watching directory |
+
+## Server Messages (Relay → Browser)
+
+### Authentication
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `auth:success` | `serverVersion` | Authentication succeeded |
+| `auth:failure` | `reason` | Authentication failed |
+
+### Keep-alive
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `pong` | `timestamp: number` | Pong response to ping |
+
+### Errors
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `error` | `code, message` | Error response |
+
+### Server Info
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `server:info` | `hostname, platform, uptime` | Server metadata |
+
+### Session Events
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `session:list` | `sessions: SessionInfo[]` | List of all sessions |
+| `session:created` | `session: SessionInfo` | New session created |
+| `session:killed` | `name` | Session was killed |
+| `session:activity` | `name, activity` | Session activity updated |
+| `session:exited` | `name, exitCode?` | Session process exited |
+
+### Terminal Output
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `terminal:output` | `data: string` | Terminal output data |
+
+### File Responses
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `file:list` | `path, entries: FileEntry[]` | Directory listing |
+| `file:content` | `path, content, truncated` | File content |
+| `file:stat` | `stat: FileStat` | File metadata |
+| `file:changed` | `path, event` | File system change event |
+
+## Schemas
+
+### SessionInfo
+
+```typescript
+{
+  name: string;
+  id: string;
+  windows: number;
+  attached: boolean;
+  created: string;   // ISO timestamp
+  activity: string;  // ISO timestamp
+  dimensions?: { cols: number; rows: number };
+}
+```
+
+### FileEntry
+
+```typescript
+{
+  name: string;
+  path: string;
+  type: "file" | "directory" | "symlink" | "other";
+  size: number;
+  modified: string;  // ISO timestamp
+}
+```
+
+### FileStat
+
+```typescript
+{
+  name: string;
+  path: string;
+  type: "file" | "directory" | "symlink" | "other";
+  size: number;
+  modified: string;
+  created: string;
+  permissions: string;
+  isReadable: boolean;
+  isWritable: boolean;
+}
+```

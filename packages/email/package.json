@@ -1,0 +1,27 @@
+{
+  "name": "@repo/email",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./templates/*": "./src/templates/*.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@react-email/components": "^0.0.36",
+    "@repo/config": "workspace:*",
+    "react": "^19",
+    "react-dom": "^19",
+    "resend": "^4"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/tsconfig": "workspace:*",
+    "@types/react": "^19",
+    "typescript": "^5.8"
+  }
+}

@@ -1,0 +1,46 @@
+---
+title: Relay Server
+description: Architecture and configuration of the TermBridge relay server.
+---
+
+## Overview
+
+The relay server (`apps/relay`) is a Node.js WebSocket server that bridges browser connections to tmux sessions on the host machine. It handles authentication, message routing, PTY management, and file operations.
+
+## Startup
+
+On startup, the relay server:
+
+1. Checks that `tmux` is installed and available in `PATH`
+2. Creates an HTTP server with CORS support
+3. Creates a WebSocket server on top of HTTP
+4. Starts a session monitor that watches for session exits
+5. Listens on the configured host and port
+
+## Authentication
+
+Each WebSocket connection must authenticate within 30 seconds by sending an `auth` message with a valid token. The token is compared against the `AUTH_TOKEN` environment variable.
+
+On success: `auth:success` + `server:info` messages are sent.
+On failure: `auth:failure` message is sent and the connection is closed.
+
+## Message Routing
+
+After authentication, all messages are routed through `message-router.ts`. Each message type has a dedicated handler:
+
+- **Session operations**: list, create, attach, detach, kill, rename
+- **Terminal I/O**: input, resize
+- **Commands**: send, interrupt, EOF, clear, suspend
+- **File operations**: list, read, stat, watch, unwatch
+
+## Rate Limiting
+
+Each connection has a rate limiter that restricts the number of messages per time window (configurable via `WS_RATE_LIMIT`). Exceeding the limit returns a `RATE_LIMITED` error.
+
+## PTY Bridge
+
+When a client attaches to a session, the relay spawns a PTY process connected to the tmux session. Terminal output flows from PTY to WebSocket, and input flows from WebSocket to PTY. The PTY handles resize events.
+
+## Graceful Shutdown
+
+The relay handles `SIGTERM` and `SIGINT` signals, cleanly stopping the session monitor, WebSocket server, and HTTP server.

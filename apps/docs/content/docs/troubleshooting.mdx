@@ -1,0 +1,82 @@
+---
+title: Troubleshooting
+description: Common issues and solutions.
+---
+
+## Connection Issues
+
+### "Connection timed out" on login
+
+- Verify the relay server is running (`pnpm --filter @app/relay dev`)
+- Check that `NEXT_PUBLIC_RELAY_URL` points to the correct address
+- Ensure no firewall is blocking port 14300
+- If using Docker, verify port mapping
+
+### "Authentication failed"
+
+- Check that the token entered matches `AUTH_TOKEN` in the relay's environment
+- Tokens are case-sensitive
+
+### Connection keeps reconnecting
+
+- Check the relay server logs for errors
+- Verify the WebSocket connection isn't being terminated by a proxy
+- If behind a reverse proxy, ensure WebSocket upgrade headers are forwarded and `proxy_read_timeout` is set high
+
+## Terminal Issues
+
+### Terminal is blank after attaching
+
+- The session may have no output yet — try typing a command
+- Check that tmux is running on the host (`tmux list-sessions`)
+- Verify the relay server can access tmux (same user, correct socket path)
+
+### Terminal doesn't resize properly
+
+- Try refreshing the page
+- The Fit addon auto-resizes on container changes, but some edge cases may require a manual refresh
+
+### Special keys don't work
+
+- **macOS**: Option key is mapped as Meta by default
+- Mobile: Use the keyboard toolbar for Tab, Esc, Ctrl, and arrow keys
+
+## Session Issues
+
+### "Session not found" error
+
+- The session may have exited or been killed externally
+- Refresh the session list to get the current state
+- Check `tmux list-sessions` on the host
+
+### Can't create sessions
+
+- Verify tmux is installed: `tmux -V`
+- Check the relay server logs for errors
+- Ensure the default shell exists (`TMUX_DEFAULT_SHELL`)
+
+## File Browser Issues
+
+### "Access denied" on file operations
+
+- The path is outside `ALLOWED_PATHS` in the relay configuration
+- Update `ALLOWED_PATHS` to include the directories you need access to
+
+### Files not updating
+
+- File watching uses chokidar with `depth: 0` (current directory only)
+- Navigate away and back to refresh
+
+## Performance
+
+### Terminal feels slow
+
+- WebGL rendering is used by default; if it fails, canvas rendering is used as a fallback
+- Reduce `scrollback` in settings to use less memory
+- Close unused sessions
+
+### High latency
+
+- Check the latency indicator in the toolbar
+- Latency is measured via ping/pong every 10 seconds
+- Consider deploying the relay server closer to the user

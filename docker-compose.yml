@@ -1,0 +1,47 @@
+services:
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "17233:7233"
+    environment:
+      - DB=sqlite
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    volumes:
+      - temporal-data:/var/lib/temporal
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "18080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb local/uploads --ignore-existing;
+      exit 0;
+      "
+
+volumes:
+  temporal-data:
+  minio-data:

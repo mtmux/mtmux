@@ -1,0 +1,70 @@
+---
+title: Architecture
+description: How TermBridge components fit together.
+---
+
+## System Overview
+
+```
+Browser ←→ WebSocket ←→ Relay Server ←→ tmux/PTY
+(Next.js)              (Node.js)       (host)
+```
+
+The **web app** renders the terminal UI using xterm.js and communicates over a typed WebSocket protocol. The **relay server** bridges WebSocket messages to tmux sessions and PTY streams on the host machine.
+
+## Data Flow
+
+1. User opens the web app and authenticates with a token
+2. Web app establishes a WebSocket connection to the relay server
+3. Relay server validates the token and sends `auth:success`
+4. User creates or selects a tmux session
+5. Relay spawns a PTY attached to the tmux session
+6. Terminal I/O flows bidirectionally: keystrokes from browser → relay → PTY, output from PTY → relay → browser
+
+## Component Hierarchy
+
+### Web App (`apps/web`)
+
+```
+(terminal)/layout.tsx  → Auth guard, WebSocket init, app shell
+  └─ (terminal)/page.tsx → Layout (sidebar + terminal + file preview)
+       ├─ TerminalToolbar → Session name, search, fullscreen, settings
+       ├─ TerminalView → xterm.js instance, session attach/detach
+       ├─ SessionList → Session cards with create/attach/kill
+       └─ FileTree → Directory browser with sort/filter
+```
+
+### Relay Server (`apps/relay`)
+
+```
+index.ts           → HTTP + WebSocket server, auth handling
+├─ message-router  → Routes messages to handlers
+├─ tmux-manager    → tmux CLI operations (list, create, kill, rename)
+├─ pty-bridge      → node-pty bridge to tmux sessions
+├─ file-service    → File operations with path allow-listing
+├─ session-monitor → Watches for session exits
+└─ config          → Zod-validated environment configuration
+```
+
+### Protocol (`packages/protocol`)
+
+All WebSocket messages are defined as Zod discriminated unions:
+
+- **Client messages** (browser → relay): auth, ping, session ops, terminal input, file ops, commands
+- **Server messages** (relay → browser): auth results, pong, session events, terminal output, file data, errors
+
+Messages are serialized as JSON and validated on both ends using the `codec.ts` module.
+
+## State Management
+
+The web app uses Zustand stores:
+
+| Store | Purpose | Persisted |
+|-------|---------|-----------|
+| `connection-store` | WebSocket status, latency, server info | No |
+| `session-store` | Session list, active session | No |
+| `terminal-store` | Font size, theme, cursor settings | Yes |
+| `file-store` | Current path, entries, selected file | No |
+| `command-store` | Command history, snippets | Yes |
+| `settings-store` | Toolbar keys, gestures, haptics | Yes |
+| `ui-store` | Mobile tab state | No |

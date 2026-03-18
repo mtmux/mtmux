@@ -1,0 +1,184 @@
+"use client";
+
+import { useEffect, useCallback } from "react";
+import {
+  CommandDialog,
+  CommandInput,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+  CommandSeparator,
+  CommandShortcut,
+} from "@repo/ui/components/ui/command";
+import {
+  Terminal,
+  XCircle,
+  Send,
+  Trash2,
+  Pause,
+  History,
+  Bookmark,
+} from "lucide-react";
+import { useCommandStore } from "@/stores/command-store";
+import { getRelayClient } from "@/hooks/use-websocket";
+
+export function CommandPalette() {
+  const { paletteOpen, setPaletteOpen, history, snippets, addToHistory } =
+    useCommandStore();
+
+  // Cmd+K / Ctrl+K trigger
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen(!paletteOpen);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [paletteOpen, setPaletteOpen]);
+
+  const executeCommand = useCallback(
+    (cmd: string) => {
+      const client = getRelayClient();
+      if (!client) return;
+      client.send({ type: "command:send", command: cmd });
+      addToHistory(cmd);
+      setPaletteOpen(false);
+    },
+    [addToHistory, setPaletteOpen],
+  );
+
+  const sendQuickAction = useCallback(
+    (action: string) => {
+      const client = getRelayClient();
+      if (!client) return;
+
+      switch (action) {
+        case "interrupt":
+          client.send({ type: "command:interrupt" });
+          break;
+        case "eof":
+          client.send({ type: "command:eof" });
+          break;
+        case "clear":
+          client.send({ type: "command:clear" });
+          break;
+        case "suspend":
+          client.send({ type: "command:suspend" });
+          break;
+      }
+      setPaletteOpen(false);
+    },
+    [setPaletteOpen],
+  );
+
+  const handleSelect = useCallback(
+    (value: string) => {
+      if (value.startsWith("action:")) {
+        sendQuickAction(value.replace("action:", ""));
+      } else if (value.startsWith("history:") || value.startsWith("snippet:")) {
+        const cmd = value.split(":").slice(1).join(":");
+        executeCommand(cmd);
+      } else {
+        // Direct command input
+        executeCommand(value);
+      }
+    },
+    [executeCommand, sendQuickAction],
+  );
+
+  const pinnedSnippets = snippets.filter((s) => s.pinned);
+  const otherSnippets = snippets.filter((s) => !s.pinned);
+
+  return (
+    <CommandDialog open={paletteOpen} onOpenChange={setPaletteOpen}>
+      <CommandInput placeholder="Type a command or search..." />
+      <CommandList>
+        <CommandEmpty>
+          Press Enter to execute as shell command
+        </CommandEmpty>
+
+        <CommandGroup heading="Quick Actions">
+          <CommandItem value="action:interrupt" onSelect={handleSelect}>
+            <XCircle className="h-4 w-4 text-destructive" />
+            Interrupt (Ctrl+C)
+            <CommandShortcut>^C</CommandShortcut>
+          </CommandItem>
+          <CommandItem value="action:eof" onSelect={handleSelect}>
+            <Terminal className="h-4 w-4" />
+            Send EOF (Ctrl+D)
+            <CommandShortcut>^D</CommandShortcut>
+          </CommandItem>
+          <CommandItem value="action:clear" onSelect={handleSelect}>
+            <Trash2 className="h-4 w-4" />
+            Clear Terminal
+            <CommandShortcut>^L</CommandShortcut>
+          </CommandItem>
+          <CommandItem value="action:suspend" onSelect={handleSelect}>
+            <Pause className="h-4 w-4" />
+            Suspend (Ctrl+Z)
+            <CommandShortcut>^Z</CommandShortcut>
+          </CommandItem>
+        </CommandGroup>
+
+        {pinnedSnippets.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Pinned">
+              {pinnedSnippets.map((snippet) => (
+                <CommandItem
+                  key={snippet.id}
+                  value={`snippet:${snippet.command}`}
+                  onSelect={handleSelect}
+                >
+                  <Bookmark className="h-4 w-4 text-yellow-500" />
+                  <span className="flex-1">{snippet.name}</span>
+                  <span className="text-xs text-muted-foreground">{snippet.command}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+
+        {otherSnippets.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Snippets">
+              {otherSnippets.map((snippet) => (
+                <CommandItem
+                  key={snippet.id}
+                  value={`snippet:${snippet.command}`}
+                  onSelect={handleSelect}
+                >
+                  <Send className="h-4 w-4" />
+                  <span className="flex-1">{snippet.name}</span>
+                  <span className="text-xs text-muted-foreground">{snippet.command}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+
+        {history.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Recent">
+              {history.slice(0, 10).map((cmd, i) => (
+                <CommandItem
+                  key={`${i}-${cmd}`}
+                  value={`history:${cmd}`}
+                  onSelect={handleSelect}
+                >
+                  <History className="h-4 w-4" />
+                  {cmd}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+      </CommandList>
+    </CommandDialog>
+  );
+}

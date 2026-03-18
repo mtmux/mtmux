@@ -1,0 +1,28 @@
+{
+  "name": "@app/relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/protocol": "workspace:*",
+    "@repo/logger": "workspace:*",
+    "ws": "^8",
+    "node-pty": "^1",
+    "chokidar": "^4",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@repo/tsconfig": "workspace:*",
+    "@repo/eslint-config": "workspace:*",
+    "@types/ws": "^8",
+    "tsx": "^4",
+    "typescript": "^5.8"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "pages": [
+    "index",
+    "architecture",
+    "configuration",
+    "web-app",
+    "relay",
+    "deployment",
+    "troubleshooting"
+  ]
+}

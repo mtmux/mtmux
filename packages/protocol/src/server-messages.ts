@@ -1,0 +1,154 @@
+import { z } from "zod";
+import { SessionInfoSchema, FileEntrySchema, FileStatSchema, PaneInfoSchema, WindowInfoSchema } from "./types";
+
+export const AuthSuccessMessage = z.object({
+  type: z.literal("auth:success"),
+  serverVersion: z.string(),
+});
+
+export const AuthFailureMessage = z.object({
+  type: z.literal("auth:failure"),
+  reason: z.string(),
+});
+
+export const PongMessage = z.object({
+  type: z.literal("pong"),
+  timestamp: z.number(),
+});
+
+export const ErrorMessage = z.object({
+  type: z.literal("error"),
+  code: z.string(),
+  message: z.string(),
+});
+
+export const ServerInfoMessage = z.object({
+  type: z.literal("server:info"),
+  hostname: z.string(),
+  platform: z.string(),
+  uptime: z.number(),
+});
+
+export const TerminalOutputMessage = z.object({
+  type: z.literal("terminal:output"),
+  data: z.string(),
+});
+
+export const SessionListResponse = z.object({
+  type: z.literal("session:list"),
+  sessions: z.array(SessionInfoSchema),
+});
+
+export const SessionCreatedMessage = z.object({
+  type: z.literal("session:created"),
+  session: SessionInfoSchema,
+});
+
+export const SessionKilledMessage = z.object({
+  type: z.literal("session:killed"),
+  name: z.string(),
+});
+
+export const SessionActivityMessage = z.object({
+  type: z.literal("session:activity"),
+  name: z.string(),
+  activity: z.string(),
+});
+
+export const SessionExitedMessage = z.object({
+  type: z.literal("session:exited"),
+  name: z.string(),
+  exitCode: z.number().optional(),
+});
+
+export const FileListResponse = z.object({
+  type: z.literal("file:list"),
+  path: z.string(),
+  entries: z.array(FileEntrySchema),
+});
+
+export const FileContentResponse = z.object({
+  type: z.literal("file:content"),
+  path: z.string(),
+  content: z.string(),
+  truncated: z.boolean(),
+});
+
+export const FileStatResponse = z.object({
+  type: z.literal("file:stat"),
+  stat: FileStatSchema,
+});
+
+export const FileChangedMessage = z.object({
+  type: z.literal("file:changed"),
+  path: z.string(),
+  event: z.enum(["add", "change", "unlink", "addDir", "unlinkDir"]),
+});
+
+// Pane/Window response messages
+export const PaneListResponse = z.object({
+  type: z.literal("pane:list"),
+  panes: z.array(PaneInfoSchema),
+  windowId: z.string(),
+});
+
+export const WindowListResponse = z.object({
+  type: z.literal("window:list"),
+  windows: z.array(WindowInfoSchema),
+  sessionName: z.string(),
+});
+
+export const PaneChangedMessage = z.object({
+  type: z.literal("pane:changed"),
+  panes: z.array(PaneInfoSchema),
+  windowId: z.string(),
+});
+
+export const WindowChangedMessage = z.object({
+  type: z.literal("window:changed"),
+  windows: z.array(WindowInfoSchema),
+  sessionName: z.string(),
+});
+
+export const ServerMessage = z.discriminatedUnion("type", [
+  AuthSuccessMessage,
+  AuthFailureMessage,
+  PongMessage,
+  ErrorMessage,
+  ServerInfoMessage,
+  TerminalOutputMessage,
+  SessionListResponse,
+  SessionCreatedMessage,
+  SessionKilledMessage,
+  SessionActivityMessage,
+  SessionExitedMessage,
+  FileListResponse,
+  FileContentResponse,
+  FileStatResponse,
+  FileChangedMessage,
+  PaneListResponse,
+  WindowListResponse,
+  PaneChangedMessage,
+  WindowChangedMessage,
+]);
+
+export type ServerMessage = z.infer<typeof ServerMessage>;
+export type AuthSuccessMessage = z.infer<typeof AuthSuccessMessage>;
+export type AuthFailureMessage = z.infer<typeof AuthFailureMessage>;
+export type PongMessage = z.infer<typeof PongMessage>;
+export type ErrorMessage = z.infer<typeof ErrorMessage>;
+export type ServerInfoMessage = z.infer<typeof ServerInfoMessage>;
+export type TerminalOutputMessage = z.infer<typeof TerminalOutputMessage>;
+export type SessionListResponse = z.infer<typeof SessionListResponse>;
+export type SessionCreatedMessage = z.infer<typeof SessionCreatedMessage>;
+export type SessionKilledMessage = z.infer<typeof SessionKilledMessage>;
+export type SessionActivityMessage = z.infer<typeof SessionActivityMessage>;
+export type SessionExitedMessage = z.infer<typeof SessionExitedMessage>;
+export type FileListResponse = z.infer<typeof FileListResponse>;
+export type FileContentResponse = z.infer<typeof FileContentResponse>;
+export type FileStatResponse = z.infer<typeof FileStatResponse>;
+export type FileChangedMessage = z.infer<typeof FileChangedMessage>;
+export type PaneListResponse = z.infer<typeof PaneListResponse>;
+export type WindowListResponse = z.infer<typeof WindowListResponse>;
+export type PaneChangedMessage = z.infer<typeof PaneChangedMessage>;
+export type WindowChangedMessage = z.infer<typeof WindowChangedMessage>;

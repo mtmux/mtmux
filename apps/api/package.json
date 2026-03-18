@@ -1,0 +1,30 @@
+{
+  "name": "@app/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "hono": "^4",
+    "@hono/node-server": "^1",
+    "@trpc/server": "^11",
+    "zod": "^3",
+    "@repo/api": "workspace:*",
+    "@repo/auth": "workspace:*",
+    "@repo/db": "workspace:*",
+    "@repo/config": "workspace:*",
+    "@repo/logger": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/tsconfig": "workspace:*",
+    "@repo/eslint-config": "workspace:*",
+    "typescript": "^5.8",
+    "tsx": "^4"
+  }
+}

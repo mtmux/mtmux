@@ -1,0 +1,88 @@
+---
+title: Deployment
+description: Deploy TermBridge with Docker, PM2, or a reverse proxy.
+---
+
+## Production Environment
+
+Set these environment variables for production:
+
+```bash
+# Relay
+AUTH_TOKEN=your-secure-token-here
+RELAY_HOST=0.0.0.0
+RELAY_PORT=14300
+ALLOWED_PATHS=/home/deploy
+CORS_ORIGINS=https://terminal.example.com
+TMUX_DEFAULT_SHELL=/bin/bash
+
+# Web
+NEXT_PUBLIC_RELAY_URL=wss://relay.example.com
+```
+
+## Docker
+
+Build and run with Docker Compose:
+
+```bash
+pnpm docker:prod
+```
+
+This starts the relay server and web app in containers. See `docker-compose.prod.yml` for the full configuration.
+
+## PM2
+
+Use PM2 for process management:
+
+```bash
+# Build everything
+pnpm build
+
+# Start with PM2
+pm2 start ecosystem.config.cjs
+```
+
+The `ecosystem.config.cjs` file configures both the relay server and web app processes.
+
+## Reverse Proxy
+
+For production, place a reverse proxy (nginx, Caddy) in front of both apps:
+
+### nginx Example
+
+```nginx
+# Web app
+server {
+    listen 443 ssl;
+    server_name terminal.example.com;
+
+    location / {
+        proxy_pass http://localhost:14100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+
+# Relay server (WebSocket)
+server {
+    listen 443 ssl;
+    server_name relay.example.com;
+
+    location / {
+        proxy_pass http://localhost:14300;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+### Key Points
+
+- The relay server requires WebSocket upgrade support (`Upgrade` and `Connection` headers)
+- Set a long `proxy_read_timeout` for WebSocket connections
+- Use `wss://` in `NEXT_PUBLIC_RELAY_URL` when behind TLS
+- Add `CORS_ORIGINS` matching your web app's production domain

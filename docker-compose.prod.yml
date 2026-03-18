@@ -1,0 +1,110 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    ports:
+      - "14100:14100"
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14100/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  admin:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.admin
+    ports:
+      - "14101:14101"
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14101"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "14200:14200"
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14200/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.relay
+    ports:
+      - "14300:14300"
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:14300/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.temporal-worker
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "17233:7233"
+    environment:
+      - DB=sqlite
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "temporal", "workflow", "list", "--namespace", "default"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "18080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  minio-data:

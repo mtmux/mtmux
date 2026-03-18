@@ -1,0 +1,46 @@
+---
+title: Terminal
+description: xterm.js terminal rendering, themes, search, and keyboard shortcuts.
+---
+
+## Terminal View
+
+The terminal is rendered using [xterm.js](https://xtermjs.org/) with the following addons:
+
+- **WebGL** — GPU-accelerated rendering (falls back to canvas)
+- **Search** — Find text in terminal scrollback
+- **Unicode 11** — Full emoji and Unicode support
+- **Web Links** — Clickable URLs in terminal output
+- **Fit** — Auto-sizes terminal to container
+
+## Themes
+
+TermBridge ships with multiple terminal color themes. Change the theme in Settings. Themes are defined in `packages/ui/terminal-themes.ts` and applied via xterm.js `theme` option.
+
+## Search
+
+Use the search button in the toolbar (or open it from the toolbar) to search terminal scrollback:
+
+- Type to search (highlights matches)
+- **Enter** — next match
+- **Shift+Enter** — previous match
+- **Escape** — close search
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+=` / `Cmd+=` | Increase font size |
+| `Ctrl+-` / `Cmd+-` | Decrease font size |
+| `Ctrl+0` / `Cmd+0` | Reset font size to default (14px) |
+
+## Settings
+
+Terminal settings are persisted to `localStorage` and include:
+
+- **Font size** (8–24px, default 14)
+- **Font family** (JetBrains Mono, Fira Code, Cascadia Code)
+- **Theme** (Dracula, One Dark, Solarized, etc.)
+- **Cursor style** (block, underline, bar)
+- **Cursor blink** (on/off)
+- **Scrollback lines** (100–50,000, default 5,000)

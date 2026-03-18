@@ -1,0 +1,40 @@
+---
+title: Session Management
+description: Create, attach, kill, and rename tmux sessions.
+---
+
+## Overview
+
+TermBridge manages tmux sessions on the remote host. Sessions persist even when you disconnect — reconnect later and pick up where you left off.
+
+## Creating Sessions
+
+Click the **+** button in the session sidebar (or the "Create Session" button in the empty state). You can optionally specify:
+
+- **Name** — Session identifier (auto-generated if blank)
+- **Working Directory** — Starting directory for the shell
+- **Command** — Command to run instead of the default shell
+
+After creation, TermBridge automatically attaches to the new session.
+
+## Attaching to Sessions
+
+Click any session in the sidebar to attach. The terminal clears and connects to the selected session's PTY. Your previous session is detached but continues running.
+
+The last active session is saved to `localStorage` and auto-restored on page load.
+
+## Session Tabs
+
+On desktop, session tabs appear in the header bar for quick switching between sessions.
+
+## Killing Sessions
+
+Click the kill button on a session card to terminate it. The session and its processes are destroyed on the server.
+
+## Renaming Sessions
+
+Sessions can be renamed via the session rename functionality. The server validates that the old session exists before attempting the rename.
+
+## Session Exit Notifications
+
+When a session exits (process completes or is killed), TermBridge shows a toast notification and removes it from the session list.

@@ -1,0 +1,38 @@
+---
+title: File Browser
+description: Navigate and preview files on the remote host.
+---
+
+## Overview
+
+The file browser lets you navigate the remote host's filesystem within the directories allowed by the `ALLOWED_PATHS` configuration.
+
+## Navigation
+
+- Click a directory to enter it
+- Use the breadcrumb bar to navigate up
+- Files are sorted with directories first
+
+## Views
+
+Toggle between two view modes:
+
+- **List view** — Shows file name and size in a compact list
+- **Grid view** — Shows file icons in a grid layout
+
+## Filtering and Sorting
+
+- **Filter** — Type in the filter box to narrow results by filename
+- **Sort** — Cycle through sort modes: name, modified date, size
+
+## File Preview
+
+On desktop, clicking a file opens a preview panel on the right side of the terminal. Files up to 100KB are displayed.
+
+## File Watching
+
+TermBridge can watch directories for changes. When files are added, modified, or deleted, the file list updates automatically.
+
+## Security
+
+The relay server restricts file access to directories listed in `ALLOWED_PATHS`. Path traversal attacks are prevented — the server resolves paths and validates they fall within allowed directory boundaries.

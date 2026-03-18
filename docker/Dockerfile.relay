@@ -1,0 +1,44 @@
+FROM node:22-slim AS base
+
+RUN apt-get update && apt-get install -y \
+  tmux \
+  python3 \
+  make \
+  g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+
+FROM base AS pruner
+WORKDIR /app
+COPY . .
+RUN pnpm dlx turbo@2.3.3 prune @app/relay --docker
+
+FROM base AS installer
+WORKDIR /app
+COPY --from=pruner /app/out/json/ .
+RUN pnpm install --frozen-lockfile
+
+FROM installer AS builder
+COPY --from=pruner /app/out/full/ .
+RUN pnpm turbo build --filter=@app/relay
+
+FROM base AS runner
+WORKDIR /app
+
+RUN groupadd -r relay && useradd -r -g relay relay
+
+COPY --from=builder /app/apps/relay/dist ./apps/relay/dist
+COPY --from=builder /app/apps/relay/package.json ./apps/relay/
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/protocol ./packages/protocol
+COPY --from=builder /app/packages/logger ./packages/logger
+COPY --from=builder /app/package.json .
+
+USER relay
+EXPOSE 14300
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
+  CMD node -e "const h=require('http');h.get('http://localhost:14300/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+
+CMD ["node", "apps/relay/dist/index.js"]

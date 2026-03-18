@@ -1,0 +1,10 @@
+{
+  "title": "Web App",
+  "pages": [
+    "index",
+    "terminal",
+    "sessions",
+    "files",
+    "mobile"
+  ]
+}
