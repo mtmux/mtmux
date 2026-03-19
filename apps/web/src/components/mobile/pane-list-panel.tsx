@@ -1,6 +1,6 @@
 "use client";
 
-import { Maximize2, X } from "lucide-react";
+import { Maximize2, X, LayoutGrid } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -19,7 +19,23 @@ export function PaneListPanel() {
   const { paneListOpen, setPaneListOpen } = useUiStore();
   const isMobile = useMediaQuery("(max-width: 768px)");
 
-  if (panes.length === 0) return null;
+  if (panes.length === 0) {
+    if (!paneListOpen) return null;
+    return (
+      <Sheet open={paneListOpen} onOpenChange={setPaneListOpen}>
+        <SheetContent side="bottom" className="h-[30vh] p-4">
+          <SheetHeader className="pb-2">
+            <SheetTitle className="text-sm">Panes</SheetTitle>
+          </SheetHeader>
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground pb-8">
+            <LayoutGrid className="h-10 w-10 mb-2 opacity-40" />
+            <p className="text-sm">No panes available</p>
+            <p className="text-xs mt-1">Attach to a session to see panes</p>
+          </div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
 
   // Compute grid layout from pane positions/dimensions (filter out panes with missing data)
   const validPanes = panes.filter((p) => p.dimensions && p.position);

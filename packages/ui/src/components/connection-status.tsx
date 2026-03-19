@@ -14,6 +14,8 @@ const statusConfig: Record<ConnectionStatusType, { color: string; label: string;
 interface ConnectionStatusProps {
   status: ConnectionStatusType;
   latency?: number;
+  reconnectCount?: number;
+  hostname?: string;
   className?: string;
   showLabel?: boolean;
 }
@@ -21,14 +23,22 @@ interface ConnectionStatusProps {
 export function ConnectionStatus({
   status,
   latency,
+  reconnectCount,
+  hostname,
   className,
   showLabel = true,
 }: ConnectionStatusProps) {
   const config = statusConfig[status];
 
+  const tooltipParts: string[] = [config.label];
+  if (hostname) tooltipParts.push(`Host: ${hostname}`);
+  if (status === "connected" && latency != null) tooltipParts.push(`Latency: ${latency}ms`);
+  if (reconnectCount && reconnectCount > 0) tooltipParts.push(`Reconnects: ${reconnectCount}`);
+  const tooltip = tooltipParts.join(" | ");
+
   return (
-    <div className={cn("flex items-center gap-2", className)}>
-      <span className="relative flex h-2.5 w-2.5">
+    <div className={cn("flex items-center gap-2", className)} title={tooltip}>
+      <span className="relative flex h-3 w-3">
         {config.pulse && (
           <span
             className={cn(
@@ -37,7 +47,7 @@ export function ConnectionStatus({
             )}
           />
         )}
-        <span className={cn("relative inline-flex h-2.5 w-2.5 rounded-full", config.color)} />
+        <span className={cn("relative inline-flex h-3 w-3 rounded-full", config.color)} />
       </span>
       {showLabel && (
         <span className="text-xs text-muted-foreground">

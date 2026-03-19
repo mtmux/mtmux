@@ -13,6 +13,7 @@ interface FileStore {
   // Editor state
   editorFile: string | null;
   editorTruncated: boolean;
+  isOperating: boolean;
   isSaving: boolean;
   setCurrentPath: (path: string) => void;
   setEntries: (entries: FileEntry[]) => void;
@@ -22,6 +23,7 @@ interface FileStore {
   setIsLoading: (loading: boolean) => void;
   setViewMode: (mode: "list" | "grid") => void;
   setSortBy: (sort: "name" | "modified" | "size") => void;
+  setIsOperating: (operating: boolean) => void;
   openEditor: (path: string) => void;
   closeEditor: () => void;
   setIsSaving: (saving: boolean) => void;
@@ -38,6 +40,7 @@ export const useFileStore = create<FileStore>((set) => ({
   sortBy: "name",
   editorFile: null,
   editorTruncated: false,
+  isOperating: false,
   isSaving: false,
   setCurrentPath: (currentPath) => set({ currentPath }),
   setEntries: (entries) => set({ entries }),
@@ -47,6 +50,7 @@ export const useFileStore = create<FileStore>((set) => ({
   setIsLoading: (isLoading) => set({ isLoading }),
   setViewMode: (viewMode) => set({ viewMode }),
   setSortBy: (sortBy) => set({ sortBy }),
+  setIsOperating: (isOperating) => set({ isOperating }),
   openEditor: (path) => set({ editorFile: path, editorTruncated: false, isSaving: false }),
   closeEditor: () => set({ editorFile: null, editorTruncated: false, isSaving: false }),
   setIsSaving: (isSaving) => set({ isSaving }),

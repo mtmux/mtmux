@@ -36,8 +36,13 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+function isRecentlyActive(dateStr: string): boolean {
+  return (Date.now() - new Date(dateStr).getTime()) < 30_000;
+}
+
 export function SessionCard({ session, isActive, onAttach, onKill }: SessionCardProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
+  const recentlyActive = isRecentlyActive(session.activity);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.name);
   const [showKillConfirm, setShowKillConfirm] = useState(false);
@@ -143,7 +148,9 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
           "group cursor-pointer transition-colors hover:bg-accent/50 relative",
           isActive
             ? "bg-accent/40 ring-1 ring-primary/30"
-            : "",
+            : recentlyActive
+              ? "ring-1 ring-primary/20 animate-pulse"
+              : "",
         )}
         style={{
           transform: `translateX(${swipeOffset}px)`,
@@ -186,6 +193,9 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
             </div>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>{session.windows} window{session.windows !== 1 ? "s" : ""}</span>
+              {session.dimensions && (
+                <span>{session.dimensions.cols}&times;{session.dimensions.rows}</span>
+              )}
               <span className="flex items-center gap-0.5">
                 <Clock className="h-3 w-3" />
                 {timeAgo(session.activity)}

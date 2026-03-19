@@ -115,6 +115,7 @@ export function useWebSocket(url: string, token: string) {
           // Handled in file-editor component via onMessage subscription
           break;
         case "file:op:result": {
+          useFileStore.getState().setIsOperating(false);
           if (msg.success) {
             toast.success(`${msg.op} succeeded: ${msg.path.split("/").pop()}`, { id: `fileop-${msg.op}-${msg.path}`, duration: 2000 });
             // Refresh current directory listing

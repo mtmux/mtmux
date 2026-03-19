@@ -104,17 +104,20 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     viewMode,
     sortBy,
     isLoading,
+    isOperating,
     setCurrentPath,
     setViewMode,
     setSortBy,
     setEntries,
     setIsLoading,
+    setIsOperating,
     openEditor,
   } = useFileStore();
   const [filter, setFilter] = useState("");
   const [inlineInput, setInlineInput] = useState<{ type: "file" | "folder" | "rename"; value: string; path?: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
   const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inlineInputRef = useRef<HTMLInputElement>(null);
 
@@ -175,19 +178,18 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     fileInputRef.current?.click();
   }, []);
 
-  const handleFileUpload = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+  const uploadFile = useCallback(
+    (file: globalThis.File) => {
       const client = getRelayClient();
       if (!client) return;
 
+      setIsOperating(true);
       const filePath = currentPath + "/" + file.name;
       const reader = new FileReader();
       reader.onload = () => {
         const arrayBuffer = reader.result as ArrayBuffer;
         const bytes = new Uint8Array(arrayBuffer);
-        const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+        const CHUNK_SIZE = 64 * 1024;
         let offset = 0;
 
         const sendChunk = () => {
@@ -195,7 +197,6 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           offset += chunk.length;
           const final = offset >= bytes.length;
 
-          // Convert to base64
           let binary = "";
           for (let i = 0; i < chunk.length; i++) {
             binary += String.fromCharCode(chunk[i]!);
@@ -212,11 +213,44 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
         sendChunk();
       };
       reader.readAsArrayBuffer(file);
+    },
+    [currentPath, setIsOperating],
+  );
 
-      // Reset input so same file can be re-uploaded
+  const handleFileUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      uploadFile(file);
       e.target.value = "";
     },
-    [currentPath],
+    [uploadFile],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+
+      const files = Array.from(e.dataTransfer.files);
+      for (const file of files) {
+        uploadFile(file);
+      }
+    },
+    [uploadFile],
   );
 
   const handleInlineSubmit = useCallback(() => {
@@ -228,6 +262,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     const client = getRelayClient();
     if (!client) return;
 
+    setIsOperating(true);
     if (inlineInput.type === "file") {
       client.send({ type: "file:create", path: currentPath + "/" + inlineInput.value.trim() });
     } else if (inlineInput.type === "folder") {
@@ -238,15 +273,16 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     }
 
     setInlineInput(null);
-  }, [inlineInput, currentPath]);
+  }, [inlineInput, currentPath, setIsOperating]);
 
   const handleDelete = useCallback(() => {
     if (!deleteTarget) return;
     const client = getRelayClient();
     if (!client) return;
+    setIsOperating(true);
     client.send({ type: "file:delete", path: deleteTarget.path });
     setDeleteTarget(null);
-  }, [deleteTarget]);
+  }, [deleteTarget, setIsOperating]);
 
   const handleRename = useCallback((entry: FileEntry) => {
     setInlineInput({ type: "rename", value: entry.name, path: entry.path });
@@ -299,7 +335,16 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     });
 
   return (
-    <div className={cn("flex flex-col overflow-hidden", className)}>
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden",
+        isDragging && "ring-2 ring-primary ring-inset",
+        className,
+      )}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="flex items-center gap-1 px-2 py-1.5 border-b">
         {breadcrumbPath !== undefined && onNavigate && (
           <div className="flex items-center gap-0.5 shrink-0 overflow-x-auto scrollbar-none mr-1">
@@ -333,6 +378,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           size="icon"
           className="h-9 w-9 shrink-0"
           onClick={handleNewFile}
+          disabled={isOperating}
           title="New file"
         >
           <FilePlus className="h-3.5 w-3.5" />
@@ -342,6 +388,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           size="icon"
           className="h-9 w-9 shrink-0"
           onClick={handleNewFolder}
+          disabled={isOperating}
           title="New folder"
         >
           <FolderPlus className="h-3.5 w-3.5" />
@@ -351,6 +398,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           size="icon"
           className="h-9 w-9 shrink-0"
           onClick={handleUpload}
+          disabled={isOperating}
           title="Upload file"
         >
           <Upload className="h-3.5 w-3.5" />

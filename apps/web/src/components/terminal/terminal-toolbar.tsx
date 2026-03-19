@@ -29,7 +29,7 @@ export function TerminalToolbar({
   className,
 }: TerminalToolbarProps) {
   const [showSearch, setShowSearch] = useState(false);
-  const { status, latency } = useConnectionStore();
+  const { status, latency, reconnectCount, hostname } = useConnectionStore();
   const { activeSessionId } = useSessionStore();
 
   const connectionStatusType = status === "connected"
@@ -49,6 +49,8 @@ export function TerminalToolbar({
       <ConnectionStatus
         status={connectionStatusType}
         latency={latency ?? undefined}
+        reconnectCount={reconnectCount}
+        hostname={hostname ?? undefined}
         className="ml-2"
       />
 
