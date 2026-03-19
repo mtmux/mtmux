@@ -14,14 +14,14 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getRelayClient } from "@/hooks/use-websocket";
-import { Terminal, Loader2, Plus } from "lucide-react";
+import { Terminal, Loader2, Plus, WifiOff } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
+import { cn } from "@repo/ui/lib/utils";
 import type { ServerMessage } from "@repo/protocol";
 
 interface TerminalViewProps {
   sessionName: string | null;
   className?: string;
-  /** #4: Callback to open create session dialog */
   onCreateSession?: () => void;
 }
 
@@ -37,9 +37,10 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     const terminalRef = useRef<XTerm | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const searchAddonRef = useRef<SearchAddon | null>(null);
+    const attachedSessionRef = useRef<string | null>(null);
     const { fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback } =
       useTerminalStore();
-    const { status } = useConnectionStore();
+    const status = useConnectionStore((s) => s.status);
 
     useImperativeHandle(ref, () => ({
       search: (term: string) => {
@@ -53,9 +54,9 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       },
     }));
 
-    // Initialize terminal
+    // Initialize terminal ONCE on mount — no sessionName dependency
     useEffect(() => {
-      if (!containerRef.current || !sessionName) return;
+      if (!containerRef.current) return;
 
       const theme = getTerminalTheme(themeName);
       const terminal = new XTerm({
@@ -83,7 +84,6 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       terminal.unicode.activeVersion = "11";
       terminal.open(containerRef.current);
 
-      // Try WebGL renderer, fall back to canvas
       try {
         const webglAddon = new WebglAddon();
         webglAddon.onContextLoss(() => {
@@ -116,25 +116,19 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         }
       });
 
-      // ResizeObserver for container
+      // Debounced ResizeObserver
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const resizeObserver = new ResizeObserver(() => {
-        fitAddon.fit();
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          fitAddon.fit();
+        }, 100);
       });
       resizeObserver.observe(containerRef.current);
 
-      // VisualViewport listener for mobile virtual keyboard
-      const viewport = window.visualViewport;
-      const handleViewportResize = () => {
-        if (viewport && containerRef.current) {
-          containerRef.current.style.height = `${viewport.height - containerRef.current.getBoundingClientRect().top}px`;
-          fitAddon.fit();
-        }
-      };
-      viewport?.addEventListener("resize", handleViewportResize);
-
       return () => {
+        if (resizeTimer) clearTimeout(resizeTimer);
         resizeObserver.disconnect();
-        viewport?.removeEventListener("resize", handleViewportResize);
         dataDisposable.dispose();
         resizeDisposable.dispose();
         terminal.dispose();
@@ -142,7 +136,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         fitAddonRef.current = null;
         searchAddonRef.current = null;
       };
-    }, [sessionName]);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps -- terminal created once on mount
 
     // Update terminal options when settings change
     useEffect(() => {
@@ -160,22 +154,24 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       fitAddonRef.current?.fit();
     }, [fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback]);
 
-    // Wire WebSocket output to terminal
+    // Wire WebSocket output to terminal — use ref to prevent stale session output
     useEffect(() => {
       const client = getRelayClient();
       if (!client) return;
 
       const unsub = client.onMessage((msg: ServerMessage) => {
-        if (msg.type === "terminal:output" && terminalRef.current) {
+        if (msg.type === "terminal:output" && terminalRef.current && attachedSessionRef.current) {
           terminalRef.current.write(msg.data);
         }
       });
 
       return unsub;
-    }, [sessionName]);
+    }, []);
 
-    // Attach to session when sessionName changes
+    // Attach/detach to session when sessionName changes
     useEffect(() => {
+      attachedSessionRef.current = sessionName;
+
       if (!sessionName) return;
 
       const client = getRelayClient();
@@ -188,12 +184,10 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         ? { cols: terminal.cols, rows: terminal.rows }
         : { cols: 80, rows: 24 };
 
-      client.send({ type: "session:attach", name: sessionName, size });
-      // Request pane/window list after attach
+      client.send({ type: "session:attach", name: sessionName, size, capture: true });
       client.send({ type: "pane:list" });
       client.send({ type: "window:list" });
 
-      // Auto-zoom: flag pending zoom so pane:list handler will zoom
       if (useSettingsStore.getState().autoZoom) {
         usePaneStore.getState().setPendingAutoZoom(true);
       }
@@ -203,11 +197,21 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       };
     }, [sessionName]);
 
-    // #10: Richer empty state with CTA button (#4)
-    if (!sessionName) {
-      return (
-        <div className={className}>
-          <div className="flex h-full flex-col items-center justify-center gap-4 text-muted-foreground">
+    return (
+      <div className={cn("relative", className)} style={{ width: "100%", height: "100%" }}>
+        {/* Terminal container — always mounted */}
+        <div
+          ref={containerRef}
+          className={cn(
+            "h-full w-full",
+            !sessionName && "invisible",
+          )}
+          style={{ touchAction: "manipulation" }}
+        />
+
+        {/* No session overlay */}
+        {!sessionName && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-muted-foreground bg-background">
             <Terminal className="h-16 w-16 text-muted-foreground/20" />
             <div className="text-center">
               <p className="text-base font-semibold text-foreground">No session selected</p>
@@ -220,28 +224,24 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
               </Button>
             )}
           </div>
-        </div>
-      );
-    }
+        )}
 
-    // Connecting state
-    if (status !== "connected") {
-      return (
-        <div className={className}>
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
-            <Loader2 className="h-8 w-8 animate-spin" />
-            <p className="text-sm">Connecting to session...</p>
+        {/* Disconnected overlay — translucent banner over still-visible terminal */}
+        {sessionName && status !== "connected" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm">
+            <div className="flex items-center gap-2 rounded-lg border bg-background/90 px-4 py-3 shadow-lg">
+              {status === "reconnecting" ? (
+                <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+              ) : (
+                <WifiOff className="h-4 w-4 text-destructive" />
+              )}
+              <span className="text-sm font-medium">
+                {status === "reconnecting" ? "Reconnecting..." : "Disconnected"}
+              </span>
+            </div>
           </div>
-        </div>
-      );
-    }
-
-    return (
-      <div
-        ref={containerRef}
-        className={className}
-        style={{ width: "100%", height: "100%" }}
-      />
+        )}
+      </div>
     );
   },
 );
