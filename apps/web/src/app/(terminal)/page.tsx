@@ -3,13 +3,12 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
-import { Sheet, SheetContent } from "@repo/ui/components/ui/sheet";
 import { TerminalView, type TerminalViewHandle } from "@/components/terminal/terminal-view";
 import { TerminalToolbar } from "@/components/terminal/terminal-toolbar";
 import { SessionList } from "@/components/session/session-list";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { FileTree } from "@/components/files/file-tree";
-import { FilePreview } from "@/components/files/file-preview";
+import { FileEditor } from "@/components/files/file-editor";
 import { SettingsPanel } from "@/components/settings/settings-panel";
 import { SwipeSessionSwitcher } from "@/components/mobile/swipe-session-switcher";
 import { WindowTabs } from "@/components/mobile/window-tabs";
@@ -17,6 +16,7 @@ import { TmuxFab } from "@/components/mobile/tmux-fab";
 import { PaneListPanel } from "@/components/mobile/pane-list-panel";
 import { PaneResizeControls } from "@/components/mobile/pane-resize-controls";
 import { PinchZoomHandler } from "@/components/mobile/pinch-zoom-handler";
+import { cn } from "@repo/ui/lib/utils";
 import { useSessionStore } from "@/stores/session-store";
 import { useFileStore } from "@/stores/file-store";
 import { useUiStore } from "@/stores/ui-store";
@@ -27,8 +27,7 @@ export default function TerminalPage() {
   const isMobile = useMediaQuery("(max-width: 768px)");
   const { activeSessionId } = useSessionStore();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [previewFile, setPreviewFile] = useState<string | null>(null);
-  const { setSelectedFile } = useFileStore();
+  const { setSelectedFile, editorFile, openEditor } = useFileStore();
   const { mobileTab, setMobileTab } = useUiStore();
   const terminalRef = useRef<TerminalViewHandle>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -54,9 +53,9 @@ export default function TerminalPage() {
   const handleFileSelect = useCallback(
     (path: string) => {
       setSelectedFile(path);
-      setPreviewFile(path);
+      openEditor(path);
     },
-    [setSelectedFile],
+    [setSelectedFile, openEditor],
   );
 
   const handleSearch = useCallback((term: string) => {
@@ -90,9 +89,8 @@ export default function TerminalPage() {
   if (isMobile) {
     return (
       <>
-        {mobileTab === "terminal" && (
-          <SwipeSessionSwitcher className="h-[100dvh] max-h-full">
-            {/* #6: Hide TerminalToolbar on mobile — search moved to keyboard toolbar */}
+        <div className={cn("h-full flex-col", mobileTab === "terminal" ? "flex" : "hidden")}>
+          <SwipeSessionSwitcher className="h-full max-h-full">
             <div className="flex h-full flex-col">
               <WindowTabs />
               <div className="flex-1 overflow-hidden">
@@ -107,41 +105,26 @@ export default function TerminalPage() {
               </div>
             </div>
           </SwipeSessionSwitcher>
-        )}
-        {mobileTab === "sessions" && (
-          <div className="flex h-full flex-col">
-            <SessionList
-              onCreateClick={() => setShowCreateDialog(true)}
-              className="flex-1"
-            />
-          </div>
-        )}
-        {mobileTab === "files" && (
-          <div className="flex h-full flex-col">
-            {/* #2: Consolidated — breadcrumb rendered inline inside FileTree */}
-            <FileTree
-              onFileSelect={handleFileSelect}
-              className="flex-1"
-              breadcrumbPath={currentPath}
-              onNavigate={handleBreadcrumbNavigate}
-            />
-          </div>
-        )}
-        {mobileTab === "settings" && (
+        </div>
+        <div className={cn("h-full flex-col", mobileTab === "sessions" ? "flex" : "hidden")}>
+          <SessionList
+            onCreateClick={() => setShowCreateDialog(true)}
+            className="flex-1"
+          />
+        </div>
+        <div className={cn("h-full flex-col", mobileTab === "files" ? "flex" : "hidden")}>
+          <FileTree
+            onFileSelect={handleFileSelect}
+            className="flex-1"
+            breadcrumbPath={currentPath}
+            onNavigate={handleBreadcrumbNavigate}
+          />
+        </div>
+        <div className={cn("h-full flex-col", mobileTab === "settings" ? "flex" : "hidden")}>
           <SettingsPanel className="h-full" />
-        )}
-        {/* #18: File preview on mobile via bottom sheet */}
-        {isMobile && (
-          <Sheet open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
-            <SheetContent side="bottom" className="h-[70vh] p-0">
-              <FilePreview
-                path={previewFile}
-                onClose={() => setPreviewFile(null)}
-                className="h-full"
-              />
-            </SheetContent>
-          </Sheet>
-        )}
+        </div>
+        {/* File editor overlay */}
+        {editorFile && <FileEditor />}
         <TmuxFab />
         <PaneListPanel />
         <PaneResizeControls />
@@ -184,14 +167,8 @@ export default function TerminalPage() {
         </div>
       </div>
 
-      {/* File preview panel (when open) */}
-      {previewFile && (
-        <FilePreview
-          path={previewFile}
-          onClose={() => setPreviewFile(null)}
-          className="w-80 shrink-0"
-        />
-      )}
+      {/* File editor overlay */}
+      {editorFile && <FileEditor />}
 
       <SessionCreateDialog
         open={showCreateDialog}

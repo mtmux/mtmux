@@ -19,6 +19,7 @@ export function AppShell({ header, toolbar, children, className }: AppShellProps
         "pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]",
         className,
       )}
+      style={{ touchAction: "manipulation" }}
     >
       {header && (
         <header className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">

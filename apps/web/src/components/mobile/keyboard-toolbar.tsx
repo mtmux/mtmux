@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { Search, Zap, Columns2, Rows2, ScrollText } from "lucide-react";
+import { Search, Zap, Columns2, Rows2, ScrollText, Clipboard, ClipboardPaste } from "lucide-react";
 import { cn } from "@repo/ui/lib/utils";
 import { triggerHaptic } from "@repo/ui/components/haptic-button";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -13,9 +13,10 @@ interface KeyboardToolbarProps {
   className?: string;
   /** #6: Callback to trigger terminal search */
   onSearchOpen?: () => void;
+  onCopy?: () => void;
 }
 
-export function KeyboardToolbar({ className, onSearchOpen }: KeyboardToolbarProps) {
+export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToolbarProps) {
   const { toolbarKeys, hapticEnabled } = useSettingsStore();
   const [stickyCtrl, setStickyCtrl] = useState(false);
   const [stickyAlt, setStickyAlt] = useState(false);
@@ -95,6 +96,63 @@ export function KeyboardToolbar({ className, onSearchOpen }: KeyboardToolbarProp
         className,
       )}
     >
+      {/* Signal buttons */}
+      <button
+        className={iconBtnClass}
+        onClick={() => {
+          if (hapticEnabled) triggerHaptic();
+          const client = getRelayClient();
+          client?.send({ type: "terminal:input", data: "\x03" });
+        }}
+      >
+        <span className="text-xs font-medium">^C</span>
+      </button>
+      <button
+        className={iconBtnClass}
+        onClick={() => {
+          if (hapticEnabled) triggerHaptic();
+          const client = getRelayClient();
+          client?.send({ type: "terminal:input", data: "\x04" });
+        }}
+      >
+        <span className="text-xs font-medium">^D</span>
+      </button>
+      <button
+        className={iconBtnClass}
+        onClick={() => {
+          if (hapticEnabled) triggerHaptic();
+          const client = getRelayClient();
+          client?.send({ type: "terminal:input", data: "\x1a" });
+        }}
+      >
+        <span className="text-xs font-medium">^Z</span>
+      </button>
+      <button
+        className={iconBtnClass}
+        onClick={async () => {
+          if (hapticEnabled) triggerHaptic();
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+              const client = getRelayClient();
+              client?.send({ type: "terminal:input", data: text });
+            }
+          } catch {}
+        }}
+      >
+        <ClipboardPaste className="h-4 w-4" />
+      </button>
+      {onCopy && (
+        <button
+          className={iconBtnClass}
+          onClick={() => {
+            if (hapticEnabled) triggerHaptic();
+            onCopy();
+          }}
+        >
+          <Clipboard className="h-4 w-4" />
+        </button>
+      )}
       {/* Search button */}
       {onSearchOpen && (
         <button className={iconBtnClass} onClick={onSearchOpen}>
