@@ -6,6 +6,16 @@ import { Card, CardContent } from "@repo/ui/components/ui/card";
 import { Badge } from "@repo/ui/components/ui/badge";
 import { Button } from "@repo/ui/components/ui/button";
 import { Input } from "@repo/ui/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/ui/components/ui/alert-dialog";
 import { cn } from "@repo/ui/lib/utils";
 import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
 import type { SessionInfo } from "@repo/protocol";
@@ -28,11 +38,10 @@ function timeAgo(dateStr: string): string {
 
 export function SessionCard({ session, isActive, onAttach, onKill }: SessionCardProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
-  // #17: Inline rename
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.name);
+  const [showKillConfirm, setShowKillConfirm] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // #18: Swipe-to-reveal actions
   const [swipeOffset, setSwipeOffset] = useState(0);
   const swipeStartX = useRef(0);
   const swipeStartY = useRef(0);
@@ -67,10 +76,9 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
   }, []);
 
   const triggerKill = useCallback(() => {
-    onKill(session.name);
-  }, [session.name, onKill]);
+    setShowKillConfirm(true);
+  }, []);
 
-  // #18: Swipe handlers for card
   const handleCardTouchStart = useCallback((e: React.TouchEvent) => {
     swipeStartX.current = e.touches[0]!.clientX;
     swipeStartY.current = e.touches[0]!.clientY;
@@ -81,7 +89,6 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
     const dx = e.touches[0]!.clientX - swipeStartX.current;
     const dy = e.touches[0]!.clientY - swipeStartY.current;
 
-    // Only allow left swipe
     if (!isSwiping.current && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
       isSwiping.current = true;
     }
@@ -102,7 +109,6 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
 
   return (
     <div className="relative overflow-hidden rounded-lg">
-      {/* Swipe action buttons — mobile only */}
       {isMobile && (
         <div className="absolute inset-y-0 right-0 flex">
           <button
@@ -186,7 +192,6 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
               </span>
             </div>
           </div>
-          {/* Desktop only: hover-reveal kill button */}
           {!isMobile && (
             <Button
               variant="ghost"
@@ -202,6 +207,25 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
           )}
         </CardContent>
       </Card>
+      <AlertDialog open={showKillConfirm} onOpenChange={setShowKillConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Kill session "{session.name}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently terminate the session and all its processes. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => onKill(session.name)}
+            >
+              Kill Session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

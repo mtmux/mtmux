@@ -16,10 +16,11 @@ interface SessionListProps {
 }
 
 export function SessionList({ onCreateClick, className }: SessionListProps) {
-  const { sessions, activeSessionId, setActiveSession } = useSessionStore();
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const [isLoading, setIsLoading] = useState(true);
 
-  // #7: Pull-to-refresh state
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const touchStartY = useRef(0);
@@ -30,7 +31,6 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
     getRelayClient()?.send({ type: "session:list" });
   }, []);
 
-  // Listen for session list responses to clear loading state
   useEffect(() => {
     const client = getRelayClient();
     if (!client) return;
@@ -52,7 +52,6 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
       if (typeof window !== "undefined") {
         localStorage.setItem("termbridge-last-session", name);
       }
-      // Always switch to terminal tab on mobile (fixes first-tap not focusing)
       useUiStore.getState().setMobileTab("terminal");
     },
     [setActiveSession],
@@ -62,7 +61,6 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
     getRelayClient()?.send({ type: "session:kill", name });
   }, []);
 
-  // #7: Pull-to-refresh handlers
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartY.current = e.touches[0]!.clientY;
   }, []);
@@ -103,7 +101,6 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
         </div>
       </div>
       <ScrollArea className="flex-1" ref={scrollRef}>
-        {/* #7: Pull-to-refresh indicator */}
         {(pullDistance > 0 || isRefreshing) && (
           <div
             className="flex items-center justify-center transition-all"
