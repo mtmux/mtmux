@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useCallback } from "react";
+import { useRef, useState, useCallback } from "react";
 import { cn } from "@repo/ui/lib/utils";
 import { useSessionStore } from "@/stores/session-store";
 import { usePaneStore } from "@/stores/pane-store";
@@ -19,19 +19,27 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
   const { gestures, hapticEnabled } = useSettingsStore();
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
+  const [swipeX, setSwipeX] = useState(0);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartX.current = e.touches[0]!.clientX;
     touchStartY.current = e.touches[0]!.clientY;
+    setSwipeX(0);
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    const dx = e.touches[0]!.clientX - touchStartX.current;
+    setSwipeX(dx);
   }, []);
 
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent) => {
+      setSwipeX(0);
       const dx = e.changedTouches[0]!.clientX - touchStartX.current;
       const dy = e.changedTouches[0]!.clientY - touchStartY.current;
 
       // Must be horizontal swipe (not vertical)
-      if (Math.abs(dx) < 80 || Math.abs(dy) > Math.abs(dx) * 0.5) return;
+      if (Math.abs(dx) < 100 || Math.abs(dy) > Math.abs(dx) * 0.5) return;
 
       // If session has >1 pane and pane swiping is enabled, swipe between panes
       if (gestures.swipeToSwitchPanes && panes.length > 1) {
@@ -90,8 +98,10 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
 
   return (
     <div
-      className={cn("relative touch-pan-y", className)}
+      className={cn("relative touch-pan-y transition-opacity duration-75", className)}
+      style={{ opacity: 1 - Math.abs(swipeX) / 400 }}
       onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
       {children}

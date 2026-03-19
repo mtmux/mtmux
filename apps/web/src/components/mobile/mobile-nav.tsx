@@ -20,19 +20,19 @@ const tabs: { id: MobileTab; label: string; icon: typeof Terminal }[] = [
 
 export function MobileNav({ activeTab, onTabChange, className }: MobileNavProps) {
   return (
-    <nav className={cn("flex items-center justify-around border-t pb-[env(safe-area-inset-bottom)]", className)}>
+    <nav className={cn("flex items-center justify-around border-t pb-[env(safe-area-inset-bottom)] landscape:py-0.5", className)}>
       {tabs.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           className={cn(
-            "flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px] transition-colors",
+            "flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px] transition-colors landscape:flex-row landscape:gap-1.5 landscape:py-1 landscape:text-[10px]",
             activeTab === id
               ? "text-primary"
               : "text-muted-foreground active:text-foreground",
           )}
           onClick={() => onTabChange(id)}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="h-5 w-5 landscape:h-4 landscape:w-4" />
           <span>{label}</span>
         </button>
       ))}

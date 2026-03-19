@@ -21,6 +21,7 @@ import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog"
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
+import { useMobileHistory } from "@/hooks/use-mobile-history";
 import { env } from "@/env";
 import { Terminal } from "lucide-react";
 
@@ -36,6 +37,8 @@ export default function TerminalLayout({
   const isMobile = useMediaQuery("(max-width: 768px)");
   const { status, latency } = useConnectionStore();
   const { activeSessionId } = useSessionStore();
+
+  useMobileHistory();
 
   // Auth guard - check token on mount
   useEffect(() => {
@@ -55,7 +58,7 @@ export default function TerminalLayout({
     }
   }, [activeSessionId]);
 
-  // Font size keyboard shortcuts (Ctrl+=/Ctrl+-/Ctrl+0)
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
@@ -69,6 +72,12 @@ export default function TerminalLayout({
         } else if (e.key === "0") {
           e.preventDefault();
           setFontSize(14);
+        } else if (e.key === "b") {
+          e.preventDefault();
+          useUiStore.getState().toggleSidebar();
+        } else if (e.key === "e") {
+          e.preventDefault();
+          useUiStore.getState().setMobileTab("files");
         }
       }
     };
