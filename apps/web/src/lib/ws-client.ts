@@ -33,6 +33,8 @@ export class RelayClient {
   private _reconnectCount = 0;
   // #15: Track last pong for zombie connection detection
   private lastPongAt = 0;
+  // #12: Queue messages while disconnected
+  private pendingMessages: ClientMessage[] = [];
 
   constructor(options: RelayClientOptions) {
     this.url = options.url;
@@ -87,6 +89,7 @@ export class RelayClient {
         this.reconnectDelay = MIN_RECONNECT_DELAY;
         this._reconnectCount = 0;
         this.startPing();
+        this.flushPendingMessages();
       }
 
       if (msg.type === "auth:failure") {
@@ -137,6 +140,11 @@ export class RelayClient {
   send(msg: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(serialize(msg));
+    } else if (msg.type !== "ping") {
+      this.pendingMessages.push(msg);
+      if (this.pendingMessages.length > 50) {
+        this.pendingMessages.shift();
+      }
     }
   }
 
@@ -184,6 +192,13 @@ export class RelayClient {
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
+    }
+  }
+
+  private flushPendingMessages(): void {
+    const messages = this.pendingMessages.splice(0);
+    for (const msg of messages) {
+      this.send(msg);
     }
   }
 }

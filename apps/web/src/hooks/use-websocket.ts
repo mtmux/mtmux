@@ -7,6 +7,7 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
+import { useFileStore } from "@/stores/file-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { toast } from "sonner";
 
@@ -110,9 +111,23 @@ export function useWebSocket(url: string, token: string) {
           paneStore.setWindows(msg.windows);
           break;
         }
+        case "file:write:result":
+          // Handled in file-editor component via onMessage subscription
+          break;
+        case "file:op:result": {
+          if (msg.success) {
+            toast.success(`${msg.op} succeeded: ${msg.path.split("/").pop()}`, { id: `fileop-${msg.op}-${msg.path}`, duration: 2000 });
+            // Refresh current directory listing
+            const { currentPath: dirPath } = useFileStore.getState();
+            globalClient?.send({ type: "file:list", path: dirPath });
+          } else {
+            toast.error(msg.error ?? `${msg.op} failed`);
+          }
+          break;
+        }
         case "error":
           // #14: Use toast IDs for dedup
-          toast.error(msg.message, { id: `err-${msg.code}` });
+          toast.error(msg.message, { id: `err-${msg.code}`, duration: 5000 });
           break;
       }
     };

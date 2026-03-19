@@ -3,6 +3,8 @@
 import React from "react";
 import { AlertTriangle, RefreshCw, Copy, RotateCcw } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
+import { useSessionStore } from "@/stores/session-store";
+import { usePaneStore } from "@/stores/pane-store";
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -43,6 +45,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   private handleRetry = () => {
     // #16: Reset active session to prevent re-crash loops
+    useSessionStore.getState().setActiveSession(null);
+    usePaneStore.getState().clearAll();
     this.setState({ hasError: false, error: null });
   };
 
