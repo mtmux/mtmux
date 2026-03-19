@@ -3,6 +3,7 @@ import type { ClientMessage, ServerMessage } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { sendJson } from "./ws-server.js";
 import type { ConnectionState } from "./connection-manager.js";
+import { broadcastToAll } from "./connection-manager.js";
 import { createPtyBridge } from "./pty-bridge.js";
 import * as tmux from "./tmux-manager.js";
 import * as files from "./file-service.js";
@@ -39,6 +40,7 @@ export async function routeMessage(
       case "session:create": {
         const session = await tmux.createSession(msg.name, msg.cwd, msg.command);
         send(ws, { type: "session:created", session });
+        broadcastToAll({ type: "session:created", session }, ws);
         break;
       }
 
@@ -53,6 +55,11 @@ export async function routeMessage(
         if (!exists) {
           sendError(ws, "SESSION_NOT_FOUND", `Session "${msg.name}" not found`);
           break;
+        }
+
+        if (msg.capture) {
+          const captured = await tmux.capturePane(msg.name);
+          send(ws, { type: "terminal:output", data: captured });
         }
 
         const bridge = createPtyBridge(msg.name, msg.size);
@@ -84,6 +91,7 @@ export async function routeMessage(
       case "session:kill": {
         await tmux.killSession(msg.name);
         send(ws, { type: "session:killed", name: msg.name });
+        broadcastToAll({ type: "session:killed", name: msg.name }, ws);
         break;
       }
 
@@ -94,9 +102,9 @@ export async function routeMessage(
           break;
         }
         await tmux.renameSession(msg.oldName, msg.newName);
-        // Return updated session list
         const sessions = await tmux.listSessions();
         send(ws, { type: "session:list", sessions });
+        broadcastToAll({ type: "session:list", sessions }, ws);
         break;
       }
 
@@ -204,6 +212,92 @@ export async function routeMessage(
         if (watcher) {
           watcher.close();
           conn.watchers.delete(msg.path);
+        }
+        break;
+      }
+
+      case "file:write": {
+        if (!files.isPathAllowed(msg.path)) {
+          sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
+          break;
+        }
+        try {
+          const { size } = await files.writeFile(msg.path, msg.content);
+          send(ws, { type: "file:write:result", path: msg.path, success: true, size });
+        } catch (e) {
+          send(ws, { type: "file:write:result", path: msg.path, success: false, error: e instanceof Error ? e.message : "Write failed" });
+        }
+        break;
+      }
+
+      case "file:create": {
+        if (!files.isPathAllowed(msg.path)) {
+          sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
+          break;
+        }
+        try {
+          await files.createFile(msg.path, msg.content);
+          send(ws, { type: "file:op:result", op: "create", path: msg.path, success: true });
+        } catch (e) {
+          send(ws, { type: "file:op:result", op: "create", path: msg.path, success: false, error: e instanceof Error ? e.message : "Create failed" });
+        }
+        break;
+      }
+
+      case "file:mkdir": {
+        if (!files.isPathAllowed(msg.path)) {
+          sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
+          break;
+        }
+        try {
+          await files.mkdir(msg.path);
+          send(ws, { type: "file:op:result", op: "mkdir", path: msg.path, success: true });
+        } catch (e) {
+          send(ws, { type: "file:op:result", op: "mkdir", path: msg.path, success: false, error: e instanceof Error ? e.message : "Mkdir failed" });
+        }
+        break;
+      }
+
+      case "file:delete": {
+        if (!files.isPathAllowed(msg.path)) {
+          sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
+          break;
+        }
+        try {
+          await files.deleteFile(msg.path);
+          send(ws, { type: "file:op:result", op: "delete", path: msg.path, success: true });
+        } catch (e) {
+          send(ws, { type: "file:op:result", op: "delete", path: msg.path, success: false, error: e instanceof Error ? e.message : "Delete failed" });
+        }
+        break;
+      }
+
+      case "file:rename": {
+        if (!files.isPathAllowed(msg.oldPath) || !files.isPathAllowed(msg.newPath)) {
+          sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
+          break;
+        }
+        try {
+          await files.renameFile(msg.oldPath, msg.newPath);
+          send(ws, { type: "file:op:result", op: "rename", path: msg.newPath, success: true });
+        } catch (e) {
+          send(ws, { type: "file:op:result", op: "rename", path: msg.newPath, success: false, error: e instanceof Error ? e.message : "Rename failed" });
+        }
+        break;
+      }
+
+      case "file:upload": {
+        if (!files.isPathAllowed(msg.path)) {
+          sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
+          break;
+        }
+        try {
+          await files.handleUpload(msg.path, msg.content, msg.final);
+          if (msg.final) {
+            send(ws, { type: "file:op:result", op: "upload", path: msg.path, success: true });
+          }
+        } catch (e) {
+          send(ws, { type: "file:op:result", op: "upload", path: msg.path, success: false, error: e instanceof Error ? e.message : "Upload failed" });
         }
         break;
       }

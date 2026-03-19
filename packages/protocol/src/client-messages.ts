@@ -36,6 +36,7 @@ export const SessionAttachMessage = z.object({
   type: z.literal("session:attach"),
   name: z.string(),
   size: TerminalSizeSchema.optional(),
+  capture: z.boolean().optional(),
 });
 
 export const SessionDetachMessage = z.object({
@@ -97,6 +98,42 @@ export const CommandClearMessage = z.object({
 
 export const CommandSuspendMessage = z.object({
   type: z.literal("command:suspend"),
+});
+
+// File write/management messages
+export const FileWriteMessage = z.object({
+  type: z.literal("file:write"),
+  path: z.string(),
+  content: z.string(),
+});
+
+export const FileCreateMessage = z.object({
+  type: z.literal("file:create"),
+  path: z.string(),
+  content: z.string().optional(),
+});
+
+export const FileMkdirMessage = z.object({
+  type: z.literal("file:mkdir"),
+  path: z.string(),
+});
+
+export const FileDeleteMessage = z.object({
+  type: z.literal("file:delete"),
+  path: z.string(),
+});
+
+export const FileRenameMessage = z.object({
+  type: z.literal("file:rename"),
+  oldPath: z.string(),
+  newPath: z.string(),
+});
+
+export const FileUploadMessage = z.object({
+  type: z.literal("file:upload"),
+  path: z.string(),
+  content: z.string(), // base64
+  final: z.boolean(),
 });
 
 // Pane messages
@@ -195,6 +232,12 @@ export const ClientMessage = z.discriminatedUnion("type", [
   FileStatMessage,
   FileWatchMessage,
   FileUnwatchMessage,
+  FileWriteMessage,
+  FileCreateMessage,
+  FileMkdirMessage,
+  FileDeleteMessage,
+  FileRenameMessage,
+  FileUploadMessage,
   CommandSendMessage,
   CommandInterruptMessage,
   CommandEofMessage,
@@ -234,6 +277,12 @@ export type FileReadMessage = z.infer<typeof FileReadMessage>;
 export type FileStatMessage = z.infer<typeof FileStatMessage>;
 export type FileWatchMessage = z.infer<typeof FileWatchMessage>;
 export type FileUnwatchMessage = z.infer<typeof FileUnwatchMessage>;
+export type FileWriteMessage = z.infer<typeof FileWriteMessage>;
+export type FileCreateMessage = z.infer<typeof FileCreateMessage>;
+export type FileMkdirMessage = z.infer<typeof FileMkdirMessage>;
+export type FileDeleteMessage = z.infer<typeof FileDeleteMessage>;
+export type FileRenameMessage = z.infer<typeof FileRenameMessage>;
+export type FileUploadMessage = z.infer<typeof FileUploadMessage>;
 export type CommandSendMessage = z.infer<typeof CommandSendMessage>;
 export type CommandInterruptMessage = z.infer<typeof CommandInterruptMessage>;
 export type CommandEofMessage = z.infer<typeof CommandEofMessage>;

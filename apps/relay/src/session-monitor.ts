@@ -1,3 +1,4 @@
+import type { SessionInfo } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { listSessions, sessionExists } from "./tmux-manager.js";
 import { config } from "./config.js";
@@ -8,6 +9,7 @@ export interface SessionMonitor {
   start(): void;
   stop(): void;
   onSessionExit(cb: (name: string) => void): void;
+  onSessionCreated(cb: (session: SessionInfo) => void): void;
   onSessionActivity(cb: (name: string, activity: string) => void): void;
   recordActivity(name: string): void;
   isIdle(name: string): boolean;
@@ -18,6 +20,7 @@ export function createSessionMonitor(): SessionMonitor {
   const knownSessions = new Set<string>();
   const lastActivity = new Map<string, number>();
   const exitCallbacks: Array<(name: string) => void> = [];
+  const createdCallbacks: Array<(session: SessionInfo) => void> = [];
   const activityCallbacks: Array<(name: string, activity: string) => void> = [];
   const idleTimeoutMs = config.idleTimeoutMinutes * 60 * 1000;
 
@@ -41,6 +44,7 @@ export function createSessionMonitor(): SessionMonitor {
         if (!knownSessions.has(session.name)) {
           knownSessions.add(session.name);
           lastActivity.set(session.name, Date.now());
+          for (const cb of createdCallbacks) cb(session);
         }
         for (const cb of activityCallbacks) {
           cb(session.name, session.activity);
@@ -66,6 +70,9 @@ export function createSessionMonitor(): SessionMonitor {
     },
     onSessionExit(cb) {
       exitCallbacks.push(cb);
+    },
+    onSessionCreated(cb) {
+      createdCallbacks.push(cb);
     },
     onSessionActivity(cb) {
       activityCallbacks.push(cb);

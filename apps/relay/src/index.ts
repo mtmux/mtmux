@@ -8,7 +8,7 @@ import { config } from "./config.js";
 import { createHttpServer, startHttpServer } from "./server.js";
 import { createWsServer, sendJson } from "./ws-server.js";
 import { authenticateMessage, createAuthTimeout } from "./auth.js";
-import { createConnection, removeConnection, getAllConnections } from "./connection-manager.js";
+import { createConnection, removeConnection, getAllConnections, broadcastToAll } from "./connection-manager.js";
 import { createRateLimiter } from "./rate-limiter.js";
 import { createSessionMonitor } from "./session-monitor.js";
 import { routeMessage } from "./message-router.js";
@@ -105,6 +105,10 @@ async function main() {
         sendJson(client, { type: "session:exited", name });
       }
     }
+  });
+
+  monitor.onSessionCreated((session) => {
+    broadcastToAll({ type: "session:created", session });
   });
 
   monitor.start();

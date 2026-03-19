@@ -1,5 +1,7 @@
 import type { WebSocket } from "ws";
+import type { ServerMessage } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
+import { sendJson } from "./ws-server.js";
 import type { PtyBridge } from "./pty-bridge.js";
 import type { DirectoryWatcher } from "./file-service.js";
 import type { RateLimiter } from "./rate-limiter.js";
@@ -68,4 +70,12 @@ export function getConnectionCount(): number {
 
 export function getAllConnections(): ConnectionState[] {
   return Array.from(connections.values());
+}
+
+export function broadcastToAll(msg: ServerMessage, excludeWs?: WebSocket): void {
+  for (const conn of connections.values()) {
+    if (!conn.authenticated) continue;
+    if (excludeWs && conn.ws === excludeWs) continue;
+    sendJson(conn.ws, msg);
+  }
 }

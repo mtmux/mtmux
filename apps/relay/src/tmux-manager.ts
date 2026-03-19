@@ -241,6 +241,7 @@ export async function killPane(paneId: string): Promise<void> {
 export async function createWindow(session: string, name?: string): Promise<void> {
   const args = [...tmuxArgs(), "new-window", "-t", session];
   if (name) args.push("-n", name);
+  args.push(config.tmuxDefaultShell);
   await execFileAsync("tmux", args);
   logger.info({ session, name }, "Created window");
 }
