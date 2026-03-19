@@ -8,6 +8,11 @@ import { config } from "./config.js";
 const logger = createLogger("relay:files");
 
 const MAX_FILE_SIZE = 100 * 1024; // 100KB
+const MAX_WRITE_SIZE = 1 * 1024 * 1024; // 1MB
+const MAX_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
+
+// Track in-progress uploads (path → accumulated size)
+const uploadSizes = new Map<string, number>();
 
 export function isPathAllowed(targetPath: string): boolean {
   const resolved = path.resolve(targetPath);
@@ -114,6 +119,75 @@ export async function getStats(filePath: string): Promise<FileStat> {
     isReadable: permissions.includes("r"),
     isWritable: permissions.includes("w"),
   };
+}
+
+export async function writeFile(filePath: string, content: string): Promise<{ size: number }> {
+  const resolved = assertPathAllowed(filePath);
+  const bytes = Buffer.byteLength(content, "utf-8");
+  if (bytes > MAX_WRITE_SIZE) {
+    throw new Error(`File too large to write (${bytes} bytes, max ${MAX_WRITE_SIZE})`);
+  }
+  await fs.access(resolved, fs.constants.W_OK);
+  await fs.writeFile(resolved, content, "utf-8");
+  return { size: bytes };
+}
+
+export async function createFile(filePath: string, content = ""): Promise<void> {
+  const resolved = assertPathAllowed(filePath);
+  // wx flag: create exclusive — fails if file exists
+  await fs.writeFile(resolved, content, { encoding: "utf-8", flag: "wx" });
+}
+
+export async function mkdir(dirPath: string): Promise<void> {
+  const resolved = assertPathAllowed(dirPath);
+  await fs.mkdir(resolved, { recursive: false });
+}
+
+export async function deleteFile(filePath: string): Promise<void> {
+  const resolved = assertPathAllowed(filePath);
+  // Guard: cannot delete an allowed root
+  const isRoot = config.allowedPaths.some(
+    (allowed) => path.resolve(allowed) === resolved,
+  );
+  if (isRoot) {
+    throw new Error("Cannot delete an allowed root directory");
+  }
+  await fs.rm(resolved, { recursive: true });
+}
+
+export async function renameFile(oldPath: string, newPath: string): Promise<void> {
+  const resolvedOld = assertPathAllowed(oldPath);
+  const resolvedNew = assertPathAllowed(newPath);
+  await fs.rename(resolvedOld, resolvedNew);
+}
+
+export async function handleUpload(
+  filePath: string,
+  base64Chunk: string,
+  final: boolean,
+): Promise<void> {
+  const resolved = assertPathAllowed(filePath);
+  const chunk = Buffer.from(base64Chunk, "base64");
+
+  const currentSize = uploadSizes.get(resolved) ?? 0;
+  const newSize = currentSize + chunk.length;
+  if (newSize > MAX_UPLOAD_SIZE) {
+    uploadSizes.delete(resolved);
+    throw new Error(`Upload too large (${newSize} bytes, max ${MAX_UPLOAD_SIZE})`);
+  }
+
+  if (currentSize === 0) {
+    // First chunk — create/truncate
+    await fs.writeFile(resolved, chunk);
+  } else {
+    await fs.appendFile(resolved, chunk);
+  }
+
+  if (final) {
+    uploadSizes.delete(resolved);
+  } else {
+    uploadSizes.set(resolved, newSize);
+  }
 }
 
 export interface DirectoryWatcher {

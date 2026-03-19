@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
 import { TerminalView, type TerminalViewHandle } from "@/components/terminal/terminal-view";
@@ -8,7 +9,6 @@ import { TerminalToolbar } from "@/components/terminal/terminal-toolbar";
 import { SessionList } from "@/components/session/session-list";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { FileTree } from "@/components/files/file-tree";
-import { FileEditor } from "@/components/files/file-editor";
 import { SettingsPanel } from "@/components/settings/settings-panel";
 import { SwipeSessionSwitcher } from "@/components/mobile/swipe-session-switcher";
 import { WindowTabs } from "@/components/mobile/window-tabs";
@@ -17,21 +17,35 @@ import { PaneListPanel } from "@/components/mobile/pane-list-panel";
 import { PaneResizeControls } from "@/components/mobile/pane-resize-controls";
 import { PinchZoomHandler } from "@/components/mobile/pinch-zoom-handler";
 import { cn } from "@repo/ui/lib/utils";
+import { PanelLeftClose, PanelLeft } from "lucide-react";
+import { Button } from "@repo/ui/components/ui/button";
 import { useSessionStore } from "@/stores/session-store";
 import { useFileStore } from "@/stores/file-store";
 import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
+const FileEditor = dynamic(
+  () => import("@/components/files/file-editor").then((m) => ({ default: m.FileEditor })),
+  { ssr: false },
+);
+
 export default function TerminalPage() {
   const router = useRouter();
   const isMobile = useMediaQuery("(max-width: 768px)");
-  const { activeSessionId } = useSessionStore();
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const { setSelectedFile, editorFile, openEditor } = useFileStore();
-  const { mobileTab, setMobileTab } = useUiStore();
+  const setSelectedFile = useFileStore((s) => s.setSelectedFile);
+  const editorFile = useFileStore((s) => s.editorFile);
+  const openEditor = useFileStore((s) => s.openEditor);
+  const mobileTab = useUiStore((s) => s.mobileTab);
+  const setMobileTab = useUiStore((s) => s.setMobileTab);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const terminalRef = useRef<TerminalViewHandle>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const { currentPath, setCurrentPath, setIsLoading } = useFileStore();
+  const currentPath = useFileStore((s) => s.currentPath);
+  const setCurrentPath = useFileStore((s) => s.setCurrentPath);
+  const setIsLoading = useFileStore((s) => s.setIsLoading);
 
   // #3: Auto-switch to terminal tab on session attach
   useEffect(() => {
@@ -140,11 +154,33 @@ export default function TerminalPage() {
   return (
     <div className="flex h-full">
       {/* Session sidebar */}
-      <div className="flex w-64 shrink-0 flex-col border-r">
-        <SessionList
-          onCreateClick={() => setShowCreateDialog(true)}
-          className="flex-1"
-        />
+      <div
+        className={cn(
+          "flex shrink-0 flex-col border-r transition-[width] duration-200",
+          sidebarCollapsed ? "w-12" : "w-64",
+        )}
+      >
+        <div className="flex items-center justify-between border-b px-1 py-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeft className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+        {!sidebarCollapsed && (
+          <SessionList
+            onCreateClick={() => setShowCreateDialog(true)}
+            className="flex-1"
+          />
+        )}
       </div>
 
       {/* Main terminal area */}

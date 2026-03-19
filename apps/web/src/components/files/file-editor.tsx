@@ -1,0 +1,319 @@
+"use client";
+
+import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  X,
+  Save,
+  WrapText,
+  Terminal,
+  AlertTriangle,
+  Lock,
+} from "lucide-react";
+import { Button } from "@repo/ui/components/ui/button";
+import { Badge } from "@repo/ui/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@repo/ui/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/ui/components/ui/alert-dialog";
+import { cn } from "@repo/ui/lib/utils";
+import { toast } from "sonner";
+import { MonacoEditor } from "./monaco-editor";
+import { getMonacoLanguage, getLanguageLabel } from "@/lib/file-utils";
+import { useFileStore } from "@/stores/file-store";
+import { useSessionStore } from "@/stores/session-store";
+import { getRelayClient } from "@/hooks/use-websocket";
+
+export function FileEditor() {
+  const { editorFile, editorTruncated, isSaving, closeEditor, setIsSaving } =
+    useFileStore();
+  const { activeSessionId } = useSessionStore();
+
+  const [savedContent, setSavedContent] = useState<string | null>(null);
+  const [currentContent, setCurrentContent] = useState<string | null>(null);
+  const [isReadOnly, setIsReadOnly] = useState(false);
+  const [fileStat, setFileStat] = useState<{
+    size: number;
+    permissions: string;
+    modified: string;
+    isWritable: boolean;
+  } | null>(null);
+  const [wordWrap, setWordWrap] = useState<"on" | "off">("on");
+  const [showDiscardDialog, setShowDiscardDialog] = useState(false);
+  const [externalChange, setExternalChange] = useState(false);
+
+  const unsubRef = useRef<(() => void) | null>(null);
+
+  const isModified =
+    savedContent !== null &&
+    currentContent !== null &&
+    savedContent !== currentContent;
+
+  // Load file on mount
+  useEffect(() => {
+    if (!editorFile) return;
+
+    const client = getRelayClient();
+    if (!client) return;
+
+    // Reset state
+    setSavedContent(null);
+    setCurrentContent(null);
+    setIsReadOnly(false);
+    setFileStat(null);
+    setExternalChange(false);
+
+    client.send({ type: "file:read", path: editorFile });
+    client.send({ type: "file:stat", path: editorFile });
+    client.send({ type: "file:watch", path: editorFile });
+
+    const unsub = client.onMessage((msg) => {
+      if (msg.type === "file:content" && msg.path === editorFile) {
+        setSavedContent(msg.content);
+        setCurrentContent(msg.content);
+        if (msg.truncated) {
+          setIsReadOnly(true);
+        }
+      }
+      if (msg.type === "file:stat" && msg.stat.path === editorFile) {
+        setFileStat({
+          size: msg.stat.size,
+          permissions: msg.stat.permissions,
+          modified: msg.stat.modified,
+          isWritable: msg.stat.isWritable,
+        });
+        if (!msg.stat.isWritable) {
+          setIsReadOnly(true);
+        }
+      }
+      if (msg.type === "file:write:result" && msg.path === editorFile) {
+        setIsSaving(false);
+        if (msg.success) {
+          setSavedContent(currentContent);
+          toast.success("File saved");
+        } else {
+          toast.error(msg.error ?? "Save failed");
+        }
+      }
+      if (msg.type === "file:changed" && msg.path === editorFile && msg.event === "change") {
+        // File changed externally
+        if (isModified) {
+          setExternalChange(true);
+        } else {
+          // Auto-reload if no local changes
+          client.send({ type: "file:read", path: editorFile });
+        }
+      }
+    });
+
+    unsubRef.current = unsub;
+
+    return () => {
+      unsub();
+      client.send({ type: "file:unwatch", path: editorFile });
+    };
+  }, [editorFile]);
+
+  const handleSave = useCallback(() => {
+    if (!editorFile || currentContent === null || isReadOnly) return;
+    const client = getRelayClient();
+    if (!client) return;
+    setIsSaving(true);
+    client.send({ type: "file:write", path: editorFile, content: currentContent });
+  }, [editorFile, currentContent, isReadOnly, setIsSaving]);
+
+  const handleClose = useCallback(() => {
+    if (isModified) {
+      setShowDiscardDialog(true);
+    } else {
+      closeEditor();
+    }
+  }, [isModified, closeEditor]);
+
+  const handleReload = useCallback(() => {
+    if (!editorFile) return;
+    const client = getRelayClient();
+    if (!client) return;
+    client.send({ type: "file:read", path: editorFile });
+    setExternalChange(false);
+  }, [editorFile]);
+
+  const handleOpenInNewSession = useCallback(() => {
+    if (!editorFile) return;
+    const client = getRelayClient();
+    if (!client) return;
+    const dir = editorFile.substring(0, editorFile.lastIndexOf("/"));
+    const fileName = editorFile.split("/").pop() ?? "edit";
+    client.send({
+      type: "session:create",
+      name: `edit-${fileName}`,
+      cwd: dir,
+    });
+    closeEditor();
+  }, [editorFile, closeEditor]);
+
+  const handleSendToTerminal = useCallback(() => {
+    if (!editorFile || !activeSessionId) return;
+    const client = getRelayClient();
+    if (!client) return;
+    client.send({ type: "command:send", command: `vim ${editorFile}` });
+    closeEditor();
+  }, [editorFile, activeSessionId, closeEditor]);
+
+  if (!editorFile) return null;
+
+  const fileName = editorFile.split("/").pop() ?? "";
+  const language = getMonacoLanguage(editorFile);
+  const languageLabel = getLanguageLabel(editorFile);
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 flex flex-col bg-background">
+        {/* Toolbar */}
+        <div className="flex items-center gap-2 border-b px-3 py-2">
+          <span className="flex-1 truncate text-sm font-medium">
+            {fileName}
+            {isModified && (
+              <span className="ml-1 text-orange-500" title="Unsaved changes">
+                ●
+              </span>
+            )}
+          </span>
+          <Badge variant="secondary" className="text-[10px] shrink-0">
+            {languageLabel}
+          </Badge>
+          {(isReadOnly || editorTruncated) && (
+            <Badge variant="outline" className="text-[10px] shrink-0 gap-1">
+              <Lock className="h-2.5 w-2.5" />
+              {editorTruncated ? "Truncated" : "Read-only"}
+            </Badge>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={() => setWordWrap((w) => (w === "on" ? "off" : "on"))}
+            title="Toggle word wrap"
+          >
+            <WrapText className={cn("h-3.5 w-3.5", wordWrap === "on" && "text-primary")} />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+                <Terminal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={handleOpenInNewSession}>
+                Open in new session
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleSendToTerminal}
+                disabled={!activeSessionId}
+              >
+                Send to current session (vim)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {!isReadOnly && (
+            <Button
+              variant="default"
+              size="sm"
+              className="h-7 gap-1 shrink-0"
+              onClick={handleSave}
+              disabled={!isModified || isSaving}
+            >
+              <Save className="h-3 w-3" />
+              {isSaving ? "Saving..." : "Save"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={handleClose}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {/* External change banner */}
+        {externalChange && (
+          <div className="flex items-center gap-2 border-b bg-yellow-500/10 px-3 py-1.5 text-xs">
+            <AlertTriangle className="h-3.5 w-3.5 text-yellow-600" />
+            <span>File changed on disk.</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-xs"
+              onClick={handleReload}
+            >
+              Reload
+            </Button>
+          </div>
+        )}
+
+        {/* Monaco Editor */}
+        <div className="flex-1 overflow-hidden">
+          {currentContent !== null ? (
+            <MonacoEditor
+              content={currentContent}
+              language={language}
+              readOnly={isReadOnly}
+              onChange={setCurrentContent}
+              onSave={handleSave}
+              wordWrap={wordWrap}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <span className="text-sm text-muted-foreground">Loading...</span>
+            </div>
+          )}
+        </div>
+
+        {/* Status bar */}
+        {fileStat && (
+          <div className="flex items-center gap-3 border-t px-3 py-1 text-[10px] text-muted-foreground">
+            <span>{fileStat.size} bytes</span>
+            <span>{fileStat.permissions}</span>
+            <span>{new Date(fileStat.modified).toLocaleString()}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Discard confirmation */}
+      <AlertDialog open={showDiscardDialog} onOpenChange={setShowDiscardDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsaved changes</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes to {fileName}. Are you sure you want to close?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowDiscardDialog(false);
+                closeEditor();
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}

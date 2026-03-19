@@ -85,6 +85,23 @@ export const FileChangedMessage = z.object({
   event: z.enum(["add", "change", "unlink", "addDir", "unlinkDir"]),
 });
 
+// File write/operation results
+export const FileWriteResultMessage = z.object({
+  type: z.literal("file:write:result"),
+  path: z.string(),
+  success: z.boolean(),
+  error: z.string().optional(),
+  size: z.number().optional(),
+});
+
+export const FileOpResultMessage = z.object({
+  type: z.literal("file:op:result"),
+  op: z.enum(["create", "mkdir", "delete", "rename", "upload"]),
+  path: z.string(),
+  success: z.boolean(),
+  error: z.string().optional(),
+});
+
 // Pane/Window response messages
 export const PaneListResponse = z.object({
   type: z.literal("pane:list"),
@@ -126,6 +143,8 @@ export const ServerMessage = z.discriminatedUnion("type", [
   FileContentResponse,
   FileStatResponse,
   FileChangedMessage,
+  FileWriteResultMessage,
+  FileOpResultMessage,
   PaneListResponse,
   WindowListResponse,
   PaneChangedMessage,
@@ -148,6 +167,8 @@ export type FileListResponse = z.infer<typeof FileListResponse>;
 export type FileContentResponse = z.infer<typeof FileContentResponse>;
 export type FileStatResponse = z.infer<typeof FileStatResponse>;
 export type FileChangedMessage = z.infer<typeof FileChangedMessage>;
+export type FileWriteResultMessage = z.infer<typeof FileWriteResultMessage>;
+export type FileOpResultMessage = z.infer<typeof FileOpResultMessage>;
 export type PaneListResponse = z.infer<typeof PaneListResponse>;
 export type WindowListResponse = z.infer<typeof WindowListResponse>;
 export type PaneChangedMessage = z.infer<typeof PaneChangedMessage>;

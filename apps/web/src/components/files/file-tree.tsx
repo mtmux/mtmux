@@ -114,6 +114,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
   const [filter, setFilter] = useState("");
   const [inlineInput, setInlineInput] = useState<{ type: "file" | "folder" | "rename"; value: string; path?: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inlineInputRef = useRef<HTMLInputElement>(null);
 
@@ -250,6 +251,22 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
   const handleRename = useCallback((entry: FileEntry) => {
     setInlineInput({ type: "rename", value: entry.name, path: entry.path });
   }, []);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
+    e.preventDefault();
+    setContextMenu({ entry, x: e.clientX, y: e.clientY });
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+    };
+  }, [contextMenu]);
 
   const handleCdInTerminal = useCallback(
     (path: string) => {
@@ -403,7 +420,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
               const isRenaming = inlineInput?.type === "rename" && inlineInput.path === entry.path;
 
               return (
-                <div key={entry.path} className="group flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent/50 transition-colors">
+                <div key={entry.path} className="group flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent/50 transition-colors" onContextMenu={(e) => handleContextMenu(e, entry)}>
                   {isRenaming ? (
                     <>
                       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -497,6 +514,47 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           </p>
         )}
       </ScrollArea>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[160px] rounded-md border bg-popover p-1 shadow-md"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          {contextMenu.entry.type === "file" && (
+            <button
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+              onClick={() => { openEditor(contextMenu.entry.path); setContextMenu(null); }}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open in Editor
+            </button>
+          )}
+          {contextMenu.entry.type === "directory" && (
+            <button
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+              onClick={() => { handleCdInTerminal(contextMenu.entry.path); setContextMenu(null); }}
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              cd in Terminal
+            </button>
+          )}
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+            onClick={() => { handleRename(contextMenu.entry); setContextMenu(null); }}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            Rename
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-accent"
+            onClick={() => { setDeleteTarget(contextMenu.entry); setContextMenu(null); }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
+        </div>
+      )}
 
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>

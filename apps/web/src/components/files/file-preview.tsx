@@ -8,42 +8,12 @@ import { Badge } from "@repo/ui/components/ui/badge";
 import { cn } from "@repo/ui/lib/utils";
 import { getRelayClient } from "@/hooks/use-websocket";
 import { useFileStore } from "@/stores/file-store";
+import { getLanguageLabel } from "@/lib/file-utils";
 
 interface FilePreviewProps {
   path: string | null;
   onClose: () => void;
   className?: string;
-}
-
-function getLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase();
-  const langMap: Record<string, string> = {
-    ts: "typescript",
-    tsx: "tsx",
-    js: "javascript",
-    jsx: "jsx",
-    py: "python",
-    go: "go",
-    rs: "rust",
-    java: "java",
-    c: "c",
-    cpp: "cpp",
-    rb: "ruby",
-    php: "php",
-    sh: "bash",
-    bash: "bash",
-    zsh: "bash",
-    yaml: "yaml",
-    yml: "yaml",
-    json: "json",
-    toml: "toml",
-    md: "markdown",
-    css: "css",
-    html: "html",
-    sql: "sql",
-    dockerfile: "dockerfile",
-  };
-  return langMap[ext ?? ""] ?? "text";
 }
 
 export function FilePreview({ path, onClose, className }: FilePreviewProps) {
@@ -78,7 +48,7 @@ export function FilePreview({ path, onClose, className }: FilePreviewProps) {
   if (!path) return null;
 
   const fileName = path.split("/").pop() ?? "";
-  const language = getLanguage(path);
+  const language = getLanguageLabel(path);
 
   const handleCopy = async () => {
     if (fileContent) {

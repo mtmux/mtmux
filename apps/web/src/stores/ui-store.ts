@@ -6,10 +6,12 @@ interface UiStore {
   paneListOpen: boolean;
   fabOpen: boolean;
   resizeModeActive: boolean;
+  sidebarCollapsed: boolean;
   setMobileTab: (tab: MobileTab) => void;
   setPaneListOpen: (open: boolean) => void;
   setFabOpen: (open: boolean) => void;
   setResizeModeActive: (active: boolean) => void;
+  toggleSidebar: () => void;
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -17,8 +19,10 @@ export const useUiStore = create<UiStore>((set) => ({
   paneListOpen: false,
   fabOpen: false,
   resizeModeActive: false,
+  sidebarCollapsed: false,
   setMobileTab: (mobileTab) => set({ mobileTab }),
   setPaneListOpen: (paneListOpen) => set({ paneListOpen }),
   setFabOpen: (fabOpen) => set({ fabOpen }),
   setResizeModeActive: (resizeModeActive) => set({ resizeModeActive }),
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 }));
