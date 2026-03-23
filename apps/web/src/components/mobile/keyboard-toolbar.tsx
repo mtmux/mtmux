@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { Search, Zap, Columns2, Rows2, ScrollText, Clipboard, ClipboardPaste } from "lucide-react";
+import { Search, Zap, Columns2, Rows2, ScrollText, Clipboard, ClipboardPaste, ZoomIn, ZoomOut } from "lucide-react";
 import { cn } from "@repo/ui/lib/utils";
 import { triggerHaptic } from "@repo/ui/components/haptic-button";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useCommandStore } from "@/stores/command-store";
 import { usePaneStore } from "@/stores/pane-store";
+import { useTerminalStore } from "@/stores/terminal-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
 interface KeyboardToolbarProps {
@@ -129,6 +130,7 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
       </button>
       <button
         className={iconBtnClass}
+        aria-label="Paste"
         onClick={async () => {
           if (hapticEnabled) triggerHaptic();
           try {
@@ -145,6 +147,7 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
       {onCopy && (
         <button
           className={iconBtnClass}
+          aria-label="Copy"
           onClick={() => {
             if (hapticEnabled) triggerHaptic();
             onCopy();
@@ -155,13 +158,14 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
       )}
       {/* Search button */}
       {onSearchOpen && (
-        <button className={iconBtnClass} onClick={onSearchOpen}>
+        <button className={iconBtnClass} onClick={onSearchOpen} aria-label="Search">
           <Search className="h-4 w-4" />
         </button>
       )}
       {/* Command palette */}
       <button
         className={iconBtnClass}
+        aria-label="Command palette"
         onClick={() => useCommandStore.getState().setPaletteOpen(true)}
       >
         <Zap className="h-4 w-4" />
@@ -169,6 +173,7 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
       {/* Split horizontal */}
       <button
         className={iconBtnClass}
+        aria-label="Split horizontally"
         onClick={() => {
           getRelayClient()?.send({ type: "pane:split", direction: "h" });
           if (useSettingsStore.getState().autoZoom) {
@@ -182,6 +187,7 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
       {/* Split vertical */}
       <button
         className={iconBtnClass}
+        aria-label="Split vertically"
         onClick={() => {
           getRelayClient()?.send({ type: "pane:split", direction: "v" });
           if (useSettingsStore.getState().autoZoom) {
@@ -198,6 +204,7 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
           iconBtnClass,
           copyModeActive && "border-primary bg-primary/20 text-primary",
         )}
+        aria-label="Toggle copy mode"
         onClick={() => {
           getRelayClient()?.send({ type: "tmux:copy-mode" });
           setCopyModeActive((prev) => !prev);
@@ -205,6 +212,29 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
         }}
       >
         <ScrollText className="h-4 w-4" />
+      </button>
+      {/* Zoom controls */}
+      <button
+        className={iconBtnClass}
+        aria-label="Decrease font size"
+        onClick={() => {
+          const { fontSize, setFontSize } = useTerminalStore.getState();
+          setFontSize(Math.max(8, fontSize - 1));
+          if (hapticEnabled) triggerHaptic();
+        }}
+      >
+        <ZoomOut className="h-4 w-4" />
+      </button>
+      <button
+        className={iconBtnClass}
+        aria-label="Increase font size"
+        onClick={() => {
+          const { fontSize, setFontSize } = useTerminalStore.getState();
+          setFontSize(Math.min(24, fontSize + 1));
+          if (hapticEnabled) triggerHaptic();
+        }}
+      >
+        <ZoomIn className="h-4 w-4" />
       </button>
       {visibleKeys.map((key) => {
         const isSticky =

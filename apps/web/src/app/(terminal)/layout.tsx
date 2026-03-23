@@ -6,19 +6,19 @@ import { AppShell } from "@repo/ui/components/app-shell";
 import { cn } from "@repo/ui/lib/utils";
 import { ThemeToggle } from "@repo/ui/components/theme-toggle";
 import { ConnectionStatus } from "@repo/ui/components/connection-status";
-import { useWebSocket } from "@/hooks/use-websocket";
+import { useWebSocket, getRelayClient } from "@/hooks/use-websocket";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
-import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
+import { useStableMediaQuery } from "@repo/ui/hooks/use-media-query";
 import { MobileNav } from "@/components/mobile/mobile-nav";
 import { KeyboardToolbar } from "@/components/mobile/keyboard-toolbar";
 import { MobileCommandBar } from "@/components/mobile/mobile-command-bar";
 import { useUiStore } from "@/stores/ui-store";
-import { useTerminalStore } from "@/stores/terminal-store";
+import { useTerminalStore, getDefaultFontSize, clampFontSize } from "@/stores/terminal-store";
 import { CommandPalette } from "@/components/command/command-palette";
-import { ConnectionOverlay } from "@/components/connection-overlay";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { AlertBanner } from "@/components/alert-banner";
 import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { useMobileHistory } from "@/hooks/use-mobile-history";
@@ -34,8 +34,8 @@ export default function TerminalLayout({
   const [token, setToken] = useState<string | null>(null);
   const { mobileTab, setMobileTab } = useUiStore();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const isMobile = useMediaQuery("(max-width: 768px)");
-  const { status, latency } = useConnectionStore();
+  const isMobile = useStableMediaQuery("(max-width: 768px)");
+  const { status, latency, reconnectCount } = useConnectionStore();
   const { activeSessionId } = useSessionStore();
 
   useMobileHistory();
@@ -65,13 +65,13 @@ export default function TerminalLayout({
         const { fontSize, setFontSize } = useTerminalStore.getState();
         if (e.key === "=" || e.key === "+") {
           e.preventDefault();
-          setFontSize(Math.min(24, fontSize + 1));
+          setFontSize(clampFontSize(fontSize + 1));
         } else if (e.key === "-") {
           e.preventDefault();
-          setFontSize(Math.max(8, fontSize - 1));
+          setFontSize(clampFontSize(fontSize - 1));
         } else if (e.key === "0") {
           e.preventDefault();
-          setFontSize(14);
+          setFontSize(getDefaultFontSize());
         } else if (e.key === "b") {
           e.preventDefault();
           useUiStore.getState().toggleSidebar();
@@ -120,8 +120,17 @@ export default function TerminalLayout({
       <ConnectionStatus
         status={connectionStatusType}
         latency={latency ?? undefined}
+        reconnectCount={reconnectCount}
+        onReconnect={() => {
+          const client = getRelayClient();
+          if (client) {
+            client.disconnect();
+            client.connect();
+          }
+        }}
         className="ml-1"
       />
+      <AlertBanner />
       {!isMobile && (
         <SessionTabs
           onCreateClick={() => setShowCreateDialog(true)}
@@ -151,7 +160,6 @@ export default function TerminalLayout({
         {children}
       </ErrorBoundary>
       <CommandPalette />
-      <ConnectionOverlay />
       <KeyboardShortcutsDialog />
       <SessionCreateDialog
         open={showCreateDialog}

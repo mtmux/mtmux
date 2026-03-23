@@ -10,11 +10,10 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { getTerminalTheme, terminalThemeToXterm } from "@repo/ui/terminal-themes";
 import { useTerminalStore } from "@/stores/terminal-store";
-import { useConnectionStore } from "@/stores/connection-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getRelayClient } from "@/hooks/use-websocket";
-import { Terminal, Loader2, Plus, WifiOff } from "lucide-react";
+import { Terminal, Plus } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { cn } from "@repo/ui/lib/utils";
 import type { ServerMessage } from "@repo/protocol";
@@ -37,11 +36,18 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     const terminalRef = useRef<XTerm | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const searchAddonRef = useRef<SearchAddon | null>(null);
+    const webglAddonRef = useRef<WebglAddon | null>(null);
     const attachedSessionRef = useRef<string | null>(null);
+    const sessionReadyRef = useRef(false);
+    const pendingSessionRef = useRef<string | null>(null);
+    const recoveryRef = useRef<{
+      debounceTimer: ReturnType<typeof setTimeout> | null;
+      atlasDisposable: { dispose: () => void } | null;
+      rafIds: number[];
+      timerIds: ReturnType<typeof setTimeout>[];
+    }>({ debounceTimer: null, atlasDisposable: null, rafIds: [], timerIds: [] });
     const { fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback } =
       useTerminalStore();
-    const status = useConnectionStore((s) => s.status);
-
     useImperativeHandle(ref, () => ({
       search: (term: string) => {
         searchAddonRef.current?.findNext(term);
@@ -84,17 +90,96 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       terminal.unicode.activeVersion = "11";
       terminal.open(containerRef.current);
 
-      try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-          webglAddon.dispose();
-        });
-        terminal.loadAddon(webglAddon);
-      } catch {
-        // WebGL not supported, using default canvas renderer
+      // Patch xterm's RenderService.dimensions getter to be null-safe.
+      // xterm.js 5.5.0 has a bug where `_renderer.value!.dimensions` uses a
+      // non-null assertion, but `_renderer.value` CAN be undefined when the
+      // WebGL addon is being loaded (replacing the canvas renderer) and the
+      // Viewport's deferred `setTimeout(() => syncScrollArea())` fires during
+      // the swap. This causes "Cannot read properties of undefined (reading
+      // 'dimensions')" from RenderService.ts:50 / Viewport.ts:84.
+      const core = (terminal as any)._core;
+      if (core?._renderService) {
+        const rs = core._renderService;
+        const proto = Object.getPrototypeOf(rs);
+        const desc = Object.getOwnPropertyDescriptor(proto, "dimensions");
+        if (desc?.get) {
+          let lastValidDimensions: any = null;
+          Object.defineProperty(rs, "dimensions", {
+            get() {
+              if (this._renderer?.value) {
+                lastValidDimensions = this._renderer.value.dimensions;
+                return lastValidDimensions;
+              }
+              // Return last-known-good dims (allows FitAddon to still compute layout)
+              // Fall back to safe zeros only if no dimensions have ever been captured
+              if (lastValidDimensions) {
+                return lastValidDimensions;
+              }
+              return {
+                css: { canvas: { width: 0, height: 0 }, cell: { width: 0, height: 0 } },
+                device: {
+                  canvas: { width: 0, height: 0 },
+                  cell: { width: 0, height: 0 },
+                  char: { width: 0, height: 0, top: 0, left: 0 },
+                },
+              };
+            },
+            configurable: true,
+          });
+        }
       }
 
-      fitAddon.fit();
+      // Safe fit wrapper — renderer may not be initialized during deferred calls
+      const safeFit = () => {
+        try {
+          fitAddon.fit();
+        } catch {
+          // Renderer not ready — ignore
+        }
+      };
+
+      let webglAddon: WebglAddon | null = null;
+      try {
+        webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => {
+          try {
+            webglAddon?.dispose();
+          } catch {
+            // Already disposed
+          }
+          webglAddon = null;
+          webglAddonRef.current = null;
+        });
+        terminal.loadAddon(webglAddon);
+        webglAddonRef.current = webglAddon;
+      } catch {
+        // WebGL not supported, using default canvas renderer
+        webglAddon = null;
+        webglAddonRef.current = null;
+      }
+
+      // Initial fit — if container has dimensions, fit immediately; otherwise
+      // retry over several rAF frames (container may be 0-height at mount due
+      // to CSS layout settling, mobile tab visibility, etc.)
+      if (containerRef.current.offsetWidth > 0 && containerRef.current.offsetHeight > 0) {
+        safeFit();
+      } else {
+        const delays = [0, 50, 100, 200, 400, 800, 1500];
+        let attempt = 0;
+        const retryFit = () => {
+          if (attempt >= delays.length) return;
+          const delay = delays[attempt++];
+          const timerId = setTimeout(() => {
+            if (containerRef.current && containerRef.current.offsetWidth > 0 && containerRef.current.offsetHeight > 0) {
+              safeFit();
+            } else {
+              retryFit();
+            }
+          }, delay);
+          recoveryRef.current.timerIds.push(timerId);
+        };
+        retryFit();
+      }
 
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -116,25 +201,91 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         }
       });
 
-      // Debounced ResizeObserver
+      // Debounced ResizeObserver with double-timeout for CSS transitions
       let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+      let transitionTimer: ReturnType<typeof setTimeout> | null = null;
       const resizeObserver = new ResizeObserver(() => {
         if (resizeTimer) clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          fitAddon.fit();
-        }, 100);
+        resizeTimer = setTimeout(() => safeFit(), 100);
+        // Second fit after CSS transitions settle (sidebar toggle is 200ms)
+        if (transitionTimer) clearTimeout(transitionTimer);
+        transitionTimer = setTimeout(() => safeFit(), 250);
       });
       resizeObserver.observe(containerRef.current);
 
+      // Window resize handler — catches devtools responsive toggle, window resize
+      let windowResizeTimer: ReturnType<typeof setTimeout> | null = null;
+      const handleWindowResize = () => {
+        if (windowResizeTimer) clearTimeout(windowResizeTimer);
+        windowResizeTimer = setTimeout(() => safeFit(), 100);
+      };
+      window.addEventListener("resize", handleWindowResize);
+
+      // Orientation change handler for mobile
+      const handleOrientationChange = () => {
+        setTimeout(() => safeFit(), 300);
+      };
+      window.addEventListener("orientationchange", handleOrientationChange);
+
+      // visualViewport resize handler — fires on browser-level zoom (pinch past
+      // the viewport meta lock, accessibility zoom, etc.)
+      const handleViewportResize = () => {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          safeFit();
+          // After zoom-triggered refit, sync cols/rows with relay so tmux adjusts
+          const t = terminalRef.current;
+          if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
+            getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
+          }
+        }, 150);
+      };
+      window.visualViewport?.addEventListener("resize", handleViewportResize);
+
+      // IntersectionObserver for mobile tab visibility (display:none → display:flex)
+      const intersectionObserver = new IntersectionObserver((entries) => {
+        if (entries[0]?.isIntersecting) {
+          setTimeout(() => {
+            safeFit();
+            const t = terminalRef.current;
+            if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
+              getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
+            }
+          }, 150);
+          setTimeout(() => {
+            safeFit();
+            const t = terminalRef.current;
+            if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
+              getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
+            }
+          }, 300);
+          setTimeout(() => safeFit(), 500);
+        }
+      });
+      intersectionObserver.observe(containerRef.current);
+
       return () => {
         if (resizeTimer) clearTimeout(resizeTimer);
+        if (transitionTimer) clearTimeout(transitionTimer);
+        if (windowResizeTimer) clearTimeout(windowResizeTimer);
         resizeObserver.disconnect();
+        intersectionObserver.disconnect();
+        window.removeEventListener("resize", handleWindowResize);
+        window.removeEventListener("orientationchange", handleOrientationChange);
+        window.visualViewport?.removeEventListener("resize", handleViewportResize);
         dataDisposable.dispose();
         resizeDisposable.dispose();
+        // Cancel any pending recovery
+        const rec = recoveryRef.current;
+        if (rec.debounceTimer) clearTimeout(rec.debounceTimer);
+        rec.atlasDisposable?.dispose();
+        rec.rafIds.forEach(id => cancelAnimationFrame(id));
+        rec.timerIds.forEach(id => clearTimeout(id));
         terminal.dispose();
         terminalRef.current = null;
         fitAddonRef.current = null;
         searchAddonRef.current = null;
+        webglAddonRef.current = null;
       };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps -- terminal created once on mount
 
@@ -143,6 +294,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       const terminal = terminalRef.current;
       if (!terminal) return;
 
+      // Apply options immediately (cheap, no rendering)
       const theme = getTerminalTheme(themeName);
       terminal.options.fontSize = fontSize;
       terminal.options.fontFamily = fontFamily;
@@ -151,7 +303,71 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       terminal.options.scrollback = scrollback;
       terminal.options.theme = terminalThemeToXterm(theme);
 
-      fitAddonRef.current?.fit();
+      // Cancel any pending recovery from a previous rapid change
+      const recovery = recoveryRef.current;
+      if (recovery.debounceTimer) clearTimeout(recovery.debounceTimer);
+      recovery.atlasDisposable?.dispose();
+      recovery.atlasDisposable = null;
+      recovery.rafIds.forEach(id => cancelAnimationFrame(id));
+      recovery.rafIds = [];
+      recovery.timerIds.forEach(id => clearTimeout(id));
+      recovery.timerIds = [];
+
+      // Debounce the actual fit/refresh recovery.
+      // During pinch-to-zoom, fontSize changes many times per second.
+      // We only need to recover once after changes settle.
+      recovery.debounceTimer = setTimeout(() => {
+        const fitAndRefresh = () => {
+          try {
+            fitAddonRef.current?.fit();
+          } catch {
+            // Renderer not ready
+          }
+          try {
+            const t = terminalRef.current;
+            if (t && t.rows > 0) {
+              t.refresh(0, t.rows - 1);
+            }
+          } catch {
+            // refresh can throw if renderer is mid-swap
+          }
+          const t = terminalRef.current;
+          if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
+            getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
+          }
+        };
+
+        // Immediate attempt
+        fitAndRefresh();
+
+        // Listen for WebGL atlas rebuild completion
+        const webgl = webglAddonRef.current;
+        if (webgl) {
+          recovery.atlasDisposable = webgl.onChangeTextureAtlas(() => {
+            const rafId = requestAnimationFrame(() => {
+              fitAndRefresh();
+            });
+            recovery.rafIds.push(rafId);
+          });
+        }
+
+        // rAF fallback chain (5 frames)
+        let count = 0;
+        const scheduleRetry = () => {
+          if (count >= 5) return;
+          count++;
+          const rafId = requestAnimationFrame(() => {
+            fitAndRefresh();
+            scheduleRetry();
+          });
+          recovery.rafIds.push(rafId);
+        };
+        const initialId = requestAnimationFrame(() => scheduleRetry());
+        recovery.rafIds.push(initialId);
+      }, 80); // 80ms debounce — batches rapid pinch changes while staying responsive
+
+      // NO cleanup function — recovery is managed via recoveryRef, cleaned up
+      // at start of next effect run or on component unmount (init effect cleanup)
     }, [fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback]);
 
     // Wire WebSocket output to terminal — use ref to prevent stale session output
@@ -160,7 +376,34 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       if (!client) return;
 
       const unsub = client.onMessage((msg: ServerMessage) => {
-        if (msg.type === "terminal:output" && terminalRef.current && attachedSessionRef.current) {
+        // On reconnect, re-attach the current session
+        if (msg.type === "auth:success") {
+          const session = attachedSessionRef.current;
+          if (session) {
+            // Reset ready state — wait for new session:attached before writing output
+            sessionReadyRef.current = false;
+            pendingSessionRef.current = session;
+            const size = terminalRef.current && terminalRef.current.cols > 0 && terminalRef.current.rows > 0
+              ? { cols: terminalRef.current.cols, rows: terminalRef.current.rows }
+              : { cols: 80, rows: 24 };
+            const c = getRelayClient();
+            c?.send({ type: "session:attach", name: session, size, capture: true });
+            c?.send({ type: "pane:list" });
+            c?.send({ type: "window:list" });
+          }
+          return;
+        }
+        if (msg.type === "session:attached" && msg.name === pendingSessionRef.current) {
+          // Only clear if not already attached (prevent double-clear)
+          if (attachedSessionRef.current !== msg.name) {
+            const terminal = terminalRef.current;
+            if (terminal) terminal.clear();
+          }
+          attachedSessionRef.current = msg.name;
+          sessionReadyRef.current = true;
+          pendingSessionRef.current = null;
+        }
+        if (msg.type === "terminal:output" && terminalRef.current && sessionReadyRef.current && attachedSessionRef.current) {
           terminalRef.current.write(msg.data);
         }
       });
@@ -170,29 +413,50 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
 
     // Attach/detach to session when sessionName changes
     useEffect(() => {
-      attachedSessionRef.current = sessionName;
+      if (!sessionName) {
+        attachedSessionRef.current = null;
+        sessionReadyRef.current = false;
+        pendingSessionRef.current = null;
+        return;
+      }
 
-      if (!sessionName) return;
+      // Skip re-attach if already attached to this session
+      if (sessionName === attachedSessionRef.current) return;
+
+      pendingSessionRef.current = sessionName;
+      sessionReadyRef.current = false;
 
       const client = getRelayClient();
       if (!client) return;
 
-      const terminal = terminalRef.current;
-      terminal?.clear();
+      // Don't clear terminal here — defer to session:attached handler
 
-      const size = terminal
-        ? { cols: terminal.cols, rows: terminal.rows }
+      const size = terminalRef.current && terminalRef.current.cols > 0 && terminalRef.current.rows > 0
+        ? { cols: terminalRef.current.cols, rows: terminalRef.current.rows }
         : { cols: 80, rows: 24 };
 
       client.send({ type: "session:attach", name: sessionName, size, capture: true });
       client.send({ type: "pane:list" });
       client.send({ type: "window:list" });
 
-      if (useSettingsStore.getState().autoZoom) {
+      if (useSettingsStore.getState().autoZoom && window.matchMedia("(max-width: 768px)").matches) {
         usePaneStore.getState().setPendingAutoZoom(true);
       }
 
+      // Fallback: if session:attached never arrives (old relay), ungate after 500ms
+      const fallbackTimer = setTimeout(() => {
+        if (!sessionReadyRef.current) {
+          sessionReadyRef.current = true;
+          attachedSessionRef.current = sessionName;
+          pendingSessionRef.current = null;
+          terminalRef.current?.clear();
+        }
+      }, 500);
+
       return () => {
+        clearTimeout(fallbackTimer);
+        pendingSessionRef.current = null;
+        sessionReadyRef.current = false;
         client.send({ type: "session:detach" });
       };
     }, [sessionName]);
@@ -226,21 +490,6 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           </div>
         )}
 
-        {/* Disconnected overlay — translucent banner over still-visible terminal */}
-        {sessionName && status !== "connected" && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm">
-            <div className="flex items-center gap-2 rounded-lg border bg-background/90 px-4 py-3 shadow-lg">
-              {status === "reconnecting" ? (
-                <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
-              ) : (
-                <WifiOff className="h-4 w-4 text-destructive" />
-              )}
-              <span className="text-sm font-medium">
-                {status === "reconnecting" ? "Reconnecting..." : "Disconnected"}
-              </span>
-            </div>
-          </div>
-        )}
       </div>
     );
   },

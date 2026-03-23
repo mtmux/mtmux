@@ -114,7 +114,7 @@ export function PaneListPanel() {
                   pane.id === activePaneId
                     ? "border-primary bg-primary/20 text-primary"
                     : "border-border bg-background hover:bg-accent",
-                  pane.id === zoomedPaneId && "ring-2 ring-yellow-500",
+                  pane.id === zoomedPaneId && "ring-2 ring-warning",
                 )}
                 style={{
                   left: `${left}%`,
@@ -132,7 +132,7 @@ export function PaneListPanel() {
                     </span>
                   )}
                   {pane.id === zoomedPaneId && (
-                    <span className="text-[8px] text-yellow-500 font-semibold">ZOOM</span>
+                    <span className="text-[8px] text-warning-foreground font-semibold">ZOOM</span>
                   )}
                 </div>
               </button>

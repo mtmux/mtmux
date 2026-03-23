@@ -5,11 +5,10 @@ import type { ClientMessage, ServerMessage } from "@repo/protocol";
 import { RelayClient } from "@/lib/ws-client";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
-import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useFileStore } from "@/stores/file-store";
 import { useSettingsStore } from "@/stores/settings-store";
-import { toast } from "sonner";
+import { useAlertStore } from "@/stores/alert-store";
 
 let globalClient: RelayClient | null = null;
 
@@ -36,24 +35,11 @@ export function useWebSocket(url: string, token: string) {
           connectionStore.resetReconnect();
           // Auto-request session list on connect
           globalClient?.send({ type: "session:list" });
-          // #13: Auto re-attach session on reconnect
-          {
-            const activeId = useSessionStore.getState().activeSessionId;
-            if (activeId) {
-              const { fontSize } = useTerminalStore.getState();
-              globalClient?.send({
-                type: "session:attach",
-                name: activeId,
-                size: { cols: 80, rows: Math.floor(24 * (14 / fontSize)) },
-              });
-              // Auto-request pane/window list after re-attach
-              globalClient?.send({ type: "pane:list" });
-              globalClient?.send({ type: "window:list" });
-            }
-          }
+          // Don't send session:attach here — terminal-view handles re-attachment
+          // via its own auth:success listener to avoid duplicate PTY bridges
           break;
         case "auth:failure":
-          toast.error(msg.reason || "Authentication failed");
+          useAlertStore.getState().push("error", msg.reason || "Authentication failed");
           localStorage.removeItem("termbridge-token");
           window.location.href = "/login";
           break;
@@ -84,10 +70,7 @@ export function useWebSocket(url: string, token: string) {
             if (sessionStore.activeSessionId === null) {
               usePaneStore.getState().clearAll();
             }
-            toast.info(`Session "${msg.name}" exited`, {
-              id: `exit-${msg.name}`,
-              duration: 3000,
-            });
+            useAlertStore.getState().push("info", `Session "${msg.name}" exited`);
             setTimeout(() => handledExits.delete(msg.name), 10000);
           }
           break;
@@ -98,7 +81,7 @@ export function useWebSocket(url: string, token: string) {
           // Auto-zoom: if pending and no pane is currently zoomed, zoom the active pane
           if (paneStore.pendingAutoZoom) {
             const zoomedPane = msg.panes.find((p) => p.zoomed);
-            if (!zoomedPane) {
+            if (!zoomedPane && window.matchMedia("(max-width: 768px)").matches) {
               globalClient?.send({ type: "pane:zoom" });
             }
             paneStore.setPendingAutoZoom(false);
@@ -117,18 +100,20 @@ export function useWebSocket(url: string, token: string) {
         case "file:op:result": {
           useFileStore.getState().setIsOperating(false);
           if (msg.success) {
-            toast.success(`${msg.op} succeeded: ${msg.path.split("/").pop()}`, { id: `fileop-${msg.op}-${msg.path}`, duration: 2000 });
+            useAlertStore.getState().push("success", `${msg.op} succeeded: ${msg.path.split("/").pop()}`);
             // Refresh current directory listing
             const { currentPath: dirPath } = useFileStore.getState();
             globalClient?.send({ type: "file:list", path: dirPath });
           } else {
-            toast.error(msg.error ?? `${msg.op} failed`);
+            useAlertStore.getState().push("error", msg.error ?? `${msg.op} failed`);
           }
           break;
         }
+        case "session:attached":
+          // Handled in terminal-view
+          break;
         case "error":
-          // #14: Use toast IDs for dedup
-          toast.error(msg.message, { id: `err-${msg.code}`, duration: 5000 });
+          useAlertStore.getState().push("error", msg.message);
           break;
       }
     };
@@ -137,6 +122,9 @@ export function useWebSocket(url: string, token: string) {
       url,
       token,
       onMessage: handleMessage,
+      onMessageDropped: (count) => {
+        useAlertStore.getState().push("warning", `${count} messages queued while disconnected — some may have been dropped`);
+      },
       onStatusChange: (status) => {
         useConnectionStore.getState().setStatus(status);
         if (status === "reconnecting") {

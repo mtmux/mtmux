@@ -22,21 +22,27 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
   const [swipeX, setSwipeX] = useState(0);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0]!.clientX;
-    touchStartY.current = e.touches[0]!.clientY;
+    const touch = e.touches[0];
+    if (!touch) return;
+    touchStartX.current = touch.clientX;
+    touchStartY.current = touch.clientY;
     setSwipeX(0);
   }, []);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    const dx = e.touches[0]!.clientX - touchStartX.current;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - touchStartX.current;
     setSwipeX(dx);
   }, []);
 
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent) => {
       setSwipeX(0);
-      const dx = e.changedTouches[0]!.clientX - touchStartX.current;
-      const dy = e.changedTouches[0]!.clientY - touchStartY.current;
+      const changedTouch = e.changedTouches[0];
+      if (!changedTouch) return;
+      const dx = changedTouch.clientX - touchStartX.current;
+      const dy = changedTouch.clientY - touchStartY.current;
 
       // Must be horizontal swipe (not vertical)
       if (Math.abs(dx) < 100 || Math.abs(dy) > Math.abs(dx) * 0.5) return;
@@ -99,7 +105,7 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
   return (
     <div
       className={cn("relative touch-pan-y transition-opacity duration-75", className)}
-      style={{ opacity: 1 - Math.abs(swipeX) / 400 }}
+      style={{ opacity: Math.abs(swipeX) > 50 ? Math.max(0.85, 1 - (Math.abs(swipeX) - 50) / 500) : 1 }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}

@@ -28,7 +28,7 @@ import {
   AlertDialogTitle,
 } from "@repo/ui/components/ui/alert-dialog";
 import { cn } from "@repo/ui/lib/utils";
-import { toast } from "sonner";
+import { useAlertStore } from "@/stores/alert-store";
 import { MonacoEditor } from "./monaco-editor";
 import { getMonacoLanguage, getLanguageLabel } from "@/lib/file-utils";
 import { useFileStore } from "@/stores/file-store";
@@ -52,8 +52,10 @@ export function FileEditor() {
   const [wordWrap, setWordWrap] = useState<"on" | "off">("on");
   const [showDiscardDialog, setShowDiscardDialog] = useState(false);
   const [externalChange, setExternalChange] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const unsubRef = useRef<(() => void) | null>(null);
+  const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isModified =
     savedContent !== null &&
@@ -73,6 +75,12 @@ export function FileEditor() {
     setIsReadOnly(false);
     setFileStat(null);
     setExternalChange(false);
+    setLoadError(null);
+
+    // Timeout if file:content never arrives
+    loadTimeoutRef.current = setTimeout(() => {
+      setLoadError("Timed out waiting for file content");
+    }, 10_000);
 
     client.send({ type: "file:read", path: editorFile });
     client.send({ type: "file:stat", path: editorFile });
@@ -80,6 +88,10 @@ export function FileEditor() {
 
     const unsub = client.onMessage((msg) => {
       if (msg.type === "file:content" && msg.path === editorFile) {
+        if (loadTimeoutRef.current) {
+          clearTimeout(loadTimeoutRef.current);
+          loadTimeoutRef.current = null;
+        }
         setSavedContent(msg.content);
         setCurrentContent(msg.content);
         if (msg.truncated) {
@@ -101,9 +113,9 @@ export function FileEditor() {
         setIsSaving(false);
         if (msg.success) {
           setSavedContent(currentContent);
-          toast.success("File saved");
+          useAlertStore.getState().push("success", "File saved");
         } else {
-          toast.error(msg.error ?? "Save failed");
+          useAlertStore.getState().push("error", msg.error ?? "Save failed");
         }
       }
       if (msg.type === "file:changed" && msg.path === editorFile && msg.event === "change") {
@@ -121,6 +133,10 @@ export function FileEditor() {
 
     return () => {
       unsub();
+      if (loadTimeoutRef.current) {
+        clearTimeout(loadTimeoutRef.current);
+        loadTimeoutRef.current = null;
+      }
       client.send({ type: "file:unwatch", path: editorFile });
     };
   }, [editorFile]);
@@ -185,7 +201,7 @@ export function FileEditor() {
           <span className="flex-1 truncate text-sm font-medium">
             {fileName}
             {isModified && (
-              <span className="ml-1 text-orange-500" title="Unsaved changes">
+              <span className="ml-1 text-warning-foreground" title="Unsaved changes">
                 ●
               </span>
             )}
@@ -205,12 +221,13 @@ export function FileEditor() {
             className="h-7 w-7 shrink-0"
             onClick={() => setWordWrap((w) => (w === "on" ? "off" : "on"))}
             title="Toggle word wrap"
+            aria-label="Toggle word wrap"
           >
             <WrapText className={cn("h-3.5 w-3.5", wordWrap === "on" && "text-primary")} />
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Terminal actions">
                 <Terminal className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
@@ -243,6 +260,7 @@ export function FileEditor() {
             size="icon"
             className="h-7 w-7 shrink-0"
             onClick={handleClose}
+            aria-label="Close editor"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -250,8 +268,8 @@ export function FileEditor() {
 
         {/* External change banner */}
         {externalChange && (
-          <div className="flex items-center gap-2 border-b bg-yellow-500/10 px-3 py-1.5 text-xs">
-            <AlertTriangle className="h-3.5 w-3.5 text-yellow-600" />
+          <div className="flex items-center gap-2 border-b bg-warning/10 px-3 py-1.5 text-xs">
+            <AlertTriangle className="h-3.5 w-3.5 text-warning-foreground" />
             <span>File changed on disk.</span>
             <Button
               variant="outline"
@@ -275,6 +293,20 @@ export function FileEditor() {
               onSave={handleSave}
               wordWrap={wordWrap}
             />
+          ) : loadError ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2">
+              <span className="text-sm text-destructive">{loadError}</span>
+              <Button variant="outline" size="sm" onClick={() => {
+                setLoadError(null);
+                const client = getRelayClient();
+                if (client && editorFile) {
+                  loadTimeoutRef.current = setTimeout(() => {
+                    setLoadError("Timed out waiting for file content");
+                  }, 10_000);
+                  client.send({ type: "file:read", path: editorFile });
+                }
+              }}>Retry</Button>
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center">
               <span className="text-sm text-muted-foreground">Loading...</span>

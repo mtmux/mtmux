@@ -77,15 +77,26 @@ async function main() {
           platform: os.platform(),
           uptime: os.uptime(),
         });
+
+        // Server-side ping for zombie detection (30s interval)
+        const pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.ping();
+          }
+        }, 30_000);
+        ws.on("close", () => clearInterval(pingInterval));
+
         return;
       }
 
-      // Route authenticated messages
-      await routeMessage(conn, msg);
+      // Route authenticated messages sequentially to prevent race conditions
+      conn.enqueue(() => routeMessage(conn, msg));
     });
 
-    ws.on("close", () => {
+    ws.on("close", async () => {
       if (authTimer) clearTimeout(authTimer);
+      conn.closing = true;
+      await conn.drain();
       removeConnection(conn);
     });
 

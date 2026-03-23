@@ -4,8 +4,14 @@ import { createLogger } from "@repo/logger";
 import type { SessionInfo, PaneInfo, WindowInfo } from "@repo/protocol";
 import { config } from "./config.js";
 
-const execFileAsync = promisify(execFile);
+const execFileAsyncRaw = promisify(execFile);
 const logger = createLogger("relay:tmux");
+
+const TMUX_TIMEOUT = 10_000;
+
+function execFileAsync(cmd: string, args: string[]) {
+  return execFileAsyncRaw(cmd, args, { timeout: TMUX_TIMEOUT });
+}
 
 function tmuxArgs(): string[] {
   return config.tmuxSocket ? ["-S", config.tmuxSocket] : [];
@@ -157,15 +163,18 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
 
 export async function listPanes(session: string, windowId?: string): Promise<PaneInfo[]> {
   try {
-    const target = windowId ? `${session}:${windowId}` : session;
-    const { stdout } = await execFileAsync("tmux", [
-      ...tmuxArgs(),
-      "list-panes",
-      "-t",
-      target,
+    const args = [...tmuxArgs(), "list-panes"];
+    if (windowId) {
+      args.push("-t", `${session}:${windowId}`);
+    } else {
+      // -s = list all panes across all windows in the session
+      args.push("-s", "-t", session);
+    }
+    args.push(
       "-F",
       "#{pane_id}\t#{pane_index}\t#{window_id}\t#{pane_active}\t#{window_zoomed_flag}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_current_command}",
-    ]);
+    );
+    const { stdout } = await execFileAsync("tmux", args);
 
     return stdout
       .trim()

@@ -13,6 +13,7 @@ interface RelayClientOptions {
   token: string;
   onMessage?: MessageHandler;
   onStatusChange?: StatusHandler;
+  onMessageDropped?: (droppedCount: number) => void;
 }
 
 const MIN_RECONNECT_DELAY = 1000;
@@ -35,12 +36,14 @@ export class RelayClient {
   private lastPongAt = 0;
   // #12: Queue messages while disconnected
   private pendingMessages: ClientMessage[] = [];
+  private onMessageDroppedHandler: ((droppedCount: number) => void) | null = null;
 
   constructor(options: RelayClientOptions) {
     this.url = options.url;
     this.token = options.token;
     if (options.onMessage) this.messageHandlers.add(options.onMessage);
     if (options.onStatusChange) this.statusHandlers.add(options.onStatusChange);
+    if (options.onMessageDropped) this.onMessageDroppedHandler = options.onMessageDropped;
   }
 
   get status() {
@@ -144,6 +147,7 @@ export class RelayClient {
       this.pendingMessages.push(msg);
       if (this.pendingMessages.length > 50) {
         this.pendingMessages.shift();
+        this.onMessageDroppedHandler?.(this.pendingMessages.length);
       }
     }
   }
@@ -182,6 +186,11 @@ export class RelayClient {
       // #15: Zombie detection — if missed 2+ pongs (>25s), force reconnect
       if (this.lastPongAt && Date.now() - this.lastPongAt > 25000) {
         this.ws?.close();
+        return;
+      }
+      // Close if send buffer is backed up (>1MB)
+      if (this.ws && this.ws.bufferedAmount > 1_048_576) {
+        this.ws.close();
         return;
       }
       this.send({ type: "ping", timestamp: Date.now() });

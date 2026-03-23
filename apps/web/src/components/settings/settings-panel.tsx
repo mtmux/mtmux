@@ -84,7 +84,7 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-xs">Auto-zoom Panes</Label>
-                <p className="text-[10px] text-muted-foreground">Zoom into active pane on attach and split</p>
+                <p className="text-[10px] text-muted-foreground">Auto-zoom into active pane on attach and split (mobile only)</p>
               </div>
               <Switch
                 checked={settings.autoZoom}
@@ -97,6 +97,10 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                 type="number"
                 value={terminal.scrollback}
                 onChange={(e) => terminal.setScrollback(Number(e.target.value))}
+                onBlur={(e) => {
+                  const v = Math.max(100, Math.min(50000, Number(e.target.value) || 1000));
+                  terminal.setScrollback(v);
+                }}
                 className="h-8 text-sm"
                 min={100}
                 max={50000}
@@ -164,9 +168,11 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
             {(
               [
                 ["swipeToSwitchSessions", "Swipe to switch sessions"],
+                ["swipeToSwitchPanes", "Swipe to switch panes"],
                 ["doubleTapToCopy", "Double-tap to copy"],
                 ["longPressContextMenu", "Long-press context menu"],
                 ["twoFingerScroll", "Two-finger scroll"],
+                ["pinchToZoom", "Pinch to zoom"],
               ] as const
             ).map(([key, label]) => (
               <div key={key} className="flex items-center justify-between">

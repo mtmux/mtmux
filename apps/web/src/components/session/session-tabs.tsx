@@ -13,7 +13,6 @@ interface SessionTabsProps {
 
 export function SessionTabs({ onCreateClick, className }: SessionTabsProps) {
   const openedSessions = useSessionStore((s) => s.openedSessions);
-  const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const closeSession = useSessionStore((s) => s.closeSession);
@@ -23,15 +22,14 @@ export function SessionTabs({ onCreateClick, className }: SessionTabsProps) {
       <ScrollArea className="flex-1">
         <div className="flex items-center gap-1 px-1">
           {openedSessions.map((name) => {
-            const session = sessions.find((s) => s.name === name);
-            if (!session) return null;
             return (
               <button
                 key={name}
+                title={name}
                 className={cn(
-                  "group flex items-center gap-1.5 rounded-t-md border-b-2 px-3.5 py-1.5 text-sm transition-colors",
+                  "group flex items-center gap-1.5 rounded-t-md border-b-2 px-3.5 py-1.5 text-sm transition-colors animate-in fade-in slide-in-from-bottom-1 duration-200",
                   name === activeSessionId
-                    ? "border-primary bg-background text-foreground"
+                    ? "border-primary bg-primary/10 text-foreground font-semibold"
                     : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
                 onClick={() => {

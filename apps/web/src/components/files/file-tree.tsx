@@ -43,7 +43,7 @@ import {
   AlertDialogTitle,
 } from "@repo/ui/components/ui/alert-dialog";
 import { cn } from "@repo/ui/lib/utils";
-import { toast } from "sonner";
+import { useAlertStore } from "@/stores/alert-store";
 import type { FileEntry } from "@repo/protocol";
 import { useFileStore } from "@/stores/file-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -146,7 +146,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
 
   useEffect(() => {
     loadDirectory(currentPath);
-  }, []);
+  }, [currentPath, loadDirectory]);
 
   // Focus inline input when it appears
   useEffect(() => {
@@ -307,14 +307,14 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
   const handleCdInTerminal = useCallback(
     (path: string) => {
       if (!useSessionStore.getState().activeSessionId) {
-        toast.error("No active session");
+        useAlertStore.getState().push("error", "No active session");
         return;
       }
       const client = getRelayClient();
       if (!client) return;
       client.send({ type: "command:send", command: `cd ${path}` });
       useUiStore.getState().setMobileTab("terminal");
-      toast.success("Navigated to " + path.split("/").pop());
+      useAlertStore.getState().push("success", "Navigated to " + path.split("/").pop());
     },
     [],
   );
@@ -348,7 +348,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
       <div className="flex items-center gap-1 px-2 py-1.5 border-b">
         {breadcrumbPath !== undefined && onNavigate && (
           <div className="flex items-center gap-0.5 shrink-0 overflow-x-auto scrollbar-none mr-1">
-            <button className="shrink-0 rounded p-0.5 hover:bg-accent" onClick={() => onNavigate("/")}>
+            <button className="shrink-0 rounded p-0.5 hover:bg-accent" onClick={() => onNavigate("/")} aria-label="Go to root">
               <Home className="h-3.5 w-3.5" />
             </button>
             {breadcrumbPath.split("/").filter(Boolean).map((part, i, arr) => (
@@ -380,6 +380,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           onClick={handleNewFile}
           disabled={isOperating}
           title="New file"
+          aria-label="New file"
         >
           <FilePlus className="h-3.5 w-3.5" />
         </Button>
@@ -390,6 +391,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           onClick={handleNewFolder}
           disabled={isOperating}
           title="New folder"
+          aria-label="New folder"
         >
           <FolderPlus className="h-3.5 w-3.5" />
         </Button>
@@ -400,6 +402,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           onClick={handleUpload}
           disabled={isOperating}
           title="Upload file"
+          aria-label="Upload file"
         >
           <Upload className="h-3.5 w-3.5" />
         </Button>
@@ -408,6 +411,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           size="icon"
           className="h-9 w-9 shrink-0"
           onClick={() => setSortBy(sortBy === "name" ? "modified" : sortBy === "modified" ? "size" : "name")}
+          aria-label="Change sort order"
         >
           <ArrowUpDown className="h-3.5 w-3.5" />
         </Button>
@@ -416,6 +420,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           size="icon"
           className="h-9 w-9 shrink-0"
           onClick={() => setViewMode(viewMode === "list" ? "grid" : "list")}
+          aria-label={viewMode === "list" ? "Switch to grid view" : "Switch to list view"}
         >
           {viewMode === "list" ? <Grid3x3 className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
         </Button>
@@ -502,6 +507,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
                             variant="ghost"
                             size="icon"
                             className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                            aria-label="File actions"
                           >
                             <MoreHorizontal className="h-3.5 w-3.5" />
                           </Button>

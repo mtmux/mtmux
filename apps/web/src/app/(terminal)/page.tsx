@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
+import { useStableMediaQuery } from "@repo/ui/hooks/use-media-query";
 import { TerminalView, type TerminalViewHandle } from "@/components/terminal/terminal-view";
 import { TerminalToolbar } from "@/components/terminal/terminal-toolbar";
 import { SessionList } from "@/components/session/session-list";
@@ -31,7 +31,7 @@ const FileEditor = dynamic(
 
 export default function TerminalPage() {
   const router = useRouter();
-  const isMobile = useMediaQuery("(max-width: 768px)");
+  const isMobile = useStableMediaQuery("(max-width: 768px)");
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const setSelectedFile = useFileStore((s) => s.setSelectedFile);
@@ -102,13 +102,18 @@ export default function TerminalPage() {
 
   if (isMobile) {
     return (
-      <>
-        <div className={cn("h-full flex-col", mobileTab === "terminal" ? "flex" : "hidden")}>
+      <div className="absolute inset-0 overflow-hidden">
+        {/* Terminal tab: use visibility+absolute instead of display:none to keep xterm's
+            internal renderer dimensions valid and prevent Viewport ResizeObserver crashes */}
+        <div className={cn(
+          "h-full flex flex-col",
+          mobileTab !== "terminal" && "invisible absolute inset-0 pointer-events-none",
+        )}>
           <SwipeSessionSwitcher className="h-full max-h-full">
             <div className="flex h-full flex-col">
               <WindowTabs />
-              <div className="flex-1 overflow-hidden">
-                <PinchZoomHandler className="h-full">
+              <div className="relative flex-1 overflow-hidden">
+                <PinchZoomHandler className="absolute inset-0">
                   <TerminalView
                     ref={terminalRef}
                     sessionName={activeSessionId}
@@ -146,13 +151,13 @@ export default function TerminalPage() {
           open={showCreateDialog}
           onOpenChange={setShowCreateDialog}
         />
-      </>
+      </div>
     );
   }
 
   // Desktop layout: sidebar + terminal + optional file preview
   return (
-    <div className="flex h-full">
+    <div className="absolute inset-0 flex">
       {/* Session sidebar */}
       <div
         className={cn(

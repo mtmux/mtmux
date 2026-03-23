@@ -1,11 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Search, Maximize2, Minimize2, Settings } from "lucide-react";
+import { Search, Maximize2, Minimize2, Settings, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
-import { ConnectionStatus } from "@repo/ui/components/connection-status";
-import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
+import { useTerminalStore, getDefaultFontSize, clampFontSize } from "@/stores/terminal-store";
 import { TerminalSearch } from "./terminal-search";
 import { cn } from "@repo/ui/lib/utils";
 
@@ -29,16 +28,8 @@ export function TerminalToolbar({
   className,
 }: TerminalToolbarProps) {
   const [showSearch, setShowSearch] = useState(false);
-  const { status, latency, reconnectCount, hostname } = useConnectionStore();
   const { activeSessionId } = useSessionStore();
-
-  const connectionStatusType = status === "connected"
-    ? "connected"
-    : status === "connecting" || status === "authenticating"
-      ? "connecting"
-      : status === "reconnecting"
-        ? "reconnecting"
-        : "disconnected";
+  const { fontSize, setFontSize } = useTerminalStore();
 
   return (
     <div className={cn("flex items-center gap-2 px-3 py-1.5", className)}>
@@ -46,15 +37,25 @@ export function TerminalToolbar({
         {activeSessionId ?? "No session"}
       </span>
 
-      <ConnectionStatus
-        status={connectionStatusType}
-        latency={latency ?? undefined}
-        reconnectCount={reconnectCount}
-        hostname={hostname ?? undefined}
-        className="ml-2"
-      />
-
       <div className="flex-1" />
+
+      <div className="flex items-center gap-0.5">
+        <Button variant="ghost" size="icon" className="h-7 w-7"
+          onClick={() => setFontSize(clampFontSize(fontSize - 1))} aria-label="Decrease font size">
+          <ZoomOut className="h-3.5 w-3.5" />
+        </Button>
+        <span className="text-xs text-muted-foreground w-8 text-center tabular-nums">
+          {fontSize}px
+        </span>
+        <Button variant="ghost" size="icon" className="h-7 w-7"
+          onClick={() => setFontSize(clampFontSize(fontSize + 1))} aria-label="Increase font size">
+          <ZoomIn className="h-3.5 w-3.5" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7"
+          onClick={() => setFontSize(getDefaultFontSize())} title="Reset zoom (Ctrl+0)" aria-label="Reset font size">
+          <RotateCcw className="h-3 w-3" />
+        </Button>
+      </div>
 
       {showSearch && (
         <TerminalSearch
@@ -62,7 +63,6 @@ export function TerminalToolbar({
           onNext={onSearchNext}
           onPrevious={onSearchPrevious}
           onClose={() => setShowSearch(false)}
-          className="absolute right-2 top-10 z-10"
         />
       )}
 
@@ -71,6 +71,7 @@ export function TerminalToolbar({
         size="icon"
         className="h-7 w-7"
         onClick={() => setShowSearch(!showSearch)}
+        aria-label="Toggle search"
       >
         <Search className="h-3.5 w-3.5" />
       </Button>
@@ -80,6 +81,7 @@ export function TerminalToolbar({
         size="icon"
         className="h-7 w-7"
         onClick={onToggleFullscreen}
+        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
       >
         {isFullscreen ? (
           <Minimize2 className="h-3.5 w-3.5" />
@@ -93,6 +95,7 @@ export function TerminalToolbar({
         size="icon"
         className="h-7 w-7"
         onClick={onOpenSettings}
+        aria-label="Open settings"
       >
         <Settings className="h-3.5 w-3.5" />
       </Button>

@@ -10,12 +10,15 @@ import {
 
 const shortcuts = [
   { keys: ["Ctrl/Cmd", "K"], description: "Open command palette" },
+  { keys: ["Ctrl", "B"], description: "Toggle sidebar" },
+  { keys: ["Ctrl", "E"], description: "Open files tab" },
   { keys: ["Ctrl", "C"], description: "Interrupt" },
   { keys: ["Ctrl", "D"], description: "Send EOF" },
   { keys: ["Ctrl", "L"], description: "Clear terminal" },
   { keys: ["Ctrl", "Z"], description: "Suspend process" },
   { keys: ["Ctrl", "+"], description: "Increase font size" },
   { keys: ["Ctrl", "-"], description: "Decrease font size" },
+  { keys: ["Ctrl", "0"], description: "Reset font size" },
   { keys: ["?"], description: "Show keyboard shortcuts" },
 ];
 

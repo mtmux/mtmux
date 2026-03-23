@@ -47,6 +47,7 @@ export async function routeMessage(
       case "session:attach": {
         // Detach existing PTY first
         if (conn.pty) {
+          conn.pty.markDetaching();
           try { conn.pty.kill(); } catch { /* ignore */ }
           conn.pty = null;
         }
@@ -57,9 +58,10 @@ export async function routeMessage(
           break;
         }
 
+        // Capture pane content BEFORE creating PTY bridge
+        let captured: string | null = null;
         if (msg.capture) {
-          const captured = await tmux.capturePane(msg.name);
-          send(ws, { type: "terminal:output", data: captured });
+          captured = await tmux.capturePane(msg.name);
         }
 
         const bridge = createPtyBridge(msg.name, msg.size);
@@ -76,11 +78,20 @@ export async function routeMessage(
           conn.attachedSession = null;
         });
 
+        // When PTY is ready: send captured data first, then attached ack
+        bridge.onReady(() => {
+          if (captured) {
+            send(ws, { type: "terminal:output", data: captured });
+          }
+          send(ws, { type: "session:attached", name: msg.name });
+        });
+
         break;
       }
 
       case "session:detach": {
         if (conn.pty) {
+          conn.pty.markDetaching();
           try { conn.pty.kill(); } catch { /* ignore */ }
           conn.pty = null;
           conn.attachedSession = null;
@@ -200,10 +211,14 @@ export async function routeMessage(
         }
         if (conn.watchers.has(msg.path)) break;
 
-        const watcher = files.watchDirectory(msg.path, (event, filePath) => {
-          send(ws, { type: "file:changed", path: filePath, event });
-        });
-        conn.watchers.set(msg.path, watcher);
+        try {
+          const watcher = files.watchDirectory(msg.path, (event, filePath) => {
+            send(ws, { type: "file:changed", path: filePath, event });
+          });
+          conn.watchers.set(msg.path, watcher);
+        } catch (e) {
+          sendError(ws, "WATCH_FAILED", e instanceof Error ? e.message : "Failed to watch path");
+        }
         break;
       }
 
@@ -416,9 +431,15 @@ export async function routeMessage(
           sendError(ws, "NOT_ATTACHED", "No session attached");
           break;
         }
-        await tmux.killWindow(msg.id);
+        const killedId = msg.id;
+        await tmux.killWindow(killedId);
         const killWinWindows = await tmux.listWindows(conn.attachedSession);
         send(ws, { type: "window:changed", windows: killWinWindows, sessionName: conn.attachedSession });
+        // Reset stale activeWindowId
+        if (conn.activeWindowId === killedId) {
+          const activeWin = killWinWindows.find((w) => w.active);
+          conn.activeWindowId = activeWin?.id ?? null;
+        }
         const killWinPanes = await tmux.listPanes(conn.attachedSession);
         const killWinWinId = killWinPanes.find((p) => p.active)?.windowId ?? "";
         send(ws, { type: "pane:changed", panes: killWinPanes, windowId: killWinWinId });

@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const TerminalSizeSchema = z.object({
-  cols: z.number().int().min(1),
-  rows: z.number().int().min(1),
+  cols: z.number().int().min(1).max(1000),
+  rows: z.number().int().min(1).max(500),
 });
 export type TerminalSize = z.infer<typeof TerminalSizeSchema>;
 

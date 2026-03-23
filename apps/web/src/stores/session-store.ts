@@ -44,7 +44,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     if (name) {
       get().openSession(name);
     }
-    set({ activeSessionId: name });
+    if (name !== get().activeSessionId) {
+      set({ activeSessionId: name });
+    }
   },
   openSession: (name) =>
     set((s) =>

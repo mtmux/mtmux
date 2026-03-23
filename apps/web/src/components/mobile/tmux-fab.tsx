@@ -62,8 +62,8 @@ export function TmuxFab() {
     setLongPressOpen(false);
   }, [longPressOpen, fabOpen, setFabOpen]);
 
-  // Only show on terminal tab when a session is attached
-  if (mobileTab !== "terminal" || !activeSessionId) return null;
+  // Show whenever a session is attached (any mobile tab)
+  if (!activeSessionId) return null;
 
   const handleSplit = (direction: "h" | "v") => {
     getRelayClient()?.send({ type: "pane:split", direction });
@@ -255,6 +255,7 @@ export function TmuxFab() {
             fabOpen && "rotate-45",
           )}
           onClick={handleFabClick}
+          aria-label="Tmux actions"
           onTouchStart={handleFabTouchStart}
           onTouchEnd={handleFabTouchEnd}
           onTouchCancel={handleFabTouchEnd}

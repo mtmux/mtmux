@@ -5,10 +5,10 @@ import { cn } from "../lib/utils";
 export type ConnectionStatusType = "connected" | "connecting" | "reconnecting" | "disconnected";
 
 const statusConfig: Record<ConnectionStatusType, { color: string; label: string; pulse: boolean }> = {
-  connected: { color: "bg-green-500", label: "Connected", pulse: false },
-  connecting: { color: "bg-yellow-500", label: "Connecting...", pulse: true },
-  reconnecting: { color: "bg-yellow-500", label: "Reconnecting...", pulse: true },
-  disconnected: { color: "bg-red-500", label: "Disconnected", pulse: false },
+  connected: { color: "bg-success", label: "Connected", pulse: false },
+  connecting: { color: "bg-warning", label: "Connecting...", pulse: true },
+  reconnecting: { color: "bg-warning", label: "Reconnecting...", pulse: true },
+  disconnected: { color: "bg-destructive", label: "Disconnected", pulse: false },
 };
 
 interface ConnectionStatusProps {
@@ -18,6 +18,7 @@ interface ConnectionStatusProps {
   hostname?: string;
   className?: string;
   showLabel?: boolean;
+  onReconnect?: () => void;
 }
 
 export function ConnectionStatus({
@@ -27,6 +28,7 @@ export function ConnectionStatus({
   hostname,
   className,
   showLabel = true,
+  onReconnect,
 }: ConnectionStatusProps) {
   const config = statusConfig[status];
 
@@ -52,10 +54,21 @@ export function ConnectionStatus({
       {showLabel && (
         <span className="text-xs text-muted-foreground">
           {config.label}
+          {status === "reconnecting" && reconnectCount != null && reconnectCount > 0 && (
+            <span className="ml-1 opacity-60">#{reconnectCount}</span>
+          )}
           {status === "connected" && latency != null && (
             <span className="ml-1 opacity-60">{latency}ms</span>
           )}
         </span>
+      )}
+      {(status === "disconnected" || status === "reconnecting") && onReconnect && (
+        <button
+          className="rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          onClick={onReconnect}
+        >
+          Retry
+        </button>
       )}
     </div>
   );

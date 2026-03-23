@@ -26,15 +26,20 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
   const [isCreating, setIsCreating] = useState(false);
   const { setActiveSession } = useSessionStore();
   const waitingForSession = useRef(false);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Listen for session:created to auto-attach
   useEffect(() => {
     const client = getRelayClient();
     if (!client) return;
 
-    return client.onMessage((msg) => {
+    const unsub = client.onMessage((msg) => {
       if (msg.type === "session:created" && waitingForSession.current) {
         waitingForSession.current = false;
+        if (resetTimerRef.current) {
+          clearTimeout(resetTimerRef.current);
+          resetTimerRef.current = null;
+        }
         setIsCreating(false);
         setActiveSession(msg.session.name);
         if (typeof window !== "undefined") {
@@ -42,6 +47,14 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
         }
       }
     });
+
+    return () => {
+      unsub();
+      if (resetTimerRef.current) {
+        clearTimeout(resetTimerRef.current);
+        resetTimerRef.current = null;
+      }
+    };
   }, [setActiveSession]);
 
   const handleCreate = useCallback(() => {
@@ -50,6 +63,15 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
 
     setIsCreating(true);
     waitingForSession.current = true;
+
+    // Auto-reset isCreating after 5s if server never responds
+    resetTimerRef.current = setTimeout(() => {
+      if (waitingForSession.current) {
+        waitingForSession.current = false;
+        setIsCreating(false);
+      }
+      resetTimerRef.current = null;
+    }, 5000);
 
     client.send({
       type: "session:create",

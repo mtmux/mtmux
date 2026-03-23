@@ -17,6 +17,9 @@ export interface ConnectionState {
   rateLimiter: RateLimiter;
   attachedSession: string | null;
   activeWindowId: string | null;
+  closing: boolean;
+  enqueue: (fn: () => Promise<void>) => void;
+  drain: () => Promise<void>;
 }
 
 const connections = new Map<string, ConnectionState>();
@@ -28,6 +31,42 @@ export function createConnection(
   rateLimiter: RateLimiter,
 ): ConnectionState {
   const id = `conn-${nextId++}`;
+
+  // Sequential message queue — prevents concurrent handler races
+  const queue: (() => Promise<void>)[] = [];
+  let draining = false;
+  let closing = false;
+  let drainResolvers: (() => void)[] = [];
+
+  const enqueue = (fn: () => Promise<void>) => {
+    if (closing) return;
+    queue.push(fn);
+    if (draining) return;
+    draining = true;
+    const processQueue = async () => {
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        try {
+          await next();
+        } catch (e) {
+          logger.error({ err: e, connId: id }, "Queued message handler error");
+        }
+      }
+      draining = false;
+      // Resolve any pending drain waiters
+      for (const resolve of drainResolvers) resolve();
+      drainResolvers = [];
+    };
+    void processQueue();
+  };
+
+  const drain = (): Promise<void> => {
+    if (!draining && queue.length === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      drainResolvers.push(resolve);
+    });
+  };
+
   const conn: ConnectionState = {
     id,
     ws,
@@ -37,7 +76,16 @@ export function createConnection(
     rateLimiter,
     attachedSession: null,
     activeWindowId: null,
+    closing: false,
+    enqueue,
+    drain,
   };
+
+  // Proxy the closing flag
+  Object.defineProperty(conn, "closing", {
+    get: () => closing,
+    set: (v: boolean) => { closing = v; },
+  });
   connections.set(id, conn);
   logger.info({ connId: id }, "Connection created");
   return conn;
@@ -46,6 +94,7 @@ export function createConnection(
 export function removeConnection(conn: ConnectionState): void {
   // Clean up PTY (keep tmux session alive)
   if (conn.pty) {
+    conn.pty.markDetaching();
     try {
       conn.pty.kill();
     } catch {

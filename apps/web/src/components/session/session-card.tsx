@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { X, Clock, PenLine, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@repo/ui/components/ui/card";
 import { Badge } from "@repo/ui/components/ui/badge";
@@ -52,6 +52,15 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
   const swipeStartY = useRef(0);
   const isSwiping = useRef(false);
 
+  // Cleanup longPressTimer on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+      }
+    };
+  }, []);
+
   const handleRenameSubmit = useCallback(() => {
     const trimmed = renameValue.trim();
     if (trimmed && trimmed !== session.name) {
@@ -85,14 +94,18 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
   }, []);
 
   const handleCardTouchStart = useCallback((e: React.TouchEvent) => {
-    swipeStartX.current = e.touches[0]!.clientX;
-    swipeStartY.current = e.touches[0]!.clientY;
+    const touch = e.touches[0];
+    if (!touch) return;
+    swipeStartX.current = touch.clientX;
+    swipeStartY.current = touch.clientY;
     isSwiping.current = false;
   }, []);
 
   const handleCardTouchMove = useCallback((e: React.TouchEvent) => {
-    const dx = e.touches[0]!.clientX - swipeStartX.current;
-    const dy = e.touches[0]!.clientY - swipeStartY.current;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - swipeStartX.current;
+    const dy = touch.clientY - swipeStartY.current;
 
     if (!isSwiping.current && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
       isSwiping.current = true;
@@ -118,6 +131,7 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
         <div className="absolute inset-y-0 right-0 flex">
           <button
             className="flex w-14 flex-col items-center justify-center gap-0.5 bg-accent"
+            aria-label="Rename session"
             onClick={() => {
               setRenameValue(session.name);
               setIsRenaming(true);
@@ -131,6 +145,7 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
           </button>
           <button
             className="flex w-14 flex-col items-center justify-center gap-0.5 bg-destructive/10"
+            aria-label="Kill session"
             onClick={() => {
               triggerKill();
               setSwipeOffset(0);
@@ -149,7 +164,7 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
           isActive
             ? "bg-accent/40 ring-1 ring-primary/30"
             : recentlyActive
-              ? "ring-1 ring-primary/20 animate-pulse"
+              ? "border-l-2 border-l-primary"
               : "",
         )}
         style={{
@@ -207,6 +222,7 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
               variant="ghost"
               size="icon"
               className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+              aria-label="Kill session"
               onClick={(e) => {
                 e.stopPropagation();
                 triggerKill();

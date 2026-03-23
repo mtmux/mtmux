@@ -14,12 +14,13 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+  retryCount: number;
 }
 
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, retryCount: 0 };
   }
 
   static getDerivedStateFromError(error: Error) {
@@ -44,10 +45,15 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   };
 
   private handleRetry = () => {
-    // #16: Reset active session to prevent re-crash loops
-    useSessionStore.getState().setActiveSession(null);
-    usePaneStore.getState().clearAll();
-    this.setState({ hasError: false, error: null });
+    if (this.state.retryCount === 0) {
+      // First retry: soft reset — just re-render without clearing state
+      this.setState((s) => ({ hasError: false, error: null, retryCount: s.retryCount + 1 }));
+    } else {
+      // Subsequent retries: hard reset — clear active session + panes
+      useSessionStore.getState().setActiveSession(null);
+      usePaneStore.getState().clearAll();
+      this.setState({ hasError: false, error: null, retryCount: 0 });
+    }
   };
 
   private handleReload = () => {

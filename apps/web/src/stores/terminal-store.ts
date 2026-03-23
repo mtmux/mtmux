@@ -1,6 +1,27 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export function getDefaultFontSize(): number {
+  if (typeof window === "undefined") return 14;
+  const width = window.innerWidth;
+  if (width <= 480) return 14;
+  if (width <= 768) return 14;
+  if (width <= 1024) return 13;
+  return 14;
+}
+
+/** Clamp font size to a range that produces readable terminal on the current viewport */
+export function clampFontSize(size: number): number {
+  if (typeof window === "undefined") return Math.max(8, Math.min(24, size));
+  const width = window.innerWidth;
+  // On mobile, cap font size so terminal has at least ~20 cols visible
+  // Approx: cols ≈ (width - scrollbar) / (fontSize * 0.6)
+  // For 20 cols: maxFont ≈ width / (20 * 0.6) ≈ width / 12
+  const maxForViewport = Math.floor(width / 12);
+  const max = Math.min(24, Math.max(14, maxForViewport));
+  return Math.max(8, Math.min(max, size));
+}
+
 interface TerminalStore {
   fontSize: number;
   fontFamily: string;
@@ -19,13 +40,13 @@ interface TerminalStore {
 export const useTerminalStore = create<TerminalStore>()(
   persist(
     (set) => ({
-      fontSize: 14,
+      fontSize: getDefaultFontSize(),
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       themeName: "dracula",
       cursorStyle: "block",
       cursorBlink: true,
       scrollback: 5000,
-      setFontSize: (fontSize) => set({ fontSize }),
+      setFontSize: (fontSize) => set({ fontSize: clampFontSize(fontSize) }),
       setFontFamily: (fontFamily) => set({ fontFamily }),
       setThemeName: (themeName) => set({ themeName }),
       setCursorStyle: (cursorStyle) => set({ cursorStyle }),

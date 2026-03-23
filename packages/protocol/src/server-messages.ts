@@ -127,6 +127,11 @@ export const WindowChangedMessage = z.object({
   sessionName: z.string(),
 });
 
+export const SessionAttachedMessage = z.object({
+  type: z.literal("session:attached"),
+  name: z.string(),
+});
+
 export const ServerMessage = z.discriminatedUnion("type", [
   AuthSuccessMessage,
   AuthFailureMessage,
@@ -149,6 +154,7 @@ export const ServerMessage = z.discriminatedUnion("type", [
   WindowListResponse,
   PaneChangedMessage,
   WindowChangedMessage,
+  SessionAttachedMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessage>;
@@ -173,3 +179,4 @@ export type PaneListResponse = z.infer<typeof PaneListResponse>;
 export type WindowListResponse = z.infer<typeof WindowListResponse>;
 export type PaneChangedMessage = z.infer<typeof PaneChangedMessage>;
 export type WindowChangedMessage = z.infer<typeof WindowChangedMessage>;
+export type SessionAttachedMessage = z.infer<typeof SessionAttachedMessage>;
