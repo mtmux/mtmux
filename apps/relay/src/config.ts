@@ -1,9 +1,11 @@
 import { z } from "zod";
 
+const DEFAULT_AUTH_TOKEN = "change-me-in-production";
+
 const ConfigSchema = z.object({
   port: z.coerce.number().default(14300),
   host: z.string().default("0.0.0.0"),
-  authToken: z.string().default("change-me-in-production"),
+  authToken: z.string().default(DEFAULT_AUTH_TOKEN),
   allowedPaths: z
     .string()
     .default("/home")
@@ -29,3 +31,14 @@ export const config = ConfigSchema.parse({
   idleTimeoutMinutes: process.env.IDLE_TIMEOUT_MINUTES,
   corsOrigins: process.env.CORS_ORIGINS,
 });
+
+if (
+  process.env.NODE_ENV === "production" &&
+  (config.authToken === DEFAULT_AUTH_TOKEN || config.authToken.trim() === "")
+) {
+  throw new Error(
+    "AUTH_TOKEN must be set to a non-default value in production. " +
+      "Generate one with `openssl rand -hex 32` and set it in .env. " +
+      "See .env.example for details.",
+  );
+}

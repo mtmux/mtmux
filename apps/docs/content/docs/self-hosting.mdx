@@ -1,0 +1,132 @@
+---
+title: Self-Hosting Guide
+description: Deploy ccremote on your own server with Docker Compose or PM2 for production use.
+---
+
+# Self-Hosting Guide
+
+ccremote is designed to be self-hosted. You have full control over your data — no third-party services required.
+
+## Docker Compose (Recommended)
+
+The simplest way to deploy ccremote in production.
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- tmux installed on the host
+
+### Steps
+
+```bash
+# Clone the repository
+git clone https://github.com/nicholasgriffintn/ccremote.git
+cd ccremote
+
+# Create and edit your environment config
+cp .env.example .env
+```
+
+Edit `.env` with your production values:
+
+```bash
+AUTH_TOKEN="a-strong-random-token"
+CORS_ORIGINS="https://your-domain.com"
+NEXT_PUBLIC_RELAY_URL="wss://your-domain.com/ws"
+```
+
+Start the services:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+This starts:
+- **Relay server** on port 14300 with health checks
+- **Web app** on port 14100 with health checks
+
+### tmux Socket Access
+
+The relay container needs access to the host's tmux socket. The default compose file mounts `/tmp/tmux-1000` — adjust this to match your user's tmux socket path:
+
+```bash
+# Find your tmux socket path
+echo $TMUX | cut -d, -f1
+# Or check: ls /tmp/tmux-$(id -u)/
+```
+
+### Reverse Proxy
+
+Place nginx or Caddy in front for TLS and WebSocket proxying. A
+ready-to-go config ships in the repo at
+[`nginx/ccremote.conf.example`](https://github.com/nicholasgriffintn/ccremote/blob/main/nginx/ccremote.conf.example):
+
+```bash
+sudo cp nginx/ccremote.conf.example /etc/nginx/sites-available/ccremote.conf
+sudo sed -i 's/ccremote.example.com/your-domain.com/g' \
+    /etc/nginx/sites-available/ccremote.conf
+sudo ln -s /etc/nginx/sites-available/ccremote.conf /etc/nginx/sites-enabled/
+sudo certbot --nginx -d your-domain.com
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+The config terminates TLS, proxies `/ws` to the relay, `/docs` to the
+docs app, and `/` to the web app. See `nginx/README.md` in the repo for
+full install notes.
+
+### Reverse Proxy — Bundled nginx sidecar
+
+If you'd rather not install nginx on the host, use the `nginx` profile in
+`docker-compose.prod.yml`:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile nginx up -d
+```
+
+This brings up an `nginx:1.27-alpine` container alongside `web`,
+`relay`, and `docs`, with ports `80:80` and `443:443` published. The
+sidecar's configs live at `nginx/docker/nginx.conf` and
+`nginx/docker/default.conf` — edit those and run
+`docker compose exec nginx nginx -s reload` to apply changes.
+
+**TLS is bring-your-own-cert.** Issue certs on the host with certbot:
+
+```bash
+sudo certbot certonly --standalone -d your-domain.com
+```
+
+The `./nginx/letsencrypt:/etc/letsencrypt:ro` bind mount in the compose
+file exposes them to the container. Uncomment the HTTPS `server` block
+in `nginx/docker/default.conf` and reload.
+
+We deliberately don't ship an automatic certbot companion — the host's
+system cron is simpler to reason about and debug.
+
+## PM2
+
+For deployments without Docker:
+
+```bash
+# Build all apps
+pnpm build
+
+# Start with PM2
+pm2 start ecosystem.config.cjs
+```
+
+## Pre-built Docker Images
+
+Pull from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/nicholasgriffintn/ccremote-web:latest
+docker pull ghcr.io/nicholasgriffintn/ccremote-relay:latest
+```
+
+## Security Considerations
+
+- Always change the default `AUTH_TOKEN`
+- Use TLS (HTTPS/WSS) in production
+- Restrict `ALLOWED_PATHS` to only necessary directories
+- Set `CORS_ORIGINS` to your specific domain
+- See [Security](/docs/security) for more details

@@ -1,47 +1,31 @@
 services:
-  temporal:
-    image: temporalio/auto-setup:latest
+  relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.relay
     ports:
-      - "17233:7233"
-    environment:
-      - DB=sqlite
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - "14300:14300"
+    env_file: .env
     volumes:
-      - temporal-data:/var/lib/temporal
+      - /tmp/tmux-1000:/tmp/tmux-1000
+    restart: unless-stopped
 
-  temporal-ui:
-    image: temporalio/ui:latest
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
     ports:
-      - "18080:8080"
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
+      - "14100:14100"
+    env_file: .env
     depends_on:
-      - temporal
+      - relay
+    restart: unless-stopped
 
-  minio:
-    image: minio/minio:latest
+  docs:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.docs
     ports:
-      - "19000:9000"
-      - "19001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio-data:/data
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      sleep 5;
-      mc alias set local http://minio:9000 minioadmin minioadmin;
-      mc mb local/uploads --ignore-existing;
-      exit 0;
-      "
-
-volumes:
-  temporal-data:
-  minio-data:
+      - "14102:14102"
+    env_file: .env
+    restart: unless-stopped

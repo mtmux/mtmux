@@ -1,139 +1,155 @@
-# TermBridge
+<p align="center">
+  <h1 align="center">ccremote</h1>
+  <p align="center">Access Claude Code from Any Browser</p>
+</p>
 
-Access your server's terminal from any browser. TermBridge connects a modern web UI to remote tmux sessions over WebSocket, giving you a full terminal experience with session management, file browsing, and mobile support.
+<p align="center">
+  <a href="https://github.com/nicholasgriffintn/ccremote/actions/workflows/ci.yml"><img src="https://github.com/nicholasgriffintn/ccremote/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/nicholasgriffintn/ccremote/blob/main/LICENSE"><img src="https://img.shields.io/github/license/nicholasgriffintn/ccremote" alt="License"></a>
+  <a href="https://github.com/nicholasgriffintn/ccremote/pkgs/container/ccremote-web"><img src="https://img.shields.io/badge/docker-ghcr.io-blue" alt="Docker"></a>
+</p>
+
+---
+
+**ccremote** is a remote terminal-in-browser app that connects a modern web UI to tmux sessions over WebSocket. Monitor Claude Code sessions, manage terminals, browse files, and code from your phone — all self-hosted.
 
 ## Features
 
-- **Remote Terminal**: Full xterm.js terminal with WebGL rendering, themes, and search
-- **Session Management**: Create, attach, rename, and kill tmux sessions
-- **File Browser**: Browse and preview files on the remote host
-- **Mobile Support**: Responsive UI with swipe gestures, keyboard toolbar, and tab navigation
-- **Real-time**: WebSocket protocol with automatic reconnection and keep-alive
-- **Secure**: Token-based auth, path restrictions, rate limiting
-
-## Architecture
-
-```
-Browser ←→ WebSocket ←→ Relay Server ←→ tmux/PTY
-  (Next.js)              (Node.js)       (host)
-```
-
-The **web app** renders the terminal UI and communicates over a typed WebSocket protocol. The **relay server** bridges WebSocket messages to tmux sessions and PTY streams on the host machine.
-
-## Prerequisites
-
-- Node.js 22+
-- pnpm 9+
-- tmux 3.0+
-- Docker (optional, for dev services)
+- **Remote Terminal** — Full xterm.js terminal with WebGL rendering, themes, search, and Unicode support
+- **Session Management** — Create, attach, rename, and kill tmux sessions from the browser
+- **File Browser & Editor** — Browse directories, preview files with syntax highlighting, and edit remotely
+- **Mobile Optimized** — Responsive UI with swipe gestures, virtual keyboard toolbar, and tab navigation
+- **Self-Hosted** — Run on your own server with Docker or PM2, no third-party dependencies
+- **Claude Code Ready** — Purpose-built for monitoring and interacting with Claude Code terminal sessions
 
 ## Quick Start
 
 ```bash
-# Clone and install
-git clone <repo-url> termbridge
-cd termbridge
-pnpm install
-
-# Configure
-cp .env.example .env
-# Edit .env — at minimum set AUTH_TOKEN
-
-# Generate Prisma client
-pnpm db:generate
-
-# Start development
-pnpm dev
+git clone https://github.com/nicholasgriffintn/ccremote.git
+cd ccremote
+pnpm setup    # Install deps + create .env
+pnpm dev      # Start web (14100) + relay (14300) + docs (14102)
 ```
 
-Open `http://localhost:14100` in your browser, enter your auth token, and connect.
+Open `http://localhost:14100`, enter your auth token, and connect.
+
+## Docker Deployment
+
+```bash
+# Clone and configure
+git clone https://github.com/nicholasgriffintn/ccremote.git
+cd ccremote
+cp .env.example .env
+
+# Generate a strong auth token and paste it into .env (AUTH_TOKEN=...)
+openssl rand -hex 32
+
+# Edit .env — at minimum set AUTH_TOKEN, CORS_ORIGINS, NEXT_PUBLIC_RELAY_URL
+
+# Start the full stack (web + relay + docs)
+docker compose -f docker-compose.prod.yml up -d
+```
+
+> The relay server **refuses to boot** in production with the default
+> `change-me-in-production` token — set `AUTH_TOKEN` before `up -d`.
+
+### Deploy with nginx + TLS
+
+Bundled nginx configs live in [`nginx/`](nginx/README.md):
+
+```bash
+# Docker sidecar (brings up nginx alongside web/relay/docs)
+docker compose -f docker-compose.prod.yml --profile nginx up -d
+```
+
+For standalone-host deployments use `nginx/ccremote.conf.example` as a
+starting point. See [`nginx/README.md`](nginx/README.md) for both flows.
+
+### Pre-built images
+
+```bash
+docker pull ghcr.io/nicholasgriffintn/ccremote-web:latest
+docker pull ghcr.io/nicholasgriffintn/ccremote-relay:latest
+```
 
 ## Configuration
 
-### Relay Server (`apps/relay`)
+### Relay Server
 
-| Env Var | Default | Description |
-|---------|---------|-------------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `RELAY_PORT` | `14300` | WebSocket server port |
-| `RELAY_HOST` | `0.0.0.0` | Host to bind to |
+| `RELAY_HOST` | `0.0.0.0` | Bind address |
 | `AUTH_TOKEN` | `change-me-in-production` | Client authentication token |
-| `ALLOWED_PATHS` | `/home` | Comma-separated paths clients can access |
+| `ALLOWED_PATHS` | `/home` | Comma-separated accessible paths |
 | `TMUX_SOCKET` | _(default)_ | Custom tmux socket path |
 | `TMUX_DEFAULT_SHELL` | `/bin/bash` | Default shell for new sessions |
 | `WS_RATE_LIMIT` | `100` | Max messages per rate-limit window |
 | `IDLE_TIMEOUT_MINUTES` | `30` | Idle connection timeout |
-| `CORS_ORIGINS` | `http://localhost:14100` | Comma-separated allowed origins |
+| `CORS_ORIGINS` | `http://localhost:14100` | Allowed origins |
 
-### Web App (`apps/web`)
+### Web App
 
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `NEXT_PUBLIC_RELAY_URL` | `ws://localhost:14300` | Relay server WebSocket URL |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEXT_PUBLIC_RELAY_URL` | `ws://localhost:14300` | Relay WebSocket URL |
+
+## Architecture
+
+```
+┌─────────────┐    WebSocket     ┌──────────────┐    PTY/exec    ┌──────────┐
+│   Browser    │ ◄─────────────► │ Relay Server │ ◄────────────► │   tmux   │
+│  (Next.js)   │    Protocol     │  (Node.js)   │               │  (host)  │
+└─────────────┘                  └──────────────┘               └──────────┘
+```
+
+The **web app** renders the terminal UI and communicates over a typed WebSocket protocol (`@repo/protocol`). The **relay server** bridges messages to tmux sessions and PTY streams on the host.
+
+## Mobile Support
+
+ccremote is built mobile-first:
+- Swipe between terminal, sessions, and files
+- Virtual keyboard toolbar with common keys (Tab, Ctrl, Esc, arrows)
+- Landscape mode for wider terminal
+- Copy mode with text selection
+- Haptic feedback on interactions
 
 ## Apps
 
 | App | Port | Description |
 |-----|------|-------------|
 | `web` | 14100 | Terminal web client |
-| `docs` | 14102 | Documentation site |
 | `relay` | 14300 | WebSocket relay server |
+| `docs` | 14102 | Documentation site |
 
-## Commands
+## Development
+
+### Prerequisites
+
+- Node.js 22+
+- pnpm 9+
+- tmux 3.0+
+
+### Commands
 
 | Command | Description |
 |---------|-------------|
-| `pnpm dev` | Start all apps in development |
+| `pnpm dev` | Start all apps |
 | `pnpm build` | Build all apps |
 | `pnpm lint` | Lint everything |
-| `pnpm typecheck` | Type check everything |
+| `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |
-| `pnpm db:generate` | Generate Prisma client |
-| `pnpm db:push` | Push schema to database |
-| `pnpm db:seed` | Seed database |
-| `pnpm db:studio` | Open Prisma Studio |
-| `pnpm docker:dev` | Start dev services |
-| `pnpm docker:prod` | Start production Docker compose |
-| `pnpm setup` | Full setup (install, generate, push, seed) |
+| `pnpm docker:dev` | Dev containers |
+| `pnpm docker:prod` | Production containers |
 
-## Repository Structure
+## Contributing
 
-```
-apps/
-├── web/              → Terminal web client (Next.js 15)
-├── relay/            → WebSocket relay server (Node.js)
-├── docs/             → Documentation site (Next.js + Fumadocs)
-├── admin/            → Admin dashboard
-├── api/              → Standalone API (Hono)
-└── temporal-worker/  → Background job worker
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-packages/
-├── protocol/         → Typed WebSocket message schemas (Zod)
-├── ui/               → Shared UI components (shadcn/ui)
-├── db/               → Prisma schema + client
-├── auth/             → Authentication (better-auth)
-├── api/              → tRPC routers
-├── logger/           → Pino logger
-├── config/           → Shared env + constants
-└── ...               → email, storage, ai, websockets, temporal
-```
+## Changelog
 
-## Deployment
-
-### PM2
-
-```bash
-pnpm build
-pm2 start ecosystem.config.cjs
-```
-
-### Docker
-
-```bash
-pnpm docker:prod
-```
-
-See `apps/docs` for full deployment documentation.
+Notable changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

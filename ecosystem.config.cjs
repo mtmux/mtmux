@@ -1,56 +1,67 @@
+const path = require("node:path");
+
+const ENV_FILE = path.resolve(__dirname, ".env");
+const LOGS = path.resolve(__dirname, "logs");
+
+const commonEnv = {
+  NODE_ENV: "production",
+};
+
 module.exports = {
   apps: [
+    {
+      name: "relay",
+      script: "apps/relay/dist/index.js",
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      max_memory_restart: "512M",
+      wait_ready: true,
+      listen_timeout: 10000,
+      kill_timeout: 10000,
+      out_file: `${LOGS}/relay-out.log`,
+      error_file: `${LOGS}/relay-err.log`,
+      merge_logs: true,
+      env_file: ENV_FILE,
+      env: {
+        ...commonEnv,
+        RELAY_PORT: 14300,
+      },
+    },
     {
       name: "web",
       script: "node_modules/.bin/next",
       args: "start --port 14100",
-      cwd: "./apps/web",
+      cwd: path.resolve(__dirname, "apps/web"),
       instances: "max",
       exec_mode: "cluster",
+      max_memory_restart: "1G",
+      kill_timeout: 10000,
+      out_file: `${LOGS}/web-out.log`,
+      error_file: `${LOGS}/web-err.log`,
+      merge_logs: true,
+      env_file: ENV_FILE,
       env: {
-        NODE_ENV: "production",
+        ...commonEnv,
         PORT: 14100,
       },
     },
     {
-      name: "admin",
+      name: "docs",
       script: "node_modules/.bin/next",
-      args: "start --port 14101",
-      cwd: "./apps/admin",
-      instances: 2,
-      exec_mode: "cluster",
-      env: {
-        NODE_ENV: "production",
-        PORT: 14101,
-      },
-    },
-    {
-      name: "api",
-      script: "apps/api/dist/index.js",
-      instances: "max",
-      exec_mode: "cluster",
-      env: {
-        NODE_ENV: "production",
-        PORT: 14200,
-      },
-    },
-    {
-      name: "temporal-worker",
-      script: "apps/temporal-worker/dist/worker.js",
-      instances: 2,
-      exec_mode: "fork",
-      env: {
-        NODE_ENV: "production",
-      },
-    },
-    {
-      name: "relay",
-      script: "apps/relay/dist/index.js",
+      args: "start --port 14102",
+      cwd: path.resolve(__dirname, "apps/docs"),
       instances: 1,
       exec_mode: "fork",
+      max_memory_restart: "512M",
+      kill_timeout: 10000,
+      out_file: `${LOGS}/docs-out.log`,
+      error_file: `${LOGS}/docs-err.log`,
+      merge_logs: true,
+      env_file: ENV_FILE,
       env: {
-        NODE_ENV: "production",
-        RELAY_PORT: 14300,
+        ...commonEnv,
+        PORT: 14102,
       },
     },
   ],
