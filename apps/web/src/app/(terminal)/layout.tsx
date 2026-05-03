@@ -23,7 +23,7 @@ import { VisualViewportSync } from "@/components/visual-viewport-sync";
 import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { useMobileHistory } from "@/hooks/use-mobile-history";
-import { env } from "@/env";
+import { resolveRelayWsUrl } from "@/lib/relay-url";
 import { Terminal } from "lucide-react";
 
 export default function TerminalLayout({
@@ -96,7 +96,7 @@ export default function TerminalLayout({
   }, []);
 
   const { send } = useWebSocket(
-    token ? env.NEXT_PUBLIC_RELAY_URL : "",
+    token ? resolveRelayWsUrl() : "",
     token ?? "",
   );
 

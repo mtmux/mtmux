@@ -1,0 +1,53 @@
+{
+  "name": "ccremote",
+  "version": "0.1.0",
+  "description": "Self-hosted browser terminal for Claude Code. Your Claude. Your terminal. Anywhere.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "tmux",
+    "terminal",
+    "browser",
+    "remote",
+    "self-hosted",
+    "websocket"
+  ],
+  "homepage": "https://ccremote.dev",
+  "bugs": "https://github.com/nicholasgriffintn/ccremote/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicholasgriffintn/ccremote.git",
+    "directory": "apps/cli"
+  },
+  "license": "MIT",
+  "author": "Nicholas Griffin",
+  "type": "module",
+  "bin": {
+    "ccremote": "./dist/bin.js"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0",
+    "commander": "^12.1.0",
+    "kleur": "^4.1.5",
+    "open": "^10.1.0",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@repo/tsconfig": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": { "access": "public" }
+}

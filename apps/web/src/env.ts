@@ -6,7 +6,7 @@ export const env = createEnv({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   },
   client: {
-    NEXT_PUBLIC_RELAY_URL: z.string().default("ws://localhost:14300"),
+    NEXT_PUBLIC_RELAY_URL: z.string().optional(),
   },
   runtimeEnv: {
     NODE_ENV: process.env.NODE_ENV,

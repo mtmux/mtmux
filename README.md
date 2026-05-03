@@ -1,155 +1,142 @@
-<p align="center">
-  <h1 align="center">ccremote</h1>
-  <p align="center">Access Claude Code from Any Browser</p>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://github.com/nicholasgriffintn/ccremote/actions/workflows/ci.yml"><img src="https://github.com/nicholasgriffintn/ccremote/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/nicholasgriffintn/ccremote/blob/main/LICENSE"><img src="https://img.shields.io/github/license/nicholasgriffintn/ccremote" alt="License"></a>
-  <a href="https://github.com/nicholasgriffintn/ccremote/pkgs/container/ccremote-web"><img src="https://img.shields.io/badge/docker-ghcr.io-blue" alt="Docker"></a>
-</p>
+<img src="https://ccremote.dev/opengraph-image" alt="ccremote — Your Claude. Your terminal. Anywhere." width="640" />
+
+# ccremote
+
+**Your Claude. Your terminal. Anywhere.**
+
+Self-hosted browser terminal for [Claude Code](https://www.anthropic.com/claude-code). Connect to your tmux sessions from any device — phone, tablet, laptop — over a single secure WebSocket. One npm install away.
+
+[![npm](https://img.shields.io/npm/v/ccremote?color=e87958)](https://www.npmjs.com/package/ccremote)
+[![CI](https://github.com/nicholasgriffintn/ccremote/actions/workflows/ci.yml/badge.svg)](https://github.com/nicholasgriffintn/ccremote/actions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED)](https://github.com/nicholasgriffintn/ccremote/pkgs/container/ccremote)
+
+[Website](https://ccremote.dev) · [Docs](https://ccremote.dev/docs) · [Demo](https://ccremote.dev#demo)
+
+</div>
 
 ---
 
-**ccremote** is a remote terminal-in-browser app that connects a modern web UI to tmux sessions over WebSocket. Monitor Claude Code sessions, manage terminals, browse files, and code from your phone — all self-hosted.
+## Install
+
+```bash
+npm install -g ccremote
+ccremote start
+```
+
+That's it. ccremote auto-generates a token, opens your browser, and connects you to tmux.
+
+<details>
+<summary>Other package managers & Docker</summary>
+
+```bash
+bun install -g ccremote
+pnpm add -g ccremote
+docker run -p 14100:14100 ghcr.io/nicholasgriffintn/ccremote
+```
+</details>
+
+## Why ccremote?
+
+| | ccremote | ttyd / GoTTY | Web SSH | tmate |
+|---|---|---|---|---|
+| Mobile-first UX | ✓ | — | — | — |
+| File browser + Monaco editor | ✓ | — | — | — |
+| Single-port (HTTP + WS) | ✓ | ✓ | ✓ | — |
+| Self-hosted | ✓ | ✓ | ✓ | optional |
+| WebGL terminal | ✓ | — | — | — |
+| Built for Claude Code workflows | ✓ | — | — | — |
 
 ## Features
 
-- **Remote Terminal** — Full xterm.js terminal with WebGL rendering, themes, search, and Unicode support
-- **Session Management** — Create, attach, rename, and kill tmux sessions from the browser
-- **File Browser & Editor** — Browse directories, preview files with syntax highlighting, and edit remotely
-- **Mobile Optimized** — Responsive UI with swipe gestures, virtual keyboard toolbar, and tab navigation
-- **Self-Hosted** — Run on your own server with Docker or PM2, no third-party dependencies
-- **Claude Code Ready** — Purpose-built for monitoring and interacting with Claude Code terminal sessions
+- **True terminal fidelity** — xterm.js + WebGL, Unicode 11, 256-color
+- **Mobile-first** — keyboard toolbar, swipe gestures, haptic feedback
+- **Files + previews** — Monaco editor, syntax highlighting, image preview
+- **Self-hosted** — your machine, your tmux, your token. No third party.
+- **Single port** — HTTP and WS share one upstream behind nginx/Caddy
+- **PWA** — installable on iOS/Android home screens
 
-## Quick Start
+## Quick start
 
 ```bash
-git clone https://github.com/nicholasgriffintn/ccremote.git
-cd ccremote
-pnpm setup    # Install deps + create .env
-pnpm dev      # Start web (14100) + relay (14300) + docs (14102)
+ccremote start              # localhost:14100, auto-token, opens browser
+ccremote start --host 0.0.0.0 --port 8080
+ccremote token print        # show current token
+ccremote token rotate       # generate a new one
+ccremote --help
 ```
 
-Open `http://localhost:14100`, enter your auth token, and connect.
+## Behind a reverse proxy
 
-## Docker Deployment
+Single-port means a single upstream. Nginx:
 
-```bash
-# Clone and configure
-git clone https://github.com/nicholasgriffintn/ccremote.git
-cd ccremote
-cp .env.example .env
-
-# Generate a strong auth token and paste it into .env (AUTH_TOKEN=...)
-openssl rand -hex 32
-
-# Edit .env — at minimum set AUTH_TOKEN, CORS_ORIGINS, NEXT_PUBLIC_RELAY_URL
-
-# Start the full stack (web + relay + docs)
-docker compose -f docker-compose.prod.yml up -d
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:14100;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_set_header Host $host;
+}
 ```
 
-> The relay server **refuses to boot** in production with the default
-> `change-me-in-production` token — set `AUTH_TOKEN` before `up -d`.
+Caddy:
 
-### Deploy with nginx + TLS
-
-Bundled nginx configs live in [`nginx/`](nginx/README.md):
-
-```bash
-# Docker sidecar (brings up nginx alongside web/relay/docs)
-docker compose -f docker-compose.prod.yml --profile nginx up -d
-```
-
-For standalone-host deployments use `nginx/ccremote.conf.example` as a
-starting point. See [`nginx/README.md`](nginx/README.md) for both flows.
-
-### Pre-built images
-
-```bash
-docker pull ghcr.io/nicholasgriffintn/ccremote-web:latest
-docker pull ghcr.io/nicholasgriffintn/ccremote-relay:latest
+```caddy
+ccremote.example.com {
+  reverse_proxy 127.0.0.1:14100
+}
 ```
 
 ## Configuration
 
-### Relay Server
+| Flag / Env | Default | Description |
+|---|---|---|
+| `--port` / `PORT` | `14100` | HTTP+WS port |
+| `--host` / `HOST` | `127.0.0.1` | Bind address (`0.0.0.0` to expose) |
+| `--token` / `AUTH_TOKEN` | auto | Shared auth token |
+| `--allowed-paths` / `ALLOWED_PATHS` | `$HOME` | Comma-separated path allow-list for the file browser |
+| `--no-open` | — | Don't open the browser on start |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RELAY_PORT` | `14300` | WebSocket server port |
-| `RELAY_HOST` | `0.0.0.0` | Bind address |
-| `AUTH_TOKEN` | `change-me-in-production` | Client authentication token |
-| `ALLOWED_PATHS` | `/home` | Comma-separated accessible paths |
-| `TMUX_SOCKET` | _(default)_ | Custom tmux socket path |
-| `TMUX_DEFAULT_SHELL` | `/bin/bash` | Default shell for new sessions |
-| `WS_RATE_LIMIT` | `100` | Max messages per rate-limit window |
-| `IDLE_TIMEOUT_MINUTES` | `30` | Idle connection timeout |
-| `CORS_ORIGINS` | `http://localhost:14100` | Allowed origins |
-
-### Web App
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEXT_PUBLIC_RELAY_URL` | `ws://localhost:14300` | Relay WebSocket URL |
+The auto-generated token is stored at `~/.ccremote/config.json` (mode `0600`).
 
 ## Architecture
 
+One Node process, one HTTP server, three layers:
+
 ```
-┌─────────────┐    WebSocket     ┌──────────────┐    PTY/exec    ┌──────────┐
-│   Browser    │ ◄─────────────► │ Relay Server │ ◄────────────► │   tmux   │
-│  (Next.js)   │    Protocol     │  (Node.js)   │               │  (host)  │
-└─────────────┘                  └──────────────┘               └──────────┘
+Browser  ⇄ wss/https ⇄  ccremote node  ⇄ pty ⇄  tmux
+            (one port)   Next.js + ws        your sessions
 ```
 
-The **web app** renders the terminal UI and communicates over a typed WebSocket protocol (`@repo/protocol`). The **relay server** bridges messages to tmux sessions and PTY streams on the host.
-
-## Mobile Support
-
-ccremote is built mobile-first:
-- Swipe between terminal, sessions, and files
-- Virtual keyboard toolbar with common keys (Tab, Ctrl, Esc, arrows)
-- Landscape mode for wider terminal
-- Copy mode with text selection
-- Haptic feedback on interactions
-
-## Apps
-
-| App | Port | Description |
-|-----|------|-------------|
-| `web` | 14100 | Terminal web client |
-| `relay` | 14300 | WebSocket relay server |
-| `docs` | 14102 | Documentation site |
+[Read more →](https://ccremote.dev/docs/architecture)
 
 ## Development
 
-### Prerequisites
+```bash
+pnpm install
+pnpm dev          # web (14100), relay (14300), docs (14102)
+pnpm build
+pnpm test
+pnpm typecheck
+pnpm lint
+```
 
-- Node.js 22+
-- pnpm 9+
-- tmux 3.0+
+The repo is a pnpm + Turborepo monorepo. See [CLAUDE.md](CLAUDE.md) for the full layout.
 
-### Commands
+## Production deployments
 
-| Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start all apps |
-| `pnpm build` | Build all apps |
-| `pnpm lint` | Lint everything |
-| `pnpm typecheck` | Type check |
-| `pnpm test` | Run tests |
-| `pnpm docker:dev` | Dev containers |
-| `pnpm docker:prod` | Production containers |
+The CLI is for self-host on a single machine. For multi-tenant or container deployments, the repo also ships:
+
+- **Docker compose** (`docker-compose.prod.yml`) — separate web/relay services
+- **PM2** (`ecosystem.config.cjs`) — multi-process production
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Changelog
-
-Notable changes are tracked in [CHANGELOG.md](CHANGELOG.md).
+PRs welcome. Conventional commits (`feat:`, `fix:`, `chore:`). See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE)
+MIT © Nicholas Griffin

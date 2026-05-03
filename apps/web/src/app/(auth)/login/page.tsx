@@ -15,7 +15,7 @@ import {
 import { Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { RelayClient } from "@/lib/ws-client";
-import { env } from "@/env";
+import { resolveRelayWsUrl } from "@/lib/relay-url";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -46,7 +46,7 @@ export default function LoginPage() {
     }, 5000);
 
     const client = new RelayClient({
-      url: env.NEXT_PUBLIC_RELAY_URL,
+      url: resolveRelayWsUrl(),
       token: trimmedToken,
       onMessage: (msg) => {
         if (msg.type === "auth:success") {
