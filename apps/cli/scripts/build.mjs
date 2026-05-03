@@ -12,21 +12,43 @@ function run(cmd, opts = {}) {
 }
 
 await rm(path.join(ROOT, "dist"), { recursive: true, force: true });
+// tsc's incremental cache assumes the dist tree it remembers is still on disk.
+// We just wiped it, so the cache must go too — otherwise tsc skips emit.
+await rm(path.join(ROOT, "tsconfig.tsbuildinfo"), { force: true });
 await mkdir(path.join(ROOT, "dist"), { recursive: true });
 
-console.log("→ build relay");
-run("pnpm --filter @app/relay build", { cwd: REPO });
+console.log("→ bundle relay runtime (esbuild)");
+const { build } = await import("esbuild");
+await build({
+  entryPoints: [path.join(REPO, "apps/relay/src/runtime.ts")],
+  outfile: path.join(ROOT, "dist/relay/runtime.js"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  // Externalize all real npm deps; the CLI's package.json declares them so
+  // npm/pnpm install resolves them at the consumer site. Workspace
+  // packages (@repo/*) are bundled inline.
+  external: [
+    "node-pty",
+    "ws",
+    "pino",
+    "pino-pretty",
+    "chokidar",
+    "zod",
+  ],
+  banner: {
+    // Recreate require for ESM bundles that pull in CJS deps via shims.
+    js: "import { createRequire as _ccrCreateRequire } from 'module'; const require = _ccrCreateRequire(import.meta.url);",
+  },
+  logLevel: "info",
+});
 
 console.log("→ build web (standalone)");
 run("pnpm --filter @app/web build", { cwd: REPO });
 
 console.log("→ compile cli sources");
 run("tsc", { cwd: ROOT });
-
-console.log("→ copy relay dist");
-await cp(path.join(REPO, "apps/relay/dist"), path.join(ROOT, "dist/relay"), {
-  recursive: true,
-});
 
 console.log("→ copy web standalone");
 const std = path.join(REPO, "apps/web/.next/standalone");
@@ -37,7 +59,6 @@ if (!existsSync(std)) {
 }
 await cp(std, path.join(ROOT, "dist/web"), { recursive: true });
 
-// Next standalone needs static + public alongside
 await cp(
   path.join(REPO, "apps/web/.next/static"),
   path.join(ROOT, "dist/web/apps/web/.next/static"),

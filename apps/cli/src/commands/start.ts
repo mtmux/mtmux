@@ -9,10 +9,10 @@ import { checkTmux, checkNode } from "../preflight.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // In the published package layout (dist/), the bundled web standalone server
-// is at dist/web/apps/web/server.js, and the relay's compiled sources are at
-// dist/relay/. See apps/cli/scripts/build.mjs.
+// is at dist/web/apps/web/server.js, and the relay runtime is bundled into a
+// single file at dist/relay/runtime.js. See apps/cli/scripts/build.mjs.
 const WEB_DIR = path.resolve(__dirname, "../web/apps/web");
-const RELAY_DIR = path.resolve(__dirname, "../relay");
+const RELAY_RUNTIME = path.resolve(__dirname, "../relay/runtime.js");
 const RELAY_PATH = "/_relay";
 
 export type StartOpts = {
@@ -35,31 +35,27 @@ export async function start(opts: StartOpts) {
   (process.env as Record<string, string>).NODE_ENV = "production";
   process.env.RELAY_HOST = opts.host;
   process.env.RELAY_PORT = String(opts.port);
+  // Single-origin in CLI mode — no cross-origin requests possible. Set the
+  // CORS allow-list to empty so the relay's prod gate doesn't reject the
+  // localhost default.
+  if (process.env.CORS_ORIGINS === undefined) process.env.CORS_ORIGINS = "";
 
-  type WsServerModule = {
+  type RelayRuntime = {
     createWsServerNoBind: () => import("ws").WebSocketServer;
     attachUpgrade: (
       server: http.Server,
       wss: import("ws").WebSocketServer,
       path: string,
     ) => void;
-  };
-  type WireModule = {
     wireConnections: (wss: import("ws").WebSocketServer) => { shutdown: () => void };
-  };
-  type RelayHttpModule = {
     handleRelayRequest: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
   };
 
-  const [wsMod, wireMod, relayHttp, nextMod] = await Promise.all([
-    import(path.join(RELAY_DIR, "ws-server.js")) as Promise<WsServerModule>,
-    import(path.join(RELAY_DIR, "wire-connections.js")) as Promise<WireModule>,
-    import(path.join(RELAY_DIR, "server.js")) as Promise<RelayHttpModule>,
+  const [relay, nextMod] = await Promise.all([
+    import(RELAY_RUNTIME) as Promise<RelayRuntime>,
     import("next"),
   ]);
-  const { createWsServerNoBind, attachUpgrade } = wsMod;
-  const { wireConnections } = wireMod;
-  const { handleRelayRequest } = relayHttp;
+  const { createWsServerNoBind, attachUpgrade, wireConnections, handleRelayRequest } = relay;
 
   const nextFactory = (nextMod as unknown as { default: typeof import("next").default }).default;
   const app = nextFactory({ dev: false, dir: WEB_DIR });

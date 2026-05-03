@@ -1,5 +1,5 @@
 {
-  "name": "ccremote",
+  "name": "ccremote-monorepo",
   "private": true,
   "packageManager": "pnpm@9.15.4",
   "scripts": {
@@ -18,7 +18,8 @@
     "start:prod": "pnpm build && pm2 start ecosystem.config.cjs",
     "stop:prod": "pm2 stop ecosystem.config.cjs",
     "restart:prod": "pm2 reload ecosystem.config.cjs",
-    "logs:prod": "pm2 logs"
+    "logs:prod": "pm2 logs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.6.1",
