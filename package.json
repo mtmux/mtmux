@@ -20,11 +20,11 @@
     "restart:prod": "pm2 reload ecosystem.config.cjs",
     "logs:prod": "pm2 logs",
     "release": "node scripts/release.mjs",
-    "cli": "pnpm --filter ccremote",
-    "cli:build": "pnpm --filter ccremote build",
-    "cli:start": "pnpm --filter ccremote start",
-    "cli:test": "pnpm --filter ccremote test",
-    "cli:smoke": "pnpm --filter ccremote smoke"
+    "cli:build": "pnpm --filter ccremote run build",
+    "cli:start": "pnpm --filter ccremote run start",
+    "cli:test": "pnpm --filter ccremote run test",
+    "cli:smoke": "pnpm --filter ccremote run smoke",
+    "cli:help": "pnpm --filter ccremote run help"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.6.1",
