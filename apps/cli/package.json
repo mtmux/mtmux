@@ -31,7 +31,12 @@
     "build": "node scripts/build.mjs",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "start": "node dist/bin.js start",
+    "help": "node dist/bin.js --help",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "pnpm build && pnpm smoke",
+    "pack:dryrun": "npm pack --dry-run"
   },
   "dependencies": {
     "node-pty": "^1.1.0",

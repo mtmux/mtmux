@@ -71,12 +71,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install tmux
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter ccremote build
+      - run: pnpm cli:build
       - run: node apps/cli/dist/bin.js version
-      - name: Boot CLI and probe /health
-        run: |
-          node apps/cli/dist/bin.js start --port 18888 --no-open &
-          PID=$!
-          sleep 5
-          curl -fsS http://127.0.0.1:18888/health
-          kill $PID
+      - run: pnpm cli:smoke

@@ -19,7 +19,12 @@
     "stop:prod": "pm2 stop ecosystem.config.cjs",
     "restart:prod": "pm2 reload ecosystem.config.cjs",
     "logs:prod": "pm2 logs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "cli": "pnpm --filter ccremote",
+    "cli:build": "pnpm --filter ccremote build",
+    "cli:start": "pnpm --filter ccremote start",
+    "cli:test": "pnpm --filter ccremote test",
+    "cli:smoke": "pnpm --filter ccremote smoke"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.6.1",
