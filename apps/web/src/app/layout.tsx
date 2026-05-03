@@ -11,13 +11,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TermBridge",
-  description: "Browser-based remote tmux session manager",
+  title: "ccremote",
+  description: "Access Claude Code from any browser — remote terminal with tmux session management",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "TermBridge",
+    title: "ccremote",
   },
 };
 

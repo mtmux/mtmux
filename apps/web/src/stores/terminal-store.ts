@@ -53,6 +53,6 @@ export const useTerminalStore = create<TerminalStore>()(
       setCursorBlink: (cursorBlink) => set({ cursorBlink }),
       setScrollback: (scrollback) => set({ scrollback }),
     }),
-    { name: "termbridge-terminal" },
+    { name: "ccremote-terminal" },
   ),
 );

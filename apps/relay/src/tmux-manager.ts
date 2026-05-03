@@ -172,7 +172,7 @@ export async function listPanes(session: string, windowId?: string): Promise<Pan
     }
     args.push(
       "-F",
-      "#{pane_id}\t#{pane_index}\t#{window_id}\t#{pane_active}\t#{window_zoomed_flag}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_current_command}",
+      "#{pane_id}\t#{pane_index}\t#{window_id}\t#{pane_active}\t#{window_zoomed_flag}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_current_command}\t#{pane_current_path}",
     );
     const { stdout } = await execFileAsync("tmux", args);
 
@@ -181,7 +181,7 @@ export async function listPanes(session: string, windowId?: string): Promise<Pan
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [id, index, winId, active, zoomed, width, height, left, top, command] = line.split("\t");
+        const [id, index, winId, active, zoomed, width, height, left, top, command, path] = line.split("\t");
         return {
           id: id!,
           index: parseInt(index!, 10),
@@ -197,12 +197,26 @@ export async function listPanes(session: string, windowId?: string): Promise<Pan
             y: parseInt(top!, 10),
           },
           command: command || undefined,
+          path: path || undefined,
         };
       });
   } catch (e) {
     logger.error({ err: e }, "Failed to list panes");
     throw e;
   }
+}
+
+export async function capturePaneById(paneId: string): Promise<string> {
+  const { stdout } = await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "capture-pane",
+    "-t",
+    paneId,
+    "-p",
+    "-S",
+    "-",
+  ]);
+  return stdout;
 }
 
 export async function splitPane(session: string, direction: "h" | "v"): Promise<void> {

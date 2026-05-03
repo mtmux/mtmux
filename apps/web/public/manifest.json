@@ -1,6 +1,6 @@
 {
-  "name": "TermBridge",
-  "short_name": "TermBridge",
+  "name": "ccremote",
+  "short_name": "ccremote",
   "description": "Browser-based remote tmux session manager",
   "start_url": "/",
   "display": "standalone",

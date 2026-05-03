@@ -96,7 +96,7 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
       }
 
       setActiveSession(sessions[nextIndex]!.name);
-      localStorage.setItem("termbridge-last-session", sessions[nextIndex]!.name);
+      localStorage.setItem("ccremote-last-session", sessions[nextIndex]!.name);
       if (hapticEnabled) triggerHaptic(15);
     },
     [sessions, activeSessionId, setActiveSession, panes, activePaneId, gestures.swipeToSwitchSessions, gestures.swipeToSwitchPanes, hapticEnabled],

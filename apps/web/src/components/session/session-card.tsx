@@ -1,11 +1,16 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { X, Clock, PenLine, Trash2 } from "lucide-react";
+import { useState, useRef, useCallback } from "react";
+import { Clock, PenLine, Trash2, ChevronRight, ChevronDown, MoreVertical, TerminalSquare, AppWindow, PanelTop } from "lucide-react";
 import { Card, CardContent } from "@repo/ui/components/ui/card";
-import { Badge } from "@repo/ui/components/ui/badge";
 import { Button } from "@repo/ui/components/ui/button";
 import { Input } from "@repo/ui/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  TooltipProvider,
+} from "@repo/ui/components/ui/tooltip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,10 +21,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@repo/ui/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@repo/ui/components/ui/dropdown-menu";
 import { cn } from "@repo/ui/lib/utils";
-import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
-import type { SessionInfo } from "@repo/protocol";
+import type { SessionInfo, WindowInfo, PaneInfo } from "@repo/protocol";
 import { getRelayClient } from "@/hooks/use-websocket";
+import { useConnectionStore } from "@/stores/connection-store";
 
 interface SessionCardProps {
   session: SessionInfo;
@@ -40,26 +51,61 @@ function isRecentlyActive(dateStr: string): boolean {
   return (Date.now() - new Date(dateStr).getTime()) < 30_000;
 }
 
+const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
+
+function shortenPath(path: string): string {
+  if (!path) return "";
+  return path.replace(/^\/home\/[^/]+/, "~").replace(/^\/root/, "~");
+}
+
+function formatPaneName(command?: string, path?: string): string {
+  if (!command || SHELL_COMMANDS.has(command)) {
+    return path ? shortenPath(path) : command || "shell";
+  }
+  return path ? `${command} · ${shortenPath(path)}` : command;
+}
+
 export function SessionCard({ session, isActive, onAttach, onKill }: SessionCardProps) {
-  const isMobile = useMediaQuery("(max-width: 768px)");
   const recentlyActive = isRecentlyActive(session.activity);
+  const connectionStatus = useConnectionStore((s) => s.status);
+  // Pending: user picked this session but the WS is still working through
+  // (re)connect/auth — show a subtle visual so the click doesn't feel lost.
+  const isPending = isActive && connectionStatus !== "connected";
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.name);
   const [showKillConfirm, setShowKillConfirm] = useState(false);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [swipeOffset, setSwipeOffset] = useState(0);
-  const swipeStartX = useRef(0);
-  const swipeStartY = useRef(0);
-  const isSwiping = useRef(false);
+  const [expanded, setExpanded] = useState(false);
+  const [detailWindows, setDetailWindows] = useState<WindowInfo[] | null>(null);
+  const [detailPanes, setDetailPanes] = useState<PaneInfo[] | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const hasFetched = useRef(false);
 
-  // Cleanup longPressTimer on unmount
-  useEffect(() => {
-    return () => {
-      if (longPressTimer.current) {
-        clearTimeout(longPressTimer.current);
+  const fetchDetails = useCallback(() => {
+    if (hasFetched.current) return;
+    const client = getRelayClient();
+    if (!client) return;
+
+    setDetailLoading(true);
+    hasFetched.current = true;
+
+    const unsub = client.onMessage((msg) => {
+      if (msg.type === "session:windows" && msg.name === session.name) {
+        setDetailWindows(msg.windows);
+        setDetailPanes(msg.panes);
+        setDetailLoading(false);
+        unsub();
       }
-    };
-  }, []);
+    });
+
+    client.send({ type: "session:windows", name: session.name });
+  }, [session.name]);
+
+  const handleToggleExpand = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = !expanded;
+    setExpanded(next);
+    if (next) fetchDetails();
+  }, [expanded, fetchDetails]);
 
   const handleRenameSubmit = useCallback(() => {
     const trimmed = renameValue.trim();
@@ -69,116 +115,55 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
     setIsRenaming(false);
   }, [renameValue, session.name]);
 
-  const handleNameDoubleClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    setRenameValue(session.name);
-    setIsRenaming(true);
-  }, [session.name]);
-
-  const handleNameTouchStart = useCallback(() => {
-    longPressTimer.current = setTimeout(() => {
-      setRenameValue(session.name);
-      setIsRenaming(true);
-    }, 600);
-  }, [session.name]);
-
-  const handleNameTouchEnd = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }, []);
-
   const triggerKill = useCallback(() => {
     setShowKillConfirm(true);
   }, []);
 
-  const handleCardTouchStart = useCallback((e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    if (!touch) return;
-    swipeStartX.current = touch.clientX;
-    swipeStartY.current = touch.clientY;
-    isSwiping.current = false;
-  }, []);
-
-  const handleCardTouchMove = useCallback((e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    if (!touch) return;
-    const dx = touch.clientX - swipeStartX.current;
-    const dy = touch.clientY - swipeStartY.current;
-
-    if (!isSwiping.current && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
-      isSwiping.current = true;
-    }
-
-    if (isSwiping.current && dx < 0) {
-      setSwipeOffset(Math.max(dx, -112));
-    }
-  }, []);
-
-  const handleCardTouchEnd = useCallback(() => {
-    if (Math.abs(swipeOffset) > 56) {
-      setSwipeOffset(-112);
-    } else {
-      setSwipeOffset(0);
-    }
-    isSwiping.current = false;
-  }, [swipeOffset]);
+  // Group panes by window
+  const panesByWindow = detailPanes?.reduce<Record<string, PaneInfo[]>>((acc, pane) => {
+    (acc[pane.windowId] ??= []).push(pane);
+    return acc;
+  }, {});
 
   return (
     <div className="relative overflow-hidden rounded-lg">
-      {isMobile && (
-        <div className="absolute inset-y-0 right-0 flex">
-          <button
-            className="flex w-14 flex-col items-center justify-center gap-0.5 bg-accent"
-            aria-label="Rename session"
-            onClick={() => {
-              setRenameValue(session.name);
-              setIsRenaming(true);
-              setSwipeOffset(0);
-            }}
-          >
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/15">
-              <PenLine className="h-4 w-4 text-primary" />
-            </div>
-            <span className="text-[9px] text-primary font-medium">Rename</span>
-          </button>
-          <button
-            className="flex w-14 flex-col items-center justify-center gap-0.5 bg-destructive/10"
-            aria-label="Kill session"
-            onClick={() => {
-              triggerKill();
-              setSwipeOffset(0);
-            }}
-          >
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-destructive/20">
-              <Trash2 className="h-4 w-4 text-destructive" />
-            </div>
-            <span className="text-[9px] text-destructive font-medium">Kill</span>
-          </button>
-        </div>
-      )}
       <Card
         className={cn(
-          "group cursor-pointer transition-colors hover:bg-accent/50 relative",
-          isActive
-            ? "bg-accent/40 ring-1 ring-primary/30"
-            : recentlyActive
-              ? "border-l-2 border-l-primary"
-              : "",
+          "cursor-pointer transition-colors hover:bg-accent/50 relative",
+          isActive && "bg-accent/40 ring-1 ring-primary/30",
+          isPending && "animate-pulse-fast",
         )}
-        style={{
-          transform: `translateX(${swipeOffset}px)`,
-          transition: isSwiping.current ? "none" : "transform 0.2s ease-out",
-        }}
-        onClick={() => swipeOffset === 0 && onAttach(session.name)}
-        onTouchStart={isMobile ? handleCardTouchStart : undefined}
-        onTouchMove={isMobile ? handleCardTouchMove : undefined}
-        onTouchEnd={isMobile ? handleCardTouchEnd : undefined}
+        onClick={() => onAttach(session.name)}
+        aria-busy={isPending || undefined}
       >
-        <CardContent className="flex items-center gap-2.5 p-3.5">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+        <CardContent className="px-2.5 py-2 space-y-1">
+          {/* Row 1: chevron + status dot + name + menu */}
+          <div className="flex items-center gap-1.5">
+            <button
+              className="shrink-0 rounded p-1 -m-0.5 text-muted-foreground hover:bg-accent active:bg-accent"
+              onClick={handleToggleExpand}
+              aria-label={expanded ? "Collapse" : "Expand"}
+            >
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </button>
+
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className={cn(
+                      "shrink-0 h-2 w-2 rounded-full",
+                      session.attached ? "bg-green-500" : recentlyActive ? "bg-yellow-500" : "bg-muted-foreground/40",
+                    )}
+                  />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="text-xs">
+                  {session.attached ? "Attached" : recentlyActive ? "Recently active" : "Detached"}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <div className="min-w-0 flex-1">
               {isRenaming ? (
                 <Input
                   value={renameValue}
@@ -188,55 +173,107 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
                     if (e.key === "Escape") setIsRenaming(false);
                   }}
                   onBlur={handleRenameSubmit}
-                  className="h-6 text-sm px-1"
+                  className="h-6 text-xs px-1"
                   autoFocus
                   onClick={(e) => e.stopPropagation()}
                 />
               ) : (
-                <span
-                  className="truncate font-medium text-sm"
-                  onDoubleClick={handleNameDoubleClick}
-                  onTouchStart={handleNameTouchStart}
-                  onTouchEnd={handleNameTouchEnd}
+                <span className="block truncate font-medium text-xs">{session.name}</span>
+              )}
+            </div>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0 text-muted-foreground"
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label="Session actions"
                 >
-                  {session.name}
-                </span>
-              )}
-              <Badge variant={session.attached ? "default" : "secondary"} className="text-[10px] px-1.5 py-0">
-                {session.attached ? "attached" : "detached"}
-              </Badge>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>{session.windows} window{session.windows !== 1 ? "s" : ""}</span>
-              {session.dimensions && (
-                <span>{session.dimensions.cols}&times;{session.dimensions.rows}</span>
-              )}
-              <span className="flex items-center gap-0.5">
-                <Clock className="h-3 w-3" />
-                {timeAgo(session.activity)}
-              </span>
-            </div>
+                  <MoreVertical className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={(e) => {
+                  e.stopPropagation();
+                  setRenameValue(session.name);
+                  setIsRenaming(true);
+                }}>
+                  <PenLine className="mr-2 h-3.5 w-3.5" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    triggerKill();
+                  }}
+                >
+                  <Trash2 className="mr-2 h-3.5 w-3.5" />
+                  Kill
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-          {!isMobile && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-              aria-label="Kill session"
-              onClick={(e) => {
-                e.stopPropagation();
-                triggerKill();
-              }}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-          )}
+
+          {/* Row 2: window/pane counts + time */}
+          <div className="flex items-center gap-2.5 pl-[26px] text-muted-foreground">
+            <span className="flex items-center gap-0.5" title={`${session.windows} window${session.windows !== 1 ? "s" : ""}`}>
+              <AppWindow className="h-3 w-3" />
+              <span className="text-[10px]">{session.windows}</span>
+            </span>
+            {detailPanes && (
+              <span className="flex items-center gap-0.5" title={`${detailPanes.length} pane${detailPanes.length !== 1 ? "s" : ""}`}>
+                <PanelTop className="h-3 w-3" />
+                <span className="text-[10px]">{detailPanes.length}</span>
+              </span>
+            )}
+            <span className="flex items-center gap-0.5">
+              <Clock className="h-2.5 w-2.5" />
+              <span className="text-[10px]">{timeAgo(session.activity)}</span>
+            </span>
+          </div>
         </CardContent>
+
+        {/* Expanded windows/panes tree */}
+        {expanded && (
+          <div className="border-t px-2.5 py-1.5" onClick={(e) => e.stopPropagation()}>
+            {detailLoading ? (
+              <div className="space-y-1">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-2 pl-4">
+                    <div className="h-3 w-3 animate-pulse rounded bg-muted" />
+                    <div className="h-3 flex-1 animate-pulse rounded bg-muted" />
+                  </div>
+                ))}
+              </div>
+            ) : detailWindows && panesByWindow ? (
+              <div className="space-y-0.5">
+                {detailWindows.map((win) => (
+                  <div key={win.id}>
+                    <div className="flex items-center gap-1 pl-3 text-[11px]">
+                      <TerminalSquare className="h-2.5 w-2.5 text-muted-foreground" />
+                      <span className="font-medium truncate">{win.index}: {win.name}</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{win.paneCount}p</span>
+                    </div>
+                    {panesByWindow[win.id]?.map((pane) => (
+                      <div key={pane.id} className="flex items-center gap-1 pl-6 border-l border-border ml-[14px] text-[11px] text-muted-foreground py-px">
+                        <span className="font-mono text-[10px]">{pane.index}</span>
+                        <span className="truncate">{formatPaneName(pane.command, pane.path)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
       </Card>
       <AlertDialog open={showKillConfirm} onOpenChange={setShowKillConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Kill session "{session.name}"?</AlertDialogTitle>
+            <AlertDialogTitle>Kill session &quot;{session.name}&quot;?</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently terminate the session and all its processes. This action cannot be undone.
             </AlertDialogDescription>

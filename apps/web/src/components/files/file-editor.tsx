@@ -195,7 +195,7 @@ export function FileEditor() {
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex flex-col bg-background">
+      <div className="fixed inset-0 z-[60] flex flex-col bg-background">
         {/* Toolbar */}
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <span className="flex-1 truncate text-sm font-medium">

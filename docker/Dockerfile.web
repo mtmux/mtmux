@@ -33,10 +33,10 @@ COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder /app/apps/web/public ./apps/web/public
 USER nextjs
-EXPOSE 14100
-ENV PORT=14100
+EXPOSE 24100
+ENV PORT=24100
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-  CMD wget --spider -q http://localhost:14100/ || exit 1
+  CMD wget --spider -q http://localhost:24100/ || exit 1
 
 CMD ["node", "apps/web/server.js"]

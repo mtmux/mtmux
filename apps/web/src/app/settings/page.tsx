@@ -28,8 +28,8 @@ export default function SettingsPage() {
     useFileStore.getState().setFileContent(null);
 
     // Clear localStorage
-    localStorage.removeItem("termbridge-token");
-    localStorage.removeItem("termbridge-last-session");
+    localStorage.removeItem("ccremote-token");
+    localStorage.removeItem("ccremote-last-session");
 
     router.push("/login");
   };

@@ -13,6 +13,7 @@ interface FileStore {
   // Editor state
   editorFile: string | null;
   editorTruncated: boolean;
+  editorForceText: boolean;
   isOperating: boolean;
   isSaving: boolean;
   setCurrentPath: (path: string) => void;
@@ -25,6 +26,7 @@ interface FileStore {
   setSortBy: (sort: "name" | "modified" | "size") => void;
   setIsOperating: (operating: boolean) => void;
   openEditor: (path: string) => void;
+  openEditorAsText: (path: string) => void;
   closeEditor: () => void;
   setIsSaving: (saving: boolean) => void;
 }
@@ -40,6 +42,7 @@ export const useFileStore = create<FileStore>((set) => ({
   sortBy: "name",
   editorFile: null,
   editorTruncated: false,
+  editorForceText: false,
   isOperating: false,
   isSaving: false,
   setCurrentPath: (currentPath) => set({ currentPath }),
@@ -51,7 +54,8 @@ export const useFileStore = create<FileStore>((set) => ({
   setViewMode: (viewMode) => set({ viewMode }),
   setSortBy: (sortBy) => set({ sortBy }),
   setIsOperating: (isOperating) => set({ isOperating }),
-  openEditor: (path) => set({ editorFile: path, editorTruncated: false, isSaving: false }),
-  closeEditor: () => set({ editorFile: null, editorTruncated: false, isSaving: false }),
+  openEditor: (path) => set({ editorFile: path, editorTruncated: false, editorForceText: false, isSaving: false }),
+  openEditorAsText: (path) => set({ editorFile: path, editorTruncated: false, editorForceText: true, isSaving: false }),
+  closeEditor: () => set({ editorFile: null, editorTruncated: false, editorForceText: false, isSaving: false }),
   setIsSaving: (isSaving) => set({ isSaving }),
 }));

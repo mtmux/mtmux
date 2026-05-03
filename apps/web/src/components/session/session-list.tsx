@@ -50,7 +50,7 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
     (name: string) => {
       setActiveSession(name);
       if (typeof window !== "undefined") {
-        localStorage.setItem("termbridge-last-session", name);
+        localStorage.setItem("ccremote-last-session", name);
       }
       useUiStore.getState().setMobileTab("terminal");
     },
@@ -88,8 +88,8 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
   }, [pullDistance, refresh]);
 
   return (
-    <div className={className}>
-      <div className="flex items-center justify-between px-3 py-2.5 border-b">
+    <div className={cn("flex flex-col overflow-hidden", className)}>
+      <div className="flex items-center justify-between px-3 py-2.5 border-b shrink-0">
         <h2 className="text-sm font-semibold">Sessions</h2>
         <div className="flex gap-1">
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={refresh}>
@@ -100,7 +100,7 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
           </Button>
         </div>
       </div>
-      <ScrollArea className="flex-1" ref={scrollRef}>
+      <ScrollArea className="h-0 flex-1" ref={scrollRef}>
         {(pullDistance > 0 || isRefreshing) && (
           <div
             className="flex items-center justify-center transition-all"

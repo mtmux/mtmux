@@ -216,6 +216,16 @@ export const TmuxCopyModeMessage = z.object({
   type: z.literal("tmux:copy-mode"),
 });
 
+export const PaneCaptureMessage = z.object({
+  type: z.literal("pane:capture"),
+  id: z.string(),
+});
+
+export const SessionWindowsMessage = z.object({
+  type: z.literal("session:windows"),
+  name: z.string(),
+});
+
 export const ClientMessage = z.discriminatedUnion("type", [
   AuthMessage,
   PingMessage,
@@ -259,6 +269,8 @@ export const ClientMessage = z.discriminatedUnion("type", [
   LayoutRotateMessage,
   TmuxPrefixMessage,
   TmuxCopyModeMessage,
+  PaneCaptureMessage,
+  SessionWindowsMessage,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessage>;
@@ -304,3 +316,5 @@ export type WindowLayoutMessage = z.infer<typeof WindowLayoutMessage>;
 export type LayoutRotateMessage = z.infer<typeof LayoutRotateMessage>;
 export type TmuxPrefixMessage = z.infer<typeof TmuxPrefixMessage>;
 export type TmuxCopyModeMessage = z.infer<typeof TmuxCopyModeMessage>;
+export type PaneCaptureMessage = z.infer<typeof PaneCaptureMessage>;
+export type SessionWindowsMessage = z.infer<typeof SessionWindowsMessage>;

@@ -42,3 +42,13 @@ if (
       "See .env.example for details.",
   );
 }
+
+if (
+  process.env.NODE_ENV === "production" &&
+  config.corsOrigins.some((o) => o.startsWith("http://localhost"))
+) {
+  throw new Error(
+    "CORS_ORIGINS must be set to your production origin(s) and must not include localhost in production. " +
+      "Set CORS_ORIGINS in .env to e.g. 'https://yourdomain.com'.",
+  );
+}

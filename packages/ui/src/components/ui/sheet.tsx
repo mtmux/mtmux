@@ -47,15 +47,43 @@ interface SheetContentProps
   extends React.ComponentPropsWithoutRef<typeof SheetPrimitive.Content>,
     VariantProps<typeof sheetVariants> {}
 
+// For top/bottom variants, anchor to the *visual* viewport (CSS vars set by
+// VisualViewportSync) so pinch-zoom can't push the sheet outside the visible
+// area horizontally. Inline style — Tailwind arbitrary values with nested
+// var()/calc()/max() don't reliably get emitted to the stylesheet.
+function visualViewportStyle(
+  side: "top" | "bottom" | "left" | "right" | null | undefined,
+): React.CSSProperties | undefined {
+  if (side === "bottom") {
+    return {
+      left: "var(--vv-offset-left, 0px)",
+      width: "var(--vv-width, 100%)",
+      right: "auto",
+      bottom:
+        "max(0px, calc(100vh - var(--vv-height, 100vh) - var(--vv-offset-top, 0px)))",
+    };
+  }
+  if (side === "top") {
+    return {
+      left: "var(--vv-offset-left, 0px)",
+      width: "var(--vv-width, 100%)",
+      right: "auto",
+      top: "var(--vv-offset-top, 0px)",
+    };
+  }
+  return undefined;
+}
+
 const SheetContent = React.forwardRef<
   React.ComponentRef<typeof SheetPrimitive.Content>,
   SheetContentProps
->(({ side = "right", className, children, ...props }, ref) => (
+>(({ side = "right", className, children, style, ...props }, ref) => (
   <SheetPortal>
     <SheetOverlay />
     <SheetPrimitive.Content
       ref={ref}
       className={cn(sheetVariants({ side }), className)}
+      style={{ ...visualViewportStyle(side), ...style }}
       {...props}
     >
       <SheetPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-secondary">
@@ -69,7 +97,7 @@ const SheetContent = React.forwardRef<
 SheetContent.displayName = SheetPrimitive.Content.displayName;
 
 const SheetHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col space-y-2 text-center sm:text-left", className)} {...props} />
+  <div className={cn("flex flex-col space-y-2 pr-10 text-center sm:text-left", className)} {...props} />
 );
 SheetHeader.displayName = "SheetHeader";
 

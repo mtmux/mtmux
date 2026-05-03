@@ -11,7 +11,7 @@ export default function SessionPage() {
   useEffect(() => {
     if (sessionId) {
       setActiveSession(decodeURIComponent(sessionId));
-      localStorage.setItem("termbridge-last-session", decodeURIComponent(sessionId));
+      localStorage.setItem("ccremote-last-session", decodeURIComponent(sessionId));
     }
   }, [sessionId, setActiveSession]);
 

@@ -141,7 +141,10 @@ export class RelayClient {
   }
 
   send(msg: ClientMessage): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    // Only send once the relay has confirmed auth (status === "connected").
+    // The WS readyState becomes OPEN at handshake — before auth:success — so
+    // sending here would race the auth handler and get dropped by the relay.
+    if (this.ws?.readyState === WebSocket.OPEN && this._status === "connected") {
       this.ws.send(serialize(msg));
     } else if (msg.type !== "ping") {
       this.pendingMessages.push(msg);

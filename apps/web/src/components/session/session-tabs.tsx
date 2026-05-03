@@ -34,7 +34,7 @@ export function SessionTabs({ onCreateClick, className }: SessionTabsProps) {
                 )}
                 onClick={() => {
                   setActiveSession(name);
-                  localStorage.setItem("termbridge-last-session", name);
+                  localStorage.setItem("ccremote-last-session", name);
                 }}
               >
                 <span className="truncate max-w-[120px]">{name}</span>

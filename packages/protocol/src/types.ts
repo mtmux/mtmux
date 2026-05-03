@@ -35,6 +35,7 @@ export const PaneInfoSchema = z.object({
   dimensions: TerminalSizeSchema,
   position: z.object({ x: z.number(), y: z.number() }),
   command: z.string().optional(),
+  path: z.string().optional(),
 });
 export type PaneInfo = z.infer<typeof PaneInfoSchema>;
 

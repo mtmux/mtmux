@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { SendHorizonal, ArrowUp, Square, CornerDownLeft } from "lucide-react";
 import { cn } from "@repo/ui/lib/utils";
 import { triggerHaptic } from "@repo/ui/components/haptic-button";
@@ -13,8 +13,17 @@ interface MobileCommandBarProps {
 
 export function MobileCommandBar({ className }: MobileCommandBarProps) {
   const [command, setCommand] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const { hapticEnabled } = useSettingsStore();
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "36px"; // reset to single row
+    const maxHeight = 80; // ~4 rows
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  }, [command]);
 
   const handleSend = useCallback(() => {
     if (!command.trim()) return;
@@ -38,7 +47,7 @@ export function MobileCommandBar({ className }: MobileCommandBarProps) {
   );
 
   return (
-    <div className={cn("flex items-center gap-1.5 px-2 py-1.5 border-t bg-background", className)}>
+    <div className={cn("flex items-end gap-1.5 px-2 py-1.5 border-t bg-background", className)}>
       <button
         onClick={() => sendKey("\x03")}
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground active:scale-95 transition-transform"
@@ -60,18 +69,19 @@ export function MobileCommandBar({ className }: MobileCommandBarProps) {
       >
         <CornerDownLeft className="h-3.5 w-3.5" />
       </button>
-      <input
+      <textarea
         ref={inputRef}
         value={command}
         onChange={(e) => setCommand(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handleSend();
           }
         }}
+        rows={1}
         placeholder="Type command..."
-        className="flex-1 h-9 rounded-md border border-border bg-muted/50 px-3 text-sm font-mono outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors"
+        className="flex-1 min-h-[36px] max-h-[80px] resize-none rounded-md border border-border bg-muted/50 px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors"
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"

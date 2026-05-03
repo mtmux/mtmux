@@ -17,6 +17,7 @@ import { PaneListPanel } from "@/components/mobile/pane-list-panel";
 import { PaneResizeControls } from "@/components/mobile/pane-resize-controls";
 import { PinchZoomHandler } from "@/components/mobile/pinch-zoom-handler";
 import { cn } from "@repo/ui/lib/utils";
+import { getFileViewMode } from "@/lib/file-utils";
 import { PanelLeftClose, PanelLeft } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { useSessionStore } from "@/stores/session-store";
@@ -29,6 +30,16 @@ const FileEditor = dynamic(
   { ssr: false },
 );
 
+const FileViewer = dynamic(
+  () => import("@/components/files/file-viewer").then((m) => ({ default: m.FileViewer })),
+  { ssr: false },
+);
+
+const CopyModeOverlay = dynamic(
+  () => import("@/components/mobile/copy-mode-overlay").then((m) => ({ default: m.CopyModeOverlay })),
+  { ssr: false },
+);
+
 export default function TerminalPage() {
   const router = useRouter();
   const isMobile = useStableMediaQuery("(max-width: 768px)");
@@ -36,10 +47,12 @@ export default function TerminalPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const setSelectedFile = useFileStore((s) => s.setSelectedFile);
   const editorFile = useFileStore((s) => s.editorFile);
+  const editorForceText = useFileStore((s) => s.editorForceText);
   const openEditor = useFileStore((s) => s.openEditor);
   const mobileTab = useUiStore((s) => s.mobileTab);
   const setMobileTab = useUiStore((s) => s.setMobileTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const copyModeOpen = useUiStore((s) => s.copyModeOpen);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const terminalRef = useRef<TerminalViewHandle>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -143,7 +156,13 @@ export default function TerminalPage() {
           <SettingsPanel className="h-full" />
         </div>
         {/* File editor overlay */}
-        {editorFile && <FileEditor />}
+        {editorFile && (
+          editorForceText || getFileViewMode(editorFile) === "text"
+            ? <FileEditor />
+            : <FileViewer />
+        )}
+        {/* Copy mode overlay */}
+        {copyModeOpen && <CopyModeOverlay />}
         <TmuxFab />
         <PaneListPanel />
         <PaneResizeControls />
@@ -209,7 +228,11 @@ export default function TerminalPage() {
       </div>
 
       {/* File editor overlay */}
-      {editorFile && <FileEditor />}
+      {editorFile && (
+          editorForceText || getFileViewMode(editorFile) === "text"
+            ? <FileEditor />
+            : <FileViewer />
+        )}
 
       <SessionCreateDialog
         open={showCreateDialog}

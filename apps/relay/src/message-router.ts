@@ -65,17 +65,36 @@ export async function routeMessage(
         }
 
         const bridge = createPtyBridge(msg.name, msg.size);
+        if (bridge.spawnError) {
+          sendError(ws, "PTY_SPAWN_FAILED", bridge.spawnError.message);
+          break;
+        }
         conn.pty = bridge;
         conn.attachedSession = msg.name;
 
+        // Bind callbacks to *this* bridge instance. A previous PTY's late
+        // onExit must not null out conn.pty if it has already been reassigned
+        // to a newer bridge — only clear if conn.pty still points at us.
         bridge.onData((data) => {
-          send(ws, { type: "terminal:output", data });
+          if (conn.pty === bridge) {
+            send(ws, { type: "terminal:output", data });
+          }
         });
 
         bridge.onExit((exitCode) => {
           send(ws, { type: "session:exited", name: msg.name, exitCode });
-          conn.pty = null;
-          conn.attachedSession = null;
+          if (conn.pty === bridge) {
+            conn.pty = null;
+            conn.attachedSession = null;
+          }
+        });
+
+        bridge.onSpawnError((err) => {
+          sendError(ws, "PTY_SPAWN_FAILED", err.message);
+          if (conn.pty === bridge) {
+            conn.pty = null;
+            conn.attachedSession = null;
+          }
         });
 
         // When PTY is ready: send captured data first, then attached ack
@@ -116,6 +135,13 @@ export async function routeMessage(
         const sessions = await tmux.listSessions();
         send(ws, { type: "session:list", sessions });
         broadcastToAll({ type: "session:list", sessions }, ws);
+        break;
+      }
+
+      case "session:windows": {
+        const windows = await tmux.listWindows(msg.name);
+        const panes = await tmux.listPanes(msg.name);
+        send(ws, { type: "session:windows", name: msg.name, windows, panes });
         break;
       }
 
@@ -508,6 +534,16 @@ export async function routeMessage(
           break;
         }
         await tmux.enterCopyMode(conn.attachedSession);
+        break;
+      }
+
+      case "pane:capture": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        const capturedContent = await tmux.capturePaneById(msg.id);
+        send(ws, { type: "pane:captured", id: msg.id, content: capturedContent });
         break;
       }
 

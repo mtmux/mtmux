@@ -9,6 +9,7 @@ import { usePaneStore } from "@/stores/pane-store";
 import { useFileStore } from "@/stores/file-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAlertStore } from "@/stores/alert-store";
+import { useUiStore } from "@/stores/ui-store";
 
 let globalClient: RelayClient | null = null;
 
@@ -40,7 +41,7 @@ export function useWebSocket(url: string, token: string) {
           break;
         case "auth:failure":
           useAlertStore.getState().push("error", msg.reason || "Authentication failed");
-          localStorage.removeItem("termbridge-token");
+          localStorage.removeItem("ccremote-token");
           window.location.href = "/login";
           break;
         case "server:info":
@@ -111,6 +112,12 @@ export function useWebSocket(url: string, token: string) {
         }
         case "session:attached":
           // Handled in terminal-view
+          break;
+        case "pane:captured":
+          useUiStore.getState().setCapturedPane(msg.id, msg.content);
+          break;
+        case "session:windows":
+          // Handled by SessionCard via direct onMessage subscription
           break;
         case "error":
           useAlertStore.getState().push("error", msg.message);

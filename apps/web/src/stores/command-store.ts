@@ -47,6 +47,6 @@ export const useCommandStore = create<CommandStore>()(
         })),
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
     }),
-    { name: "termbridge-commands" },
+    { name: "ccremote-commands" },
   ),
 );

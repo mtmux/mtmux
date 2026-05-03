@@ -1,24 +1,13 @@
-# AGENTS.md — TermBridge
+# AGENTS.md — ccremote
 
 ## Repository Map
 ```
-termbridge/
+ccremote/
 ├── apps/web/              → Terminal web client (Next.js 15, port 14100)
 ├── apps/relay/            → WebSocket relay server (Node.js, port 14300)
 ├── apps/docs/             → Documentation site (port 14102)
-├── apps/admin/            → Admin dashboard (port 14101)
-├── apps/api/              → Standalone Hono API (port 14200)
-├── apps/temporal-worker/  → Background job worker
 ├── packages/protocol/     → WebSocket message schemas (Zod)
-├── packages/db/           → Prisma 7 schema + client
-├── packages/auth/         → better-auth config
-├── packages/api/          → tRPC routers
 ├── packages/ui/           → shadcn/ui components + terminal themes
-├── packages/email/        → React Email + Resend
-├── packages/storage/      → MinIO/S3 client
-├── packages/ai/           → Vercel AI SDK
-├── packages/websockets/   → Socket.IO
-├── packages/temporal/     → Temporal workflows
 ├── packages/logger/       → Pino logger
 ├── packages/config/       → Shared env + constants
 ├── tooling/               → ESLint, Prettier, TypeScript configs
@@ -26,7 +15,7 @@ termbridge/
 └── scripts/               → Dev setup scripts
 ```
 
-## How TermBridge Works
+## How ccremote Works
 
 ### Terminal Components
 The web client at `apps/web` uses xterm.js to render terminal output. Key files:
@@ -66,17 +55,6 @@ The relay at `apps/relay/src/`:
 5. Export from `src/index.ts`
 6. Consumers add `"@repo/<name>": "workspace:*"` to their dependencies
 
-## How to Add a tRPC Router
-1. Create `packages/api/src/routers/<name>.ts`
-2. Import `router`, `publicProcedure`, `protectedProcedure` from `../trpc.js`
-3. Add to merged router in `packages/api/src/root.ts`
-
-## How to Add a Temporal Workflow
-1. Create workflow in `packages/temporal/src/workflows/`
-2. Create activities in `packages/temporal/src/activities/`
-3. Re-export workflow from `packages/temporal/src/workflows/index.ts`
-4. Register activities in `apps/temporal-worker/src/worker.ts`
-
 ## How to Modify Relay Handlers
 1. Find the message type in `apps/relay/src/message-router.ts`
 2. Each `case` handles one `ClientMessage` type
@@ -88,8 +66,6 @@ The relay at `apps/relay/src/`:
 - [ ] No raw Tailwind colors (use semantic: bg-background, text-foreground)
 - [ ] Imports use `.js` extension for local files
 - [ ] Environment variables validated with zod
-- [ ] Protected routes use `protectedProcedure`
-- [ ] New models added to Prisma schema folder and types re-exported
 - [ ] Docker compose updated if new service needed
 - [ ] File access in relay uses `isPathAllowed()` guard
 - [ ] Protocol messages added to both client and server schemas

@@ -35,7 +35,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm db:generate
       - run: pnpm typecheck
 
   test:
@@ -49,5 +48,4 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm db:generate
       - run: pnpm test

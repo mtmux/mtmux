@@ -30,6 +30,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/ui/components/ui/dropdown-menu";
 import {
@@ -376,54 +377,46 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 shrink-0"
-          onClick={handleNewFile}
-          disabled={isOperating}
-          title="New file"
-          aria-label="New file"
-        >
-          <FilePlus className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 shrink-0"
-          onClick={handleNewFolder}
-          disabled={isOperating}
-          title="New folder"
-          aria-label="New folder"
-        >
-          <FolderPlus className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 shrink-0"
-          onClick={handleUpload}
-          disabled={isOperating}
-          title="Upload file"
-          aria-label="Upload file"
-        >
-          <Upload className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 shrink-0"
-          onClick={() => setSortBy(sortBy === "name" ? "modified" : sortBy === "modified" ? "size" : "name")}
-          aria-label="Change sort order"
-        >
-          <ArrowUpDown className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 shrink-0"
+          className="h-7 w-7 shrink-0"
           onClick={() => setViewMode(viewMode === "list" ? "grid" : "list")}
           aria-label={viewMode === "list" ? "Switch to grid view" : "Switch to list view"}
         >
           {viewMode === "list" ? <Grid3x3 className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="More actions">
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={handleNewFile} disabled={isOperating}>
+              <FilePlus className="mr-2 h-3.5 w-3.5" />
+              New File
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleNewFolder} disabled={isOperating}>
+              <FolderPlus className="mr-2 h-3.5 w-3.5" />
+              New Folder
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleUpload} disabled={isOperating}>
+              <Upload className="mr-2 h-3.5 w-3.5" />
+              Upload File
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => setSortBy("name")}>
+              <ArrowUpDown className="mr-2 h-3.5 w-3.5" />
+              Sort by Name {sortBy === "name" && "✓"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setSortBy("modified")}>
+              <ArrowUpDown className="mr-2 h-3.5 w-3.5" />
+              Sort by Modified {sortBy === "modified" && "✓"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setSortBy("size")}>
+              <ArrowUpDown className="mr-2 h-3.5 w-3.5" />
+              Sort by Size {sortBy === "size" && "✓"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Hidden file input for upload */}
@@ -496,7 +489,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
                         onClick={() => handleEntryClick(entry)}
                       >
                         <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <span className="flex-1 truncate text-left">{entry.name}</span>
+                        <span className="flex-1 truncate text-left" title={entry.name}>{entry.name}</span>
                         <span className="text-xs text-muted-foreground shrink-0">
                           {entry.type === "file" ? formatSize(entry.size) : ""}
                         </span>
@@ -563,9 +556,9 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
         )}
 
         {sortedEntries.length === 0 && !isLoading && (
-          <p className="py-8 text-center text-sm text-muted-foreground">
+          <div className="flex h-full min-h-[120px] flex-col items-center justify-center py-8 text-center text-sm text-muted-foreground">
             {filter ? "No matching files" : "Empty directory"}
-          </p>
+          </div>
         )}
       </ScrollArea>
 

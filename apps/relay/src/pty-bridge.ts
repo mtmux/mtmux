@@ -13,9 +13,11 @@ export interface PtyBridge {
   onData(cb: (data: string) => void): void;
   onExit(cb: (exitCode: number) => void): void;
   onReady(cb: () => void): void;
+  onSpawnError(cb: (error: Error) => void): void;
   readonly pid: number;
   readonly sessionName: string;
   readonly detaching: boolean;
+  readonly spawnError: Error | null;
 }
 
 export function createPtyBridge(
@@ -27,69 +29,112 @@ export function createPtyBridge(
   const cols = size?.cols ?? 80;
   const rows = size?.rows ?? 24;
 
-  const ptyProcess = pty.spawn("tmux", args, {
-    name: "xterm-256color",
-    cols,
-    rows,
-    cwd: process.env.HOME ?? "/",
-    env: process.env as Record<string, string>,
-  });
-
-  logger.info({ sessionName, pid: ptyProcess.pid, cols, rows }, "PTY spawned");
-
   const dataCallbacks: Array<(data: string) => void> = [];
   const exitCallbacks: Array<(exitCode: number) => void> = [];
   const readyCallbacks: Array<() => void> = [];
+  const spawnErrorCallbacks: Array<(error: Error) => void> = [];
   let readyFired = false;
   let detaching = false;
+  let spawnError: Error | null = null;
+  let readyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const fireSpawnError = (err: Error) => {
+    if (spawnError) return;
+    spawnError = err;
+    if (readyTimeout) {
+      clearTimeout(readyTimeout);
+      readyTimeout = null;
+    }
+    for (const cb of spawnErrorCallbacks) {
+      cb(err);
+    }
+  };
+
+  let ptyProcess: pty.IPty | null = null;
+  try {
+    ptyProcess = pty.spawn("tmux", args, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd: process.env.HOME ?? "/",
+      env: process.env as Record<string, string>,
+    });
+    logger.info({ sessionName, pid: ptyProcess.pid, cols, rows }, "PTY spawned");
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    logger.error({ sessionName, err }, "PTY spawn failed");
+    spawnError = err;
+  }
 
   const fireReady = () => {
-    if (readyFired) return;
+    if (readyFired || spawnError) return;
     readyFired = true;
     for (const cb of readyCallbacks) {
       cb();
     }
   };
 
-  // Fire ready on first data or after 50ms timeout (whichever first)
-  const readyTimeout = setTimeout(fireReady, 50);
+  if (ptyProcess) {
+    // Fire ready on first data or after 50ms timeout (whichever first)
+    readyTimeout = setTimeout(fireReady, 50);
 
-  ptyProcess.onData((data) => {
-    if (!readyFired) {
-      clearTimeout(readyTimeout);
-      fireReady();
-    }
-    for (const cb of dataCallbacks) {
-      cb(data);
-    }
-  });
-
-  ptyProcess.onExit(({ exitCode }) => {
-    clearTimeout(readyTimeout);
-    logger.info({ sessionName, exitCode, detaching }, "PTY exited");
-    if (!detaching) {
-      for (const cb of exitCallbacks) {
-        cb(exitCode);
+    ptyProcess.onData((data) => {
+      if (!readyFired) {
+        if (readyTimeout) {
+          clearTimeout(readyTimeout);
+          readyTimeout = null;
+        }
+        fireReady();
       }
-    }
-  });
+      for (const cb of dataCallbacks) {
+        cb(data);
+      }
+    });
+
+    ptyProcess.onExit(({ exitCode }) => {
+      if (readyTimeout) {
+        clearTimeout(readyTimeout);
+        readyTimeout = null;
+      }
+      logger.info({ sessionName, exitCode, detaching, readyFired }, "PTY exited");
+      // Exiting before ready (and not because we initiated detach) means the
+      // tmux attach failed — the session may have vanished between exists()
+      // and attach-session, or tmux refused for another reason. Surface as
+      // a spawn failure rather than a phony "ready" + silent dead session.
+      if (!readyFired && !detaching) {
+        fireSpawnError(new Error(`tmux attach-session exited with code ${exitCode} before ready`));
+        return;
+      }
+      if (!detaching) {
+        for (const cb of exitCallbacks) {
+          cb(exitCode);
+        }
+      }
+    });
+  }
 
   return {
     write(data: string) {
-      ptyProcess.write(data);
+      ptyProcess?.write(data);
     },
     resize(newSize: TerminalSize) {
-      ptyProcess.resize(newSize.cols, newSize.rows);
+      ptyProcess?.resize(newSize.cols, newSize.rows);
     },
     kill() {
-      clearTimeout(readyTimeout);
-      ptyProcess.kill();
+      if (readyTimeout) {
+        clearTimeout(readyTimeout);
+        readyTimeout = null;
+      }
+      ptyProcess?.kill();
     },
     markDetaching() {
       detaching = true;
     },
     get detaching() {
       return detaching;
+    },
+    get spawnError() {
+      return spawnError;
     },
     onData(cb: (data: string) => void) {
       dataCallbacks.push(cb);
@@ -100,12 +145,19 @@ export function createPtyBridge(
     onReady(cb: () => void) {
       if (readyFired) {
         cb();
-      } else {
+      } else if (!spawnError) {
         readyCallbacks.push(cb);
       }
     },
+    onSpawnError(cb: (error: Error) => void) {
+      if (spawnError) {
+        cb(spawnError);
+      } else {
+        spawnErrorCallbacks.push(cb);
+      }
+    },
     get pid() {
-      return ptyProcess.pid;
+      return ptyProcess?.pid ?? -1;
     },
     sessionName,
   };

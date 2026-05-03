@@ -4,13 +4,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile.relay
     ports:
-      - "${RELAY_PORT:-14300}:14300"
+      - "${RELAY_PORT:-24300}:24300"
     env_file: .env
     volumes:
       - /tmp/tmux-1000:/tmp/tmux-1000
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:14300/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:24300/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -22,14 +22,14 @@ services:
       context: .
       dockerfile: docker/Dockerfile.web
     ports:
-      - "${WEB_PORT:-14100}:14100"
+      - "${WEB_PORT:-24100}:24100"
     env_file: .env
     depends_on:
       relay:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14100"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:24100"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -41,11 +41,11 @@ services:
       context: .
       dockerfile: docker/Dockerfile.docs
     ports:
-      - "${DOCS_PORT:-14102}:14102"
+      - "${DOCS_PORT:-24102}:24102"
     env_file: .env
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14102"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:24102"]
       interval: 30s
       timeout: 10s
       retries: 3

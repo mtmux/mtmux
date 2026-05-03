@@ -12,6 +12,7 @@ import { getTerminalTheme, terminalThemeToXterm } from "@repo/ui/terminal-themes
 import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useAlertStore } from "@/stores/alert-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 import { Terminal, Plus } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
@@ -241,6 +242,10 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         }, 150);
       };
       window.visualViewport?.addEventListener("resize", handleViewportResize);
+      // Also re-fit on visualViewport scroll — fires when user pans the zoomed
+      // visual viewport. Without this, layout-anchored chrome repositions
+      // correctly but the terminal can be drawn at a stale offset.
+      window.visualViewport?.addEventListener("scroll", handleViewportResize);
 
       // IntersectionObserver for mobile tab visibility (display:none → display:flex)
       const intersectionObserver = new IntersectionObserver((entries) => {
@@ -273,6 +278,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         window.removeEventListener("resize", handleWindowResize);
         window.removeEventListener("orientationchange", handleOrientationChange);
         window.visualViewport?.removeEventListener("resize", handleViewportResize);
+        window.visualViewport?.removeEventListener("scroll", handleViewportResize);
         dataDisposable.dispose();
         resizeDisposable.dispose();
         // Cancel any pending recovery
@@ -443,18 +449,18 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         usePaneStore.getState().setPendingAutoZoom(true);
       }
 
-      // Fallback: if session:attached never arrives (old relay), ungate after 500ms
-      const fallbackTimer = setTimeout(() => {
-        if (!sessionReadyRef.current) {
-          sessionReadyRef.current = true;
-          attachedSessionRef.current = sessionName;
-          pendingSessionRef.current = null;
-          terminalRef.current?.clear();
+      // If session:attached doesn't arrive in 5s, surface a visible error
+      // and leave the click un-handled (don't flip ready=true to mask it).
+      const errorTimer = setTimeout(() => {
+        if (!sessionReadyRef.current && pendingSessionRef.current === sessionName) {
+          useAlertStore
+            .getState()
+            .push("error", `Couldn't open session "${sessionName}" — try again or check the relay.`);
         }
-      }, 500);
+      }, 5000);
 
       return () => {
-        clearTimeout(fallbackTimer);
+        clearTimeout(errorTimer);
         pendingSessionRef.current = null;
         sessionReadyRef.current = false;
         client.send({ type: "session:detach" });

@@ -219,8 +219,16 @@ export function TmuxFab() {
 
   return (
     <>
-      {/* FAB button with long-press quick split */}
-      <div className="fixed bottom-20 right-4 z-40">
+      {/* FAB button with long-press quick split.
+          Anchored to the *visual* viewport (--vv-* set by VisualViewportSync)
+          so pinch-zoom doesn't push it offscreen horizontally / vertically. */}
+      <div
+        className="fixed z-40"
+        style={{
+          right: "calc(1rem + (100vw - var(--vv-width, 100vw)) - var(--vv-offset-left, 0px))",
+          bottom: "calc(5rem + max(0px, 100vh - var(--vv-height, 100vh) - var(--vv-offset-top, 0px)))",
+        }}
+      >
         {longPressOpen && (
           <div className="absolute bottom-14 right-0 flex gap-1 rounded-lg border bg-background p-1 shadow-lg">
             <Button
@@ -289,16 +297,16 @@ export function TmuxFab() {
             ))}
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {currentActions.map((item) => (
               <Button
                 key={item.label}
                 variant={"variant" in item ? (item.variant as "destructive") : "outline"}
-                className="flex h-auto flex-col gap-1.5 py-3 text-xs"
+                className="flex h-auto items-center gap-2 px-3 py-2.5 text-xs justify-start"
                 onClick={item.action}
               >
-                <item.icon className="h-5 w-5" />
-                <span className="text-center leading-tight">{item.label}</span>
+                <item.icon className="h-4 w-4" />
+                {item.label}
               </Button>
             ))}
           </div>

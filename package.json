@@ -1,5 +1,5 @@
 {
-  "name": "monorepo-starter",
+  "name": "ccremote",
   "private": true,
   "packageManager": "pnpm@9.15.4",
   "scripts": {
@@ -8,17 +8,17 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
-    "db:generate": "turbo db:generate",
-    "db:push": "turbo db:push",
-    "db:seed": "turbo db:seed",
-    "db:studio": "turbo db:studio",
-    "db:reset": "turbo db:reset",
     "clean": "turbo clean && rm -rf node_modules .turbo",
     "kill-ports": "./scripts/kill-ports.sh",
     "dev:restart": "./scripts/kill-ports.sh && turbo dev",
     "docker:dev": "docker compose up -d",
     "docker:prod": "docker compose -f docker-compose.prod.yml up -d",
-    "setup": "./scripts/setup.sh"
+    "setup": "./scripts/setup.sh",
+    "start": "turbo start",
+    "start:prod": "pnpm build && pm2 start ecosystem.config.cjs",
+    "stop:prod": "pm2 stop ecosystem.config.cjs",
+    "restart:prod": "pm2 reload ecosystem.config.cjs",
+    "logs:prod": "pm2 logs"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.6.1",
@@ -26,6 +26,7 @@
     "@repo/prettier-config": "workspace:*",
     "husky": "^9.1.7",
     "lint-staged": "^15.3.0",
+    "pm2": "^5.4.3",
     "prettier": "^3.4.2",
     "turbo": "^2.3.3"
   }

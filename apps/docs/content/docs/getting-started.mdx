@@ -1,0 +1,61 @@
+---
+title: Getting Started
+description: Get ccremote up and running in minutes — install, configure, and connect to your remote terminal.
+---
+
+# Getting Started
+
+ccremote connects a browser-based terminal UI to tmux sessions on your server. Follow these steps to get started.
+
+## Prerequisites
+
+- **Node.js 22+** — runtime for both web app and relay server
+- **pnpm 9+** — package manager
+- **tmux 3.0+** — terminal multiplexer (must be installed on the relay host)
+
+## Installation
+
+```bash
+git clone https://github.com/nicholasgriffintn/ccremote.git
+cd ccremote
+pnpm setup
+```
+
+This installs dependencies and creates a `.env` file from the template.
+
+## Configuration
+
+Edit `.env` and set at minimum:
+
+```bash
+# A secure token clients must provide to connect
+AUTH_TOKEN="your-secure-token-here"
+
+# The WebSocket URL the browser connects to
+NEXT_PUBLIC_RELAY_URL="ws://localhost:14300"
+```
+
+See [Configuration](/docs/configuration) for all available options.
+
+## Start Development
+
+```bash
+pnpm dev
+```
+
+This starts:
+- **Web app** at `http://localhost:14100`
+- **Relay server** at `ws://localhost:14300`
+- **Docs** at `http://localhost:14102`
+
+## Connect
+
+1. Open `http://localhost:14100` in your browser
+2. Enter your auth token when prompted
+3. Create or attach to a tmux session
+
+## Next Steps
+
+- [Self-Hosting Guide](/docs/self-hosting) — deploy with Docker or PM2
+- [Configuration Reference](/docs/configuration) — all environment variables
+- [Mobile Support](/docs/web-app/mobile) — use ccremote on your phone

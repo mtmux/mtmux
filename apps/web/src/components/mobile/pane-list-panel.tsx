@@ -8,11 +8,34 @@ import {
   SheetTitle,
 } from "@repo/ui/components/ui/sheet";
 import { Button } from "@repo/ui/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  TooltipProvider,
+} from "@repo/ui/components/ui/tooltip";
 import { cn } from "@repo/ui/lib/utils";
 import { useMediaQuery } from "@repo/ui/hooks/use-media-query";
 import { usePaneStore } from "@/stores/pane-store";
 import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
+
+const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
+
+function shortenPath(path: string): string {
+  if (!path) return "";
+  const home = typeof window !== "undefined" ? "" : "";
+  // Replace home dir with ~
+  const shortened = path.replace(/^\/home\/[^/]+/, "~").replace(/^\/root/, "~");
+  return shortened;
+}
+
+function formatPaneName(command?: string, path?: string): string {
+  if (!command || SHELL_COMMANDS.has(command)) {
+    return path ? shortenPath(path) : command || "shell";
+  }
+  return path ? `${command} · ${shortenPath(path)}` : command;
+}
 
 export function PaneListPanel() {
   const { panes, activePaneId, zoomedPaneId } = usePaneStore();
@@ -36,15 +59,6 @@ export function PaneListPanel() {
       </Sheet>
     );
   }
-
-  // Compute grid layout from pane positions/dimensions (filter out panes with missing data)
-  const validPanes = panes.filter((p) => p.dimensions && p.position);
-  const maxX = validPanes.length > 0
-    ? Math.max(...validPanes.map((p) => p.position.x + p.dimensions.cols))
-    : 1;
-  const maxY = validPanes.length > 0
-    ? Math.max(...validPanes.map((p) => p.position.y + p.dimensions.rows))
-    : 1;
 
   const handleSelectPane = (id: string) => {
     const client = getRelayClient();
@@ -84,64 +98,25 @@ export function PaneListPanel() {
 
   return (
     <Sheet open={paneListOpen} onOpenChange={setPaneListOpen}>
-      <SheetContent side="bottom" className="h-[50vh] p-4">
+      <SheetContent side="bottom" className="flex h-[40vh] flex-col p-4">
         <SheetHeader className="pb-2">
           <div className="flex items-center justify-between">
             <SheetTitle className="text-sm">Panes ({panes.length})</SheetTitle>
-            <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={handleZoomPane}>
-              <Maximize2 className="h-3.5 w-3.5" />
-              {zoomedPaneId ? "Unzoom" : "Zoom"}
-            </Button>
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleZoomPane}>
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{zoomedPaneId ? "Unzoom" : "Zoom"}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
         </SheetHeader>
 
-        {/* Mini-map of pane layout */}
-        <div
-          className="relative mx-auto w-full rounded-lg border bg-muted/30 p-1"
-          style={{ aspectRatio: `${maxX} / ${maxY}`, maxHeight: "200px" }}
-        >
-          {validPanes.map((pane) => {
-            const left = (pane.position.x / maxX) * 100;
-            const top = (pane.position.y / maxY) * 100;
-            const width = (pane.dimensions.cols / maxX) * 100;
-            const height = (pane.dimensions.rows / maxY) * 100;
-
-            return (
-              <button
-                key={pane.id}
-                className={cn(
-                  "absolute flex min-h-[44px] min-w-[44px] items-center justify-center rounded border text-xs font-mono transition-colors",
-                  pane.id === activePaneId
-                    ? "border-primary bg-primary/20 text-primary"
-                    : "border-border bg-background hover:bg-accent",
-                  pane.id === zoomedPaneId && "ring-2 ring-warning",
-                )}
-                style={{
-                  left: `${left}%`,
-                  top: `${top}%`,
-                  width: `${width}%`,
-                  height: `${height}%`,
-                }}
-                onClick={() => handleSelectPane(pane.id)}
-              >
-                <div className="flex flex-col items-center gap-0.5">
-                  <span className="text-[10px] opacity-70">{pane.index}</span>
-                  {pane.command && (
-                    <span className="max-w-full truncate text-[9px] opacity-50 px-1">
-                      {pane.command}
-                    </span>
-                  )}
-                  {pane.id === zoomedPaneId && (
-                    <span className="text-[8px] text-warning-foreground font-semibold">ZOOM</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
         {/* Pane list */}
-        <div className="mt-3 space-y-1">
+        <div className="mt-1 flex-1 min-h-0 overflow-y-auto space-y-1">
           {panes.map((pane) => (
             <div
               key={pane.id}
@@ -158,7 +133,7 @@ export function PaneListPanel() {
                   {pane.index}
                 </span>
                 <span className="truncate">
-                  {pane.command || "shell"}
+                  {formatPaneName(pane.command, pane.path)}
                 </span>
                 {pane.dimensions && (
                   <span className="text-[10px] text-muted-foreground">

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Kill all TermBridge dev processes and free ports
+# Kill all ccremote dev processes and free ports
 set -euo pipefail
 
-PORTS=(14100 14101 14102 14200 14300)
+PORTS=(14100 14102 14300)
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Kill any orphaned dev processes from this repo

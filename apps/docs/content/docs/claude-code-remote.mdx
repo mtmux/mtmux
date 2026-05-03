@@ -1,0 +1,41 @@
+---
+title: Run Claude Code Remotely
+description: Use ccremote to access and monitor Claude Code terminal sessions from any browser or mobile device.
+---
+
+# Run Claude Code Remotely
+
+ccremote is purpose-built for accessing Claude Code from any device. Whether you're monitoring a long-running Claude Code session from your phone or switching between machines, ccremote keeps you connected.
+
+## Why Remote Access for Claude Code?
+
+Claude Code runs in a terminal and can execute long-running tasks — code generation, refactoring, test runs, and more. With ccremote, you can:
+
+- **Monitor from mobile** — Check on Claude Code progress from your phone while away from your desk
+- **Switch machines** — Start a Claude Code session on one machine, continue from another
+- **Keep sessions alive** — tmux sessions persist even when you disconnect
+- **Share access** — Multiple browser tabs can view the same session
+- **Full interaction** — Not just monitoring — send input, approve actions, provide feedback
+
+## Setup for Claude Code
+
+1. Install ccremote on the machine where Claude Code runs (see [Getting Started](/docs/getting-started))
+2. Start a tmux session: `tmux new -s claude`
+3. Launch Claude Code inside that session
+4. Connect via ccremote from any browser
+
+## Mobile Workflow
+
+The mobile-optimized UI makes it practical to interact with Claude Code on the go:
+
+- **Swipe between views** — Terminal, sessions list, and file browser
+- **Keyboard toolbar** — Quick access to Tab, Ctrl+C, arrow keys, and other common inputs
+- **Landscape mode** — Wider terminal view on mobile
+- **Copy mode** — Select and copy terminal output
+
+## Tips
+
+- Use `IDLE_TIMEOUT_MINUTES=0` to disable idle disconnection for long Claude Code sessions
+- Set `ALLOWED_PATHS` to include your project directories
+- Use a reverse proxy with TLS for secure remote access over the internet
+- The relay server's WebSocket protocol supports automatic reconnection — if your connection drops, you'll reconnect to the same session

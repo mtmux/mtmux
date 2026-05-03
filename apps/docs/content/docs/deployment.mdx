@@ -3,6 +3,30 @@ title: Deployment
 description: Deploy ccremote with Docker, PM2, or a reverse proxy.
 ---
 
+## Quickstart with `pnpm start:prod`
+
+The fastest way to run ccremote in production on a single host is the bundled
+PM2 script. It builds, starts, and supervises all three apps on the
+production port range (web `24100`, docs `24102`, relay `24300`) — distinct
+from the dev range (`14xxx`) so dev and prod can coexist on the same host.
+
+```bash
+cp .env.example .env
+# fill in AUTH_TOKEN, CORS_ORIGINS, NEXT_PUBLIC_RELAY_URL
+
+pnpm install
+pnpm start:prod      # build + pm2 start
+pnpm logs:prod       # tail logs
+pnpm restart:prod    # zero-downtime reload
+pnpm stop:prod       # stop all apps
+```
+
+`pnpm start:prod` runs `pnpm build && pm2 start ecosystem.config.cjs`.
+PM2 ships as a devDependency, so no global install is needed. The relay
+refuses to boot in `NODE_ENV=production` if `AUTH_TOKEN` is empty / default,
+or if `CORS_ORIGINS` contains a `localhost` origin — see
+[Production Environment](#production-environment) below.
+
 ## Production Environment
 
 Set these environment variables for production:
@@ -11,22 +35,23 @@ Set these environment variables for production:
 # === Relay ===
 AUTH_TOKEN=your-secure-token-here       # openssl rand -hex 32
 RELAY_HOST=0.0.0.0
-RELAY_PORT=14300
+RELAY_PORT=24300                        # dev: 14300 — prod: 24300
 ALLOWED_PATHS=/home/deploy
 CORS_ORIGINS=https://terminal.example.com
 TMUX_DEFAULT_SHELL=/bin/bash
 
 # === Web ===
 NEXT_PUBLIC_RELAY_URL=wss://terminal.example.com/ws
-WEB_PORT=14100
+WEB_PORT=24100                          # dev: 14100 — prod: 24100
 
 # === Docs ===
-DOCS_PORT=14102
+DOCS_PORT=24102                         # dev: 14102 — prod: 24102
 ```
 
-The relay server **exits on boot** if `NODE_ENV=production` and
-`AUTH_TOKEN` is empty or still the default sentinel
-`change-me-in-production`. See `.env.example` in the repo for the full
+The relay server **exits on boot** if `NODE_ENV=production` and either
+`AUTH_TOKEN` is empty / still the default sentinel
+`change-me-in-production`, or any entry in `CORS_ORIGINS` starts with
+`http://localhost`. See `.env.example` in the repo for the full
 template with inline comments.
 
 ## Docker

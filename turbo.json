@@ -18,21 +18,11 @@
     "test": {
       "cache": false
     },
-    "db:generate": {
-      "cache": false
-    },
-    "db:push": {
-      "cache": false
-    },
-    "db:seed": {
-      "cache": false
-    },
     "clean": {
       "cache": false
     }
   },
   "globalEnv": [
-    "DATABASE_URL",
     "NODE_ENV",
     "NEXT_PUBLIC_*",
     "RELAY_PORT",

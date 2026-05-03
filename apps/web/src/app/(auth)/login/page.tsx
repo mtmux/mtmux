@@ -34,13 +34,13 @@ export default function LoginPage() {
 
     // Store token first
     const trimmedToken = token.trim();
-    localStorage.setItem("termbridge-token", trimmedToken);
+    localStorage.setItem("ccremote-token", trimmedToken);
 
     // Validate by attempting a WebSocket connection
     const timeoutId = setTimeout(() => {
       clientRef.current?.disconnect();
       clientRef.current = null;
-      localStorage.removeItem("termbridge-token");
+      localStorage.removeItem("ccremote-token");
       setIsLoading(false);
       toast.error("Connection timed out. Check the relay server and try again.");
     }, 5000);
@@ -61,7 +61,7 @@ export default function LoginPage() {
           clearTimeout(timeoutId);
           clientRef.current = null;
           client.disconnect();
-          localStorage.removeItem("termbridge-token");
+          localStorage.removeItem("ccremote-token");
           setIsLoading(false);
           toast.error(msg.reason || "Authentication failed");
         }
@@ -70,7 +70,7 @@ export default function LoginPage() {
         if (status === "disconnected" && clientRef.current) {
           clearTimeout(timeoutId);
           clientRef.current = null;
-          localStorage.removeItem("termbridge-token");
+          localStorage.removeItem("ccremote-token");
           setIsLoading(false);
           toast.error("Failed to connect to relay server");
         }
@@ -88,7 +88,7 @@ export default function LoginPage() {
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
             <Terminal className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-xl">TermBridge</CardTitle>
+          <CardTitle className="text-xl">ccremote</CardTitle>
           <CardDescription>Enter your authentication token to connect</CardDescription>
         </CardHeader>
         <form onSubmit={onSubmit}>

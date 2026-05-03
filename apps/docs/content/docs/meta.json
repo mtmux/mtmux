@@ -1,10 +1,14 @@
 {
   "pages": [
     "index",
+    "getting-started",
+    "self-hosting",
+    "claude-code-remote",
     "architecture",
     "configuration",
     "web-app",
     "relay",
+    "security",
     "deployment",
     "troubleshooting"
   ]

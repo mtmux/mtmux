@@ -1,4 +1,7 @@
 FROM node:22-slim AS base
+LABEL org.opencontainers.image.source="https://github.com/nicholasgriffintn/ccremote"
+LABEL org.opencontainers.image.description="ccremote relay server — WebSocket bridge to tmux sessions"
+LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update && apt-get install -y \
   tmux \
@@ -36,9 +39,10 @@ COPY --from=builder /app/packages/logger ./packages/logger
 COPY --from=builder /app/package.json .
 
 USER relay
-EXPOSE 14300
+ENV RELAY_PORT=24300
+EXPOSE 24300
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
-  CMD node -e "const h=require('http');h.get('http://localhost:14300/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+  CMD node -e "const h=require('http');h.get('http://localhost:24300/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
 CMD ["node", "apps/relay/dist/index.js"]

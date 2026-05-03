@@ -19,6 +19,7 @@ import { CommandPalette } from "@/components/command/command-palette";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { AlertBanner } from "@/components/alert-banner";
+import { VisualViewportSync } from "@/components/visual-viewport-sync";
 import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { useMobileHistory } from "@/hooks/use-mobile-history";
@@ -42,7 +43,7 @@ export default function TerminalLayout({
 
   // Auth guard - check token on mount
   useEffect(() => {
-    const storedToken = localStorage.getItem("termbridge-token");
+    const storedToken = localStorage.getItem("ccremote-token");
     if (!storedToken) {
       router.push("/login");
       return;
@@ -52,7 +53,7 @@ export default function TerminalLayout({
 
   // Auto-restore last session
   useEffect(() => {
-    const lastSession = localStorage.getItem("termbridge-last-session");
+    const lastSession = localStorage.getItem("ccremote-last-session");
     if (lastSession && !activeSessionId) {
       useSessionStore.getState().setActiveSession(lastSession);
     }
@@ -113,10 +114,10 @@ export default function TerminalLayout({
           : "disconnected";
 
   const header = (
-    <div className={cn("flex items-center gap-3 px-3", isMobile ? "py-1" : "py-1.5")}>
+    <div className={cn("flex min-w-0 items-center gap-3 px-3", isMobile ? "py-1" : "py-1.5")}>
       <Terminal className="h-4 w-4 text-primary" />
-      {/* #5: Hide "TermBridge" text on mobile — icon only */}
-      {!isMobile && <span className="text-sm font-semibold">TermBridge</span>}
+      {/* #5: Hide "ccremote" text on mobile — icon only */}
+      {!isMobile && <span className="text-sm font-semibold">ccremote</span>}
       <ConnectionStatus
         status={connectionStatusType}
         latency={latency ?? undefined}
@@ -128,7 +129,7 @@ export default function TerminalLayout({
             client.connect();
           }
         }}
-        className="ml-1"
+        className="ml-1 shrink-0"
       />
       <AlertBanner />
       {!isMobile && (
@@ -156,6 +157,7 @@ export default function TerminalLayout({
 
   return (
     <AppShell header={header} toolbar={toolbar}>
+      <VisualViewportSync />
       <ErrorBoundary fallbackMessage="Terminal crashed">
         {children}
       </ErrorBoundary>

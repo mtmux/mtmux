@@ -1,0 +1,50 @@
+---
+title: Security
+description: Security considerations for deploying ccremote — authentication, TLS, path restrictions, and rate limiting.
+---
+
+# Security
+
+ccremote provides terminal access to a remote machine, so security is critical. This page covers the built-in security features and best practices.
+
+## Authentication
+
+All WebSocket connections require a valid `AUTH_TOKEN`. The token is sent as the first message after connection and must match the server's configured value.
+
+- Set a strong, random token in production
+- The token is never stored on the server — it's compared in memory
+- Failed authentication immediately closes the connection
+
+## Path Restrictions
+
+The `ALLOWED_PATHS` environment variable restricts which directories the file browser can access. Paths outside this list are rejected.
+
+```bash
+# Only allow access to home directories and a specific project
+ALLOWED_PATHS="/home,/opt/myproject"
+```
+
+## Rate Limiting
+
+The relay server enforces per-connection rate limiting via `WS_RATE_LIMIT` (default: 100 messages per window). Connections exceeding the limit are throttled.
+
+## TLS / HTTPS
+
+In production, always terminate TLS in front of ccremote:
+
+- Use a reverse proxy (nginx, Caddy, Traefik) with a valid certificate
+- Configure `NEXT_PUBLIC_RELAY_URL` with `wss://` instead of `ws://`
+- Set `CORS_ORIGINS` to your specific domain
+
+## Idle Timeout
+
+Connections idle for longer than `IDLE_TIMEOUT_MINUTES` (default: 30) are automatically closed. Set to `0` to disable.
+
+## Best Practices
+
+1. **Never expose ccremote directly to the internet** without TLS
+2. **Use a strong auth token** — treat it like a password
+3. **Restrict allowed paths** — only expose directories that need to be accessible
+4. **Keep ccremote updated** — pull the latest version for security fixes
+5. **Monitor access** — check relay server logs for unexpected connections
+6. **Firewall** — restrict relay port access to known IPs when possible

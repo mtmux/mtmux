@@ -8,6 +8,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useCommandStore } from "@/stores/command-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useTerminalStore } from "@/stores/terminal-store";
+import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
 interface KeyboardToolbarProps {
@@ -21,7 +22,6 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
   const { toolbarKeys, hapticEnabled } = useSettingsStore();
   const [stickyCtrl, setStickyCtrl] = useState(false);
   const [stickyAlt, setStickyAlt] = useState(false);
-  const [copyModeActive, setCopyModeActive] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sendKey = useCallback(
@@ -198,16 +198,12 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
       >
         <Rows2 className="h-4 w-4" />
       </button>
-      {/* Copy mode toggle */}
+      {/* Copy mode overlay */}
       <button
-        className={cn(
-          iconBtnClass,
-          copyModeActive && "border-primary bg-primary/20 text-primary",
-        )}
-        aria-label="Toggle copy mode"
+        className={iconBtnClass}
+        aria-label="Open copy mode"
         onClick={() => {
-          getRelayClient()?.send({ type: "tmux:copy-mode" });
-          setCopyModeActive((prev) => !prev);
+          useUiStore.getState().setCopyModeOpen(true);
           if (hapticEnabled) triggerHaptic();
         }}
       >

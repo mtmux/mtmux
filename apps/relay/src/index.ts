@@ -23,7 +23,7 @@ async function main() {
   try {
     await execFileAsync("tmux", ["-V"]);
   } catch {
-    logger.error("tmux is not installed or not found in PATH. Please install tmux 3.0+ to use TermBridge.");
+    logger.error("tmux is not installed or not found in PATH. Please install tmux 3.0+ to use ccremote.");
     process.exit(1);
   }
 
@@ -125,7 +125,7 @@ async function main() {
   monitor.start();
   await startHttpServer(httpServer);
 
-  logger.info(`TermBridge relay v${SERVER_VERSION} ready on ${config.host}:${config.port}`);
+  logger.info(`ccremote relay v${SERVER_VERSION} ready on ${config.host}:${config.port}`);
 
   // Graceful shutdown
   const shutdown = () => {

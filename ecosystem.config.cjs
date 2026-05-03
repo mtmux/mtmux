@@ -25,13 +25,13 @@ module.exports = {
       env_file: ENV_FILE,
       env: {
         ...commonEnv,
-        RELAY_PORT: 14300,
+        RELAY_PORT: 24300,
       },
     },
     {
       name: "web",
       script: "node_modules/.bin/next",
-      args: "start --port 14100",
+      args: "start --port 24100",
       cwd: path.resolve(__dirname, "apps/web"),
       instances: "max",
       exec_mode: "cluster",
@@ -43,13 +43,13 @@ module.exports = {
       env_file: ENV_FILE,
       env: {
         ...commonEnv,
-        PORT: 14100,
+        PORT: 24100,
       },
     },
     {
       name: "docs",
       script: "node_modules/.bin/next",
-      args: "start --port 14102",
+      args: "start --port 24102",
       cwd: path.resolve(__dirname, "apps/docs"),
       instances: 1,
       exec_mode: "fork",
@@ -61,7 +61,7 @@ module.exports = {
       env_file: ENV_FILE,
       env: {
         ...commonEnv,
-        PORT: 14102,
+        PORT: 24102,
       },
     },
   ],

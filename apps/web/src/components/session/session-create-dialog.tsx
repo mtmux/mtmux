@@ -43,7 +43,7 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
         setIsCreating(false);
         setActiveSession(msg.session.name);
         if (typeof window !== "undefined") {
-          localStorage.setItem("termbridge-last-session", msg.session.name);
+          localStorage.setItem("ccremote-last-session", msg.session.name);
         }
       }
     });

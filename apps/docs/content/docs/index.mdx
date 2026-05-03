@@ -1,35 +1,27 @@
 ---
 title: Getting Started
-description: Set up TermBridge and connect to your first terminal session.
+description: Set up ccremote and connect to your first terminal session.
 ---
 
-## What is TermBridge?
+## What is ccremote?
 
-TermBridge lets you access your server's terminal from any browser. It connects a modern web UI to remote tmux sessions over WebSocket, giving you a full terminal with session management, file browsing, and mobile support.
+ccremote lets you access your server's terminal from any browser. It connects a modern web UI to remote tmux sessions over WebSocket, giving you a full terminal with session management, file browsing, and mobile support.
 
 ## Prerequisites
 
 - **Node.js** 22+
 - **pnpm** 9+
 - **tmux** 3.0+
-- **Docker** (optional, for dev services like Temporal and MinIO)
 
 ## Quick Start
 
 ```bash
 # Clone the repository
-git clone <repo-url> termbridge
-cd termbridge
+git clone https://github.com/nicholasgriffintn/ccremote.git
+cd ccremote
 
-# Install dependencies
-pnpm install
-
-# Configure environment
-cp .env.example .env
-# Edit .env — at minimum, set AUTH_TOKEN to a secure value
-
-# Generate Prisma client
-pnpm db:generate
+# Install dependencies and configure
+pnpm setup
 
 # Start development servers
 pnpm dev

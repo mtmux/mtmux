@@ -1,4 +1,4 @@
-const CACHE_NAME = "termbridge-v1";
+const CACHE_NAME = "ccremote-v1";
 const OFFLINE_URL = "/";
 
 self.addEventListener("install", (event) => {

@@ -70,7 +70,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setHapticEnabled: (hapticEnabled) => set({ hapticEnabled }),
       setAutoZoom: (autoZoom) => set({ autoZoom }),
     }),
-    { name: "termbridge-settings" },
+    { name: "ccremote-settings" },
   ),
 );
 
