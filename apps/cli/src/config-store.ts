@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 
-const DIR = join(homedir(), ".ccremote");
+const DIR = join(homedir(), ".tmuxremote");
 const FILE = join(DIR, "config.json");
 
 export type Config = { token: string };

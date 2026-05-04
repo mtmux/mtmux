@@ -3,6 +3,7 @@ import type { SessionInfo } from "@repo/protocol";
 
 interface SessionStore {
   sessions: SessionInfo[];
+  sessionsLoaded: boolean;
   activeSessionId: string | null;
   openedSessions: string[];
   setSessions: (sessions: SessionInfo[]) => void;
@@ -16,9 +17,10 @@ interface SessionStore {
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: [],
+  sessionsLoaded: false,
   activeSessionId: null,
   openedSessions: [],
-  setSessions: (sessions) => set({ sessions }),
+  setSessions: (sessions) => set({ sessions, sessionsLoaded: true }),
   addSession: (session) =>
     set((s) => ({
       sessions: [...s.sessions.filter((x) => x.name !== session.name), session],

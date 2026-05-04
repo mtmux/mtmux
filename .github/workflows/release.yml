@@ -28,7 +28,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   npm-publish:
-    name: Publish ccremote to npm
+    name: Publish tmuxremote to npm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter ccremote build
+      - run: pnpm --filter tmuxremote build
       - name: Publish
         working-directory: apps/cli
         run: npm publish --access public

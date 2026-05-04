@@ -1,19 +1,27 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { start } from "./commands/start.js";
 import { tokenPrint, tokenRotate, tokenSet } from "./commands/token.js";
 import { version } from "./commands/version.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(
+  readFileSync(path.resolve(__dirname, "../package.json"), "utf8"),
+) as { version: string };
+
 const program = new Command();
 
 program
-  .name("ccremote")
-  .description("Self-hosted browser terminal for Claude Code")
-  .version("0.1.0");
+  .name("tmuxremote")
+  .description("Self-hosted browser terminal for tmux")
+  .version(pkg.version);
 
 program
   .command("start")
-  .description("Start the ccremote server")
+  .description("Start the tmuxremote server")
   .option("-p, --port <number>", "port", (v) => parseInt(v, 10), 14100)
   .option("-h, --host <address>", "bind address", "127.0.0.1")
   .option("-t, --token <value>", "override the auth token for this run")

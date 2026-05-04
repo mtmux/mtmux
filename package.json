@@ -20,20 +20,20 @@
     "restart:prod": "pm2 reload ecosystem.config.cjs",
     "logs:prod": "pm2 logs",
     "release": "node scripts/release.mjs",
-    "cli:build": "pnpm --filter ccremote run build",
-    "cli:start": "pnpm --filter ccremote run start",
-    "cli:test": "pnpm --filter ccremote run test",
-    "cli:smoke": "pnpm --filter ccremote run smoke",
-    "cli:help": "pnpm --filter ccremote run help"
+    "cli:build": "pnpm --filter tmuxremote run build",
+    "cli:start": "pnpm --filter tmuxremote run start",
+    "cli:test": "pnpm --filter tmuxremote run test",
+    "cli:smoke": "pnpm --filter tmuxremote run smoke",
+    "cli:help": "pnpm --filter tmuxremote run help"
   },
   "devDependencies": {
-    "@commitlint/cli": "^19.6.1",
-    "@commitlint/config-conventional": "^19.6.0",
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
     "@repo/prettier-config": "workspace:*",
     "husky": "^9.1.7",
-    "lint-staged": "^15.3.0",
-    "pm2": "^5.4.3",
-    "prettier": "^3.4.2",
-    "turbo": "^2.3.3"
+    "lint-staged": "^16.4.0",
+    "pm2": "^7.0.1",
+    "prettier": "^3.8.3",
+    "turbo": "^2.9.9"
   }
 }

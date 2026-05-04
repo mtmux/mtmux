@@ -1,7 +1,7 @@
 {
-  "name": "ccremote",
+  "name": "tmuxremote",
   "version": "0.1.0",
-  "description": "Self-hosted browser terminal for Claude Code. Your Claude. Your terminal. Anywhere.",
+  "description": "Self-hosted browser terminal for tmux. One command, any device.",
   "keywords": [
     "claude",
     "claude-code",
@@ -23,20 +23,28 @@
   "author": "Nicholas Griffin",
   "type": "module",
   "bin": {
-    "ccremote": "./dist/bin.js"
+    "tmuxremote": "./dist/bin.js"
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "engines": { "node": ">=22" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "start": "node dist/bin.js start",
+    "token": "node dist/bin.js token",
     "help": "node dist/bin.js --help",
     "smoke": "node scripts/smoke.mjs",
     "test": "pnpm build && pnpm smoke",
-    "pack:dryrun": "npm pack --dry-run"
+    "pack:dryrun": "npm pack --dry-run",
+    "prepublishOnly": "pnpm build"
   },
   "dependencies": {
     "node-pty": "^1.1.0",
@@ -59,5 +67,7 @@
     "esbuild": "^0.27.0",
     "typescript": "^5.6.0"
   },
-  "publishConfig": { "access": "public" }
+  "publishConfig": {
+    "access": "public"
+  }
 }

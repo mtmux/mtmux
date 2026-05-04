@@ -3,7 +3,7 @@
 //   2. probe /health, /, /_relay (websocket upgrade)
 //   3. kill the process; exit non-zero on any failure
 //
-// Used by `pnpm --filter ccremote test` and the cli-smoke CI job.
+// Used by `pnpm --filter tmuxremote test` and the cli-smoke CI job.
 
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -16,7 +16,7 @@ const BIN = path.join(ROOT, "dist/bin.js");
 const PORT = Number(process.env.SMOKE_PORT ?? 0) || pickPort();
 
 if (!existsSync(BIN)) {
-  console.error(`✗ ${BIN} missing — run \`pnpm --filter ccremote build\` first.`);
+  console.error(`✗ ${BIN} missing — run \`pnpm --filter tmuxremote build\` first.`);
   process.exit(1);
 }
 
@@ -139,7 +139,7 @@ await check("WS auth survives a prior Next request", async () => {
   const { homedir } = await import("node:os");
   const { join } = await import("node:path");
   const cfg = JSON.parse(
-    await readFile(join(homedir(), ".ccremote/config.json"), "utf8"),
+    await readFile(join(homedir(), ".tmuxremote/config.json"), "utf8"),
   );
   return await new Promise((resolve, reject) => {
     const ws = new WS(`ws://127.0.0.1:${PORT}/_relay`, {

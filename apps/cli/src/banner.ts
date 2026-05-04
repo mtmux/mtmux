@@ -4,8 +4,8 @@ export function banner(opts: { url: string; token: string; host: string; port: n
   const coral = kleur.red; // closest stock color; full RGB requires kleur/colors
   console.log();
   console.log(
-    coral().bold("  ›  ccremote") +
-      kleur.dim("  Your Claude. Your terminal. Anywhere."),
+    coral().bold("  ›  tmuxremote") +
+      kleur.dim("  Your tmux, in any browser."),
   );
   console.log();
   console.log(`  ${kleur.bold("URL")}      ${coral(opts.url)}`);

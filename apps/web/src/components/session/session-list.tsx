@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useState, useRef } from "react";
+import { useCallback, useState, useRef } from "react";
 import { Plus, RefreshCw, Terminal, Loader2 } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { ScrollArea } from "@repo/ui/components/ui/scroll-area";
@@ -17,9 +17,10 @@ interface SessionListProps {
 
 export function SessionList({ onCreateClick, className }: SessionListProps) {
   const sessions = useSessionStore((s) => s.sessions);
+  const sessionsLoaded = useSessionStore((s) => s.sessionsLoaded);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
-  const [isLoading, setIsLoading] = useState(true);
+  const isLoading = !sessionsLoaded;
 
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -27,24 +28,8 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(() => {
-    setIsLoading(true);
     getRelayClient()?.send({ type: "session:list" });
   }, []);
-
-  useEffect(() => {
-    const client = getRelayClient();
-    if (!client) return;
-
-    return client.onMessage((msg) => {
-      if (msg.type === "session:list") {
-        setIsLoading(false);
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
 
   const handleAttach = useCallback(
     (name: string) => {

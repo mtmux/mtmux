@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { cp, rm, mkdir } from "node:fs/promises";
+import { cp, rm, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
 
@@ -83,5 +83,25 @@ await cp(
   path.join(ROOT, "dist/web/apps/web/public"),
   { recursive: true },
 );
+
+console.log("→ prune build-only deps from dist/web/node_modules");
+// Next standalone copies its full build graph; trim what's not needed at runtime.
+// Each entry is a prefix matched against `.pnpm/<dirname>` entries.
+const PNPM_PRUNE_PREFIXES = [
+  "typescript@",         // ~8.8 MB compiler, not needed at runtime
+  "caniuse-lite@",       // ~2.5 MB build-time data
+  "@swc+",               // build-time transpiler
+  "postcss@",            // build-time
+  "source-map-support@", // dev-only stack mapping
+];
+const pnpmDir = path.join(ROOT, "dist/web/node_modules/.pnpm");
+if (existsSync(pnpmDir)) {
+  const entries = await readdir(pnpmDir);
+  for (const entry of entries) {
+    if (PNPM_PRUNE_PREFIXES.some((p) => entry.startsWith(p))) {
+      await rm(path.join(pnpmDir, entry), { recursive: true, force: true });
+    }
+  }
+}
 
 console.log("✓ build complete");

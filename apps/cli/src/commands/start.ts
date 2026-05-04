@@ -116,7 +116,7 @@ export async function start(opts: StartOpts) {
       );
       console.error(
         kleur.dim(
-          `  Try another port: ${kleur.bold(`ccremote start --port ${opts.port + 1}`)}`,
+          `  Try another port: ${kleur.bold(`tmuxremote start --port ${opts.port + 1}`)}`,
         ),
       );
       console.error(

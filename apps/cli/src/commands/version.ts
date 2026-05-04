@@ -17,7 +17,7 @@ export async function version() {
   } catch {
     // tmux not installed
   }
-  console.log(`ccremote  ${pkg.version}`);
+  console.log(`tmuxremote  ${pkg.version}`);
   console.log(`node      ${process.versions.node}`);
   console.log(`tmux      ${tmux}`);
   console.log(`platform  ${process.platform}/${process.arch}`);
