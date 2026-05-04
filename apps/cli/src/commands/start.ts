@@ -2,6 +2,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import openBrowser from "open";
+import kleur from "kleur";
 import * as configStore from "../config-store.js";
 import { banner } from "../banner.js";
 import { checkTmux, checkNode } from "../preflight.js";
@@ -73,7 +74,49 @@ export async function start(opts: StartOpts) {
   wireConnections(wss);
   attachUpgrade(server, wss, RELAY_PATH);
 
-  await new Promise<void>((resolve) => server.listen(opts.port, opts.host, resolve));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        server.off("listening", onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        resolve();
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(opts.port, opts.host);
+    });
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === "EADDRINUSE") {
+      console.error(
+        kleur.red(`✗ Port ${opts.port} is already in use on ${opts.host}.`),
+      );
+      console.error(
+        kleur.dim(
+          `  Try another port: ${kleur.bold(`ccremote start --port ${opts.port + 1}`)}`,
+        ),
+      );
+      console.error(
+        kleur.dim(
+          `  Or stop whatever is on it: ${kleur.bold(`lsof -i :${opts.port}`)} (macOS/Linux)`,
+        ),
+      );
+    } else if (e.code === "EACCES") {
+      console.error(
+        kleur.red(`✗ Permission denied binding to ${opts.host}:${opts.port}.`),
+      );
+      console.error(
+        kleur.dim("  Ports < 1024 require elevated privileges. Pick a higher port."),
+      );
+    } else {
+      console.error(kleur.red(`✗ ${e.message}`));
+    }
+    wss.close();
+    process.exit(1);
+  }
 
   const visibleHost = opts.host === "0.0.0.0" ? "localhost" : opts.host;
   const url = `http://${visibleHost}:${opts.port}`;
