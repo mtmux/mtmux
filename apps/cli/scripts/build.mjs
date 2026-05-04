@@ -45,7 +45,21 @@ await build({
 });
 
 console.log("→ build web (standalone)");
-run("pnpm --filter @app/web build", { cwd: REPO });
+// CRITICAL: Next.js inlines NEXT_PUBLIC_* into the client bundle at build
+// time. If the developer's .env has NEXT_PUBLIC_RELAY_URL set (for the
+// dev/Docker split deployment), that value would be baked into the CLI
+// bundle and the browser would try to connect to e.g. ws://localhost:14300
+// instead of the same-origin /_relay path the CLI serves. Strip it before
+// building, plus pass NODE_ENV=production explicitly so the env validation
+// is happy.
+run("pnpm --filter @app/web build", {
+  cwd: REPO,
+  env: {
+    ...process.env,
+    NEXT_PUBLIC_RELAY_URL: "",
+    NODE_ENV: "production",
+  },
+});
 
 console.log("→ compile cli sources");
 run("tsc", { cwd: ROOT });
