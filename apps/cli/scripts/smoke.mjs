@@ -129,6 +129,53 @@ await check("/_relay accepts WS upgrade", async () => {
   return r.status;
 });
 
+// Regression guard: in our embedded setup Next.js's NextServer used to
+// register its own `upgrade` listener on first request, which would
+// destroy /_relay sockets after handshake. Ensure a real WS auth flow
+// still works after Next has handled an HTTP request.
+await check("WS auth survives a prior Next request", async () => {
+  const { default: WS } = await import("ws");
+  const { readFile } = await import("node:fs/promises");
+  const { homedir } = await import("node:os");
+  const { join } = await import("node:path");
+  const cfg = JSON.parse(
+    await readFile(join(homedir(), ".ccremote/config.json"), "utf8"),
+  );
+  return await new Promise((resolve, reject) => {
+    const ws = new WS(`ws://127.0.0.1:${PORT}/_relay`, {
+      headers: {
+        Origin: `http://127.0.0.1:${PORT}`,
+        "User-Agent": "Mozilla/5.0 SmokeTest",
+      },
+    });
+    const t = setTimeout(() => {
+      ws.close();
+      reject(new Error("no auth:success within 4s"));
+    }, 4000);
+    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", token: cfg.token })));
+    ws.on("message", (d) => {
+      const msg = JSON.parse(d.toString());
+      if (msg.type === "auth:success") {
+        clearTimeout(t);
+        ws.close();
+        resolve("auth:success");
+      } else if (msg.type === "auth:failure") {
+        clearTimeout(t);
+        ws.close();
+        reject(new Error(`auth:failure ${msg.reason}`));
+      }
+    });
+    ws.on("close", (code) => {
+      clearTimeout(t);
+      reject(new Error(`closed ${code} before auth:success`));
+    });
+    ws.on("error", (e) => {
+      clearTimeout(t);
+      reject(e);
+    });
+  });
+});
+
 console.log("→ shutting down");
 child.kill("SIGTERM");
 await sleep(500);

@@ -94,7 +94,11 @@ export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
       conn.enqueue(() => routeMessage(conn, msg));
     });
 
-    ws.on("close", async () => {
+    ws.on("close", async (code, reason) => {
+      logger.info(
+        { connId: conn.id, code, reason: reason?.toString?.() ?? "" },
+        "WS close event",
+      );
       if (authTimer) clearTimeout(authTimer);
       conn.closing = true;
       await conn.drain();

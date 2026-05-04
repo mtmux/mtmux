@@ -74,6 +74,26 @@ export async function start(opts: StartOpts) {
   wireConnections(wss);
   attachUpgrade(server, wss, RELAY_PATH);
 
+  // Next.js's NextServer lazily registers its own `upgrade` listener on the
+  // first request (it routes to its internal upgradeHandler, used for HMR in
+  // dev). In our embedded setup that listener fires alongside ours on every
+  // /_relay upgrade and destroys the socket because the path is unknown to
+  // Next — clients see a successful WS open immediately followed by close
+  // code 1006. Block any subsequent `upgrade` listener registration so only
+  // attachUpgrade above ever runs.
+  const origOn = server.on.bind(server);
+  const origAddListener = server.addListener.bind(server);
+  const origPrepend = server.prependListener.bind(server);
+  function guard<T extends (...a: any[]) => unknown>(method: T): T {
+    return ((event: string, listener: (...args: unknown[]) => void) => {
+      if (event === "upgrade") return server;
+      return method(event, listener);
+    }) as unknown as T;
+  }
+  server.on = guard(origOn);
+  server.addListener = guard(origAddListener);
+  server.prependListener = guard(origPrepend);
+
   try {
     await new Promise<void>((resolve, reject) => {
       const onError = (err: NodeJS.ErrnoException) => {
