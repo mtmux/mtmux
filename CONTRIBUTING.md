@@ -1,6 +1,6 @@
-# Contributing to ccremote
+# Contributing to tmuxremote
 
-Thanks for your interest in contributing to ccremote. This guide will help you get started.
+Thanks for your interest in contributing to tmuxremote. This guide will help you get started.
 
 ## Prerequisites
 
@@ -13,8 +13,8 @@ Thanks for your interest in contributing to ccremote. This guide will help you g
 1. Fork and clone the repository:
 
    ```bash
-   git clone https://github.com/<your-username>/ccremote.git
-   cd ccremote
+   git clone https://github.com/<your-username>/tmuxremote.git
+   cd tmuxremote
    ```
 
 2. Install dependencies and set up the project:

@@ -1,15 +1,17 @@
 ---
 title: Self-Hosting Guide
-description: Deploy ccremote on your own server with Docker Compose or PM2 for production use.
+description: Deploy tmuxremote on your own server with Docker Compose or PM2 for production use.
 ---
 
 # Self-Hosting Guide
 
-ccremote is designed to be self-hosted. You have full control over your data — no third-party services required.
+tmuxremote is designed to be self-hosted. You have full control over your data — no third-party services required.
 
-## Docker Compose (Recommended)
+> **For a single machine, the CLI is simpler.** `npm install -g tmuxremote && tmuxremote start` runs everything on one port (WebSocket same-origin at `/_relay`) with no `NEXT_PUBLIC_RELAY_URL` and no separate relay port. See [Getting Started](/docs/getting-started). This page covers the **split web + relay** model (separate ports, `NEXT_PUBLIC_RELAY_URL`, a `/ws` reverse-proxy route) for Docker/PM2 and multi-tenant deployments.
 
-The simplest way to deploy ccremote in production.
+## Docker Compose (Recommended for the split model)
+
+The simplest way to deploy the split web + relay model in production.
 
 ### Prerequisites
 
@@ -20,8 +22,8 @@ The simplest way to deploy ccremote in production.
 
 ```bash
 # Clone the repository
-git clone https://github.com/nicholasgriffintn/ccremote.git
-cd ccremote
+git clone https://github.com/GagnDeep/tmuxremote.git
+cd tmuxremote
 
 # Create and edit your environment config
 cp .env.example .env
@@ -42,6 +44,7 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 This starts:
+
 - **Relay server** on port 14300 with health checks
 - **Web app** on port 14100 with health checks
 
@@ -59,7 +62,7 @@ echo $TMUX | cut -d, -f1
 
 Place nginx or Caddy in front for TLS and WebSocket proxying. A
 ready-to-go config ships in the repo at
-[`nginx/ccremote.conf.example`](https://github.com/nicholasgriffintn/ccremote/blob/main/nginx/ccremote.conf.example):
+[`nginx/ccremote.conf.example`](https://github.com/GagnDeep/tmuxremote/blob/main/nginx/ccremote.conf.example):
 
 ```bash
 sudo cp nginx/ccremote.conf.example /etc/nginx/sites-available/ccremote.conf
@@ -119,8 +122,8 @@ pm2 start ecosystem.config.cjs
 Pull from GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/nicholasgriffintn/ccremote-web:latest
-docker pull ghcr.io/nicholasgriffintn/ccremote-relay:latest
+docker pull ghcr.io/gagndeep/tmuxremote-web:latest
+docker pull ghcr.io/gagndeep/tmuxremote-relay:latest
 ```
 
 ## Security Considerations

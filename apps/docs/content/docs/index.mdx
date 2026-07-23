@@ -1,44 +1,48 @@
 ---
-title: Getting Started
-description: Set up ccremote and connect to your first terminal session.
+title: Introduction
+description: Access your tmux sessions from any browser with the tmuxremote CLI — one command, any device.
 ---
 
-## What is ccremote?
+## What is tmuxremote?
 
-ccremote lets you access your server's terminal from any browser. It connects a modern web UI to remote tmux sessions over WebSocket, giving you a full terminal with session management, file browsing, and mobile support.
+tmuxremote lets you access your server's terminal from any browser. It connects a
+modern web UI to your tmux sessions over a WebSocket, giving you a full terminal
+with session management, file browsing, and mobile support. It works great with
+Claude Code, Vim, REPLs, and long-running jobs — anything you'd run in tmux.
 
-## Prerequisites
+The shipped product is the **`tmuxremote`** CLI, published on npm. One command
+starts everything on a single port, on the same machine as your tmux.
 
-- **Node.js** 22+
-- **pnpm** 9+
-- **tmux** 3.0+
-
-## Quick Start
+## Install and run
 
 ```bash
-# Clone the repository
-git clone https://github.com/nicholasgriffintn/ccremote.git
-cd ccremote
-
-# Install dependencies and configure
-pnpm setup
-
-# Start development servers
-pnpm dev
+npm install -g tmuxremote
+tmuxremote start
 ```
 
-## First Session Walkthrough
+That's it. The CLI generates a token, opens your browser, and connects you to
+tmux on the same machine. No config file, no Docker, no reverse proxy required.
 
-1. Open `http://localhost:14100` in your browser
-2. Enter your `AUTH_TOKEN` value and click **Connect**
-3. Once connected, click **Create Session** in the sidebar
-4. Give your session a name (or leave blank for auto-naming) and click **Create**
-5. You're now attached to a live tmux session — type commands, resize the window, and browse files
+- **Requirements:** Node 22+ and `tmux` on your PATH.
+- The server binds to `127.0.0.1:14100` by default.
+- The auto-generated token lives at `~/.tmuxremote/config.json` (mode `0600`).
 
-## Ports
+See [Getting Started](/docs/getting-started) for the full CLI walkthrough, flags,
+and token management.
 
-| App | Port | Description |
-|-----|------|-------------|
-| Web | 14100 | Terminal web client |
-| Docs | 14102 | Documentation (this site) |
-| Relay | 14300 | WebSocket relay server |
+## Two ways to deploy
+
+- **CLI (single-port)** — `tmuxremote start`. One Node process serves the web UI
+  and the relay WebSocket (same-origin at `/_relay`) on one port. This is the
+  primary, recommended path for single-machine self-hosting.
+- **Split web + relay** — separate web (`14100`) and relay (`14300`) services for
+  container/multi-tenant deployments, wired together with `NEXT_PUBLIC_RELAY_URL`
+  and a `/ws` reverse-proxy route. See [Deployment](/docs/deployment) and
+  [Self-Hosting](/docs/self-hosting).
+
+## Next steps
+
+- [Getting Started](/docs/getting-started) — install the CLI, connect, manage tokens
+- [Configuration](/docs/configuration) — flags and environment variables
+- [Self-Hosting](/docs/self-hosting) — expose it to the internet with TLS
+- [Mobile Support](/docs/web-app/mobile) — use tmuxremote on your phone

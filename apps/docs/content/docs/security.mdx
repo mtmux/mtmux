@@ -1,11 +1,11 @@
 ---
 title: Security
-description: Security considerations for deploying ccremote — authentication, TLS, path restrictions, and rate limiting.
+description: Security considerations for deploying tmuxremote — authentication, TLS, path restrictions, and rate limiting.
 ---
 
 # Security
 
-ccremote provides terminal access to a remote machine, so security is critical. This page covers the built-in security features and best practices.
+tmuxremote provides terminal access to a remote machine, so security is critical. This page covers the built-in security features and best practices.
 
 ## Authentication
 
@@ -30,7 +30,7 @@ The relay server enforces per-connection rate limiting via `WS_RATE_LIMIT` (defa
 
 ## TLS / HTTPS
 
-In production, always terminate TLS in front of ccremote:
+In production, always terminate TLS in front of tmuxremote:
 
 - Use a reverse proxy (nginx, Caddy, Traefik) with a valid certificate
 - Configure `NEXT_PUBLIC_RELAY_URL` with `wss://` instead of `ws://`
@@ -42,9 +42,9 @@ Connections idle for longer than `IDLE_TIMEOUT_MINUTES` (default: 30) are automa
 
 ## Best Practices
 
-1. **Never expose ccremote directly to the internet** without TLS
+1. **Never expose tmuxremote directly to the internet** without TLS
 2. **Use a strong auth token** — treat it like a password
 3. **Restrict allowed paths** — only expose directories that need to be accessible
-4. **Keep ccremote updated** — pull the latest version for security fixes
+4. **Keep tmuxremote updated** — pull the latest version for security fixes
 5. **Monitor access** — check relay server logs for unexpected connections
 6. **Firewall** — restrict relay port access to known IPs when possible

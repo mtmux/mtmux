@@ -1,19 +1,17 @@
 <div align="center">
 
-<img src="https://ccremote.dev/opengraph-image" alt="ccremote — Your Claude. Your terminal. Anywhere." width="640" />
+# tmuxremote
 
-# ccremote
+**Your tmux, in any browser.**
 
-**Your Claude. Your terminal. Anywhere.**
+Self-hosted browser terminal for [tmux](https://github.com/tmux/tmux). Connect to your sessions from any device — phone, tablet, laptop — over a single secure WebSocket. Works great with [Claude Code](https://www.anthropic.com/claude-code), Vim, REPLs, and long-running jobs. One npm install away.
 
-Self-hosted browser terminal for [Claude Code](https://www.anthropic.com/claude-code). Connect to your tmux sessions from any device — phone, tablet, laptop — over a single secure WebSocket. One npm install away.
-
-[![npm](https://img.shields.io/npm/v/ccremote?color=e87958)](https://www.npmjs.com/package/ccremote)
-[![CI](https://github.com/nicholasgriffintn/ccremote/actions/workflows/ci.yml/badge.svg)](https://github.com/nicholasgriffintn/ccremote/actions)
+[![npm](https://img.shields.io/npm/v/tmuxremote?color=e87958)](https://www.npmjs.com/package/tmuxremote)
+[![CI](https://github.com/GagnDeep/tmuxremote/actions/workflows/ci.yml/badge.svg)](https://github.com/GagnDeep/tmuxremote/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED)](https://github.com/nicholasgriffintn/ccremote/pkgs/container/ccremote)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED)](https://github.com/GagnDeep/tmuxremote/pkgs/container/tmuxremote)
 
-[Website](https://ccremote.dev) · [Docs](https://ccremote.dev/docs) · [Demo](https://ccremote.dev#demo)
+[GitHub](https://github.com/GagnDeep/tmuxremote) · [npm](https://www.npmjs.com/package/tmuxremote)
 
 </div>
 
@@ -22,32 +20,33 @@ Self-hosted browser terminal for [Claude Code](https://www.anthropic.com/claude-
 ## Install
 
 ```bash
-npm install -g ccremote
-ccremote start
+npm install -g tmuxremote
+tmuxremote start
 ```
 
-That's it. ccremote auto-generates a token, opens your browser, and connects you to tmux.
+That's it. tmuxremote auto-generates a token, opens your browser, and connects you to tmux on the same machine. No config file, no Docker, no reverse proxy.
 
 <details>
 <summary>Other package managers & Docker</summary>
 
 ```bash
-bun install -g ccremote
-pnpm add -g ccremote
-docker run -p 14100:14100 ghcr.io/nicholasgriffintn/ccremote
+bun install -g tmuxremote
+pnpm add -g tmuxremote
+docker run -p 14100:14100 ghcr.io/gagndeep/tmuxremote
 ```
+
 </details>
 
-## Why ccremote?
+## Why tmuxremote?
 
-| | ccremote | ttyd / GoTTY | Web SSH | tmate |
-|---|---|---|---|---|
-| Mobile-first UX | ✓ | — | — | — |
-| File browser + Monaco editor | ✓ | — | — | — |
-| Single-port (HTTP + WS) | ✓ | ✓ | ✓ | — |
-| Self-hosted | ✓ | ✓ | ✓ | optional |
-| WebGL terminal | ✓ | — | — | — |
-| Built for Claude Code workflows | ✓ | — | — | — |
+|                                 | tmuxremote | ttyd / GoTTY | Web SSH | tmate    |
+| ------------------------------- | ---------- | ------------ | ------- | -------- |
+| Mobile-first UX                 | ✓          | —            | —       | —        |
+| File browser + Monaco editor    | ✓          | —            | —       | —        |
+| Single-port (HTTP + WS)         | ✓          | ✓            | ✓       | —        |
+| Self-hosted                     | ✓          | ✓            | ✓       | optional |
+| WebGL terminal                  | ✓          | —            | —       | —        |
+| Built for Claude Code workflows | ✓          | —            | —       | —        |
 
 ## Features
 
@@ -61,16 +60,24 @@ docker run -p 14100:14100 ghcr.io/nicholasgriffintn/ccremote
 ## Quick start
 
 ```bash
-ccremote start              # localhost:14100, auto-token, opens browser
-ccremote start --host 0.0.0.0 --port 8080
-ccremote token print        # show current token
-ccremote token rotate       # generate a new one
-ccremote --help
+tmuxremote start                    # localhost:14100, auto-token, opens browser
+tmuxremote start --host 0.0.0.0 --port 8080
+tmuxremote start --no-open          # don't open the browser
+tmuxremote token print              # show current token
+tmuxremote token rotate             # generate a new one
+tmuxremote token set <value>        # set a specific token
+tmuxremote --help
 ```
 
 ## Behind a reverse proxy
 
-Single-port means a single upstream. Nginx:
+The CLI is **single-port**: HTTP and the WebSocket (served same-origin at
+`/_relay`) share one upstream, so you proxy everything to one port. Do **not**
+set `NEXT_PUBLIC_RELAY_URL` and do **not** add a separate `/ws` location in CLI
+mode — that's only for the split web+relay deployment (see
+[Production deployments](#production-deployments)).
+
+Nginx:
 
 ```nginx
 location / {
@@ -85,33 +92,33 @@ location / {
 Caddy:
 
 ```caddy
-ccremote.example.com {
+tmuxremote.example.com {
   reverse_proxy 127.0.0.1:14100
 }
 ```
 
 ## Configuration
 
-| Flag / Env | Default | Description |
-|---|---|---|
-| `--port` / `PORT` | `14100` | HTTP+WS port |
-| `--host` / `HOST` | `127.0.0.1` | Bind address (`0.0.0.0` to expose) |
-| `--token` / `AUTH_TOKEN` | auto | Shared auth token |
-| `--allowed-paths` / `ALLOWED_PATHS` | `$HOME` | Comma-separated path allow-list for the file browser |
-| `--no-open` | — | Don't open the browser on start |
+| Flag / Env                          | Default     | Description                                          |
+| ----------------------------------- | ----------- | ---------------------------------------------------- |
+| `--port` / `PORT`                   | `14100`     | HTTP+WS port                                         |
+| `--host` / `HOST`                   | `127.0.0.1` | Bind address (`0.0.0.0` to expose)                   |
+| `--token` / `AUTH_TOKEN`            | auto        | Shared auth token (one-shot override)                |
+| `--allowed-paths` / `ALLOWED_PATHS` | `$HOME`     | Comma-separated path allow-list for the file browser |
+| `--no-open`                         | —           | Don't open the browser on start                      |
 
-The auto-generated token is stored at `~/.ccremote/config.json` (mode `0600`).
+The auto-generated token is stored at `~/.tmuxremote/config.json` (mode `0600`).
 
 ## Architecture
 
 One Node process, one HTTP server, three layers:
 
 ```
-Browser  ⇄ wss/https ⇄  ccremote node  ⇄ pty ⇄  tmux
-            (one port)   Next.js + ws        your sessions
+Browser  ⇄ wss/https ⇄  tmuxremote node  ⇄ pty ⇄  tmux
+            (one port)   Next.js + ws         your sessions
 ```
 
-[Read more →](https://ccremote.dev/docs/architecture)
+[Read more →](apps/docs/content/docs/architecture.mdx)
 
 ## Development
 
@@ -128,10 +135,16 @@ The repo is a pnpm + Turborepo monorepo. See [CLAUDE.md](CLAUDE.md) for the full
 
 ## Production deployments
 
-The CLI is for self-host on a single machine. For multi-tenant or container deployments, the repo also ships:
+The CLI (`tmuxremote start`) is the primary path for self-hosting on a single
+machine: one process, one port, WebSocket at `/_relay`. For multi-tenant or
+container deployments, the repo also ships a **split web+relay** model with
+separate ports (web `14100`, relay `14300`), configured via
+`NEXT_PUBLIC_RELAY_URL` and a `/ws` reverse-proxy route:
 
 - **Docker compose** (`docker-compose.prod.yml`) — separate web/relay services
 - **PM2** (`ecosystem.config.cjs`) — multi-process production
+
+See [Deployment](apps/docs/content/docs/deployment.mdx) for the split-model details.
 
 ## Contributing
 
@@ -139,4 +152,4 @@ PRs welcome. Conventional commits (`feat:`, `fix:`, `chore:`). See [AGENTS.md](A
 
 ## License
 
-MIT © Nicholas Griffin
+MIT

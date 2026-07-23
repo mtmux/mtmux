@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: How ccremote components fit together.
+description: How tmuxremote components fit together.
 ---
 
 ## System Overview
@@ -59,12 +59,12 @@ Messages are serialized as JSON and validated on both ends using the `codec.ts` 
 
 The web app uses Zustand stores:
 
-| Store | Purpose | Persisted |
-|-------|---------|-----------|
-| `connection-store` | WebSocket status, latency, server info | No |
-| `session-store` | Session list, active session | No |
-| `terminal-store` | Font size, theme, cursor settings | Yes |
-| `file-store` | Current path, entries, selected file | No |
-| `command-store` | Command history, snippets | Yes |
-| `settings-store` | Toolbar keys, gestures, haptics | Yes |
-| `ui-store` | Mobile tab state | No |
+| Store              | Purpose                                | Persisted |
+| ------------------ | -------------------------------------- | --------- |
+| `connection-store` | WebSocket status, latency, server info | No        |
+| `session-store`    | Session list, active session           | No        |
+| `terminal-store`   | Font size, theme, cursor settings      | Yes       |
+| `file-store`       | Current path, entries, selected file   | No        |
+| `command-store`    | Command history, snippets              | Yes       |
+| `settings-store`   | Toolbar keys, gestures, haptics        | Yes       |
+| `ui-store`         | Mobile tab state                       | No        |

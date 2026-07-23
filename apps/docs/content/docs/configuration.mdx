@@ -3,21 +3,28 @@ title: Configuration Reference
 description: All environment variables for the relay server and web app.
 ---
 
+> Running the **CLI** (`tmuxremote start`)? Most settings are passed as flags
+> (`--port`, `--host`, `--token`, `--allowed-paths`, `--no-open`) — see
+> [Getting Started](/docs/getting-started). The variables below apply to the
+> **split web + relay** model (Docker/PM2). In CLI single-port mode
+> `NEXT_PUBLIC_RELAY_URL` is left unset (the WebSocket is same-origin at
+> `/_relay`).
+
 ## Relay Server
 
 Configure via environment variables or `.env` file in `apps/relay/`.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RELAY_PORT` | `14300` | WebSocket server port |
-| `RELAY_HOST` | `0.0.0.0` | Host to bind to |
-| `AUTH_TOKEN` | `change-me-in-production` | Authentication token clients must provide |
-| `ALLOWED_PATHS` | `/home` | Comma-separated directories clients can browse |
-| `TMUX_SOCKET` | _(default)_ | Custom tmux socket path |
-| `TMUX_DEFAULT_SHELL` | `/bin/bash` | Default shell for new sessions |
-| `WS_RATE_LIMIT` | `100` | Max messages per rate-limit window |
-| `IDLE_TIMEOUT_MINUTES` | `30` | Idle connection timeout in minutes |
-| `CORS_ORIGINS` | `http://localhost:14100` | Comma-separated allowed CORS origins |
+| Variable               | Default                   | Description                                    |
+| ---------------------- | ------------------------- | ---------------------------------------------- |
+| `RELAY_PORT`           | `14300`                   | WebSocket server port                          |
+| `RELAY_HOST`           | `0.0.0.0`                 | Host to bind to                                |
+| `AUTH_TOKEN`           | `change-me-in-production` | Authentication token clients must provide      |
+| `ALLOWED_PATHS`        | `/home`                   | Comma-separated directories clients can browse |
+| `TMUX_SOCKET`          | _(default)_               | Custom tmux socket path                        |
+| `TMUX_DEFAULT_SHELL`   | `/bin/bash`               | Default shell for new sessions                 |
+| `WS_RATE_LIMIT`        | `100`                     | Max messages per rate-limit window             |
+| `IDLE_TIMEOUT_MINUTES` | `30`                      | Idle connection timeout in minutes             |
+| `CORS_ORIGINS`         | `http://localhost:14100`  | Comma-separated allowed CORS origins           |
 
 ### Security Notes
 
@@ -29,9 +36,9 @@ Configure via environment variables or `.env` file in `apps/relay/`.
 
 Configure via environment variables or `.env.local` file in `apps/web/`.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEXT_PUBLIC_RELAY_URL` | `ws://localhost:14300` | Relay server WebSocket URL |
+| Variable                | Default                | Description                                                      |
+| ----------------------- | ---------------------- | ---------------------------------------------------------------- |
+| `NEXT_PUBLIC_RELAY_URL` | `ws://localhost:14300` | Relay server WebSocket URL (split model only; unset in CLI mode) |
 
 ### Production
 

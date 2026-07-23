@@ -1,61 +1,115 @@
 ---
 title: Getting Started
-description: Get ccremote up and running in minutes — install, configure, and connect to your remote terminal.
+description: Install the tmuxremote CLI, connect to your first session, and manage your token.
 ---
 
 # Getting Started
 
-ccremote connects a browser-based terminal UI to tmux sessions on your server. Follow these steps to get started.
+The fastest way to run tmuxremote is the published CLI. It bundles the web client
+and the relay into a single process on one port, on the same machine as your tmux.
 
 ## Prerequisites
 
-- **Node.js 22+** — runtime for both web app and relay server
-- **pnpm 9+** — package manager
-- **tmux 3.0+** — terminal multiplexer (must be installed on the relay host)
+- **Node.js 22+**
+- **tmux** installed and on your PATH (`brew install tmux` / `sudo apt install tmux`)
 
-## Installation
+## Install
 
 ```bash
-git clone https://github.com/nicholasgriffintn/ccremote.git
-cd ccremote
-pnpm setup
+npm install -g tmuxremote
 ```
 
-This installs dependencies and creates a `.env` file from the template.
+Any global installer works — `bun install -g tmuxremote` or `pnpm add -g tmuxremote`.
 
-## Configuration
-
-Edit `.env` and set at minimum:
+## Start
 
 ```bash
-# A secure token clients must provide to connect
-AUTH_TOKEN="your-secure-token-here"
-
-# The WebSocket URL the browser connects to
-NEXT_PUBLIC_RELAY_URL="ws://localhost:14300"
+tmuxremote start
 ```
 
-See [Configuration](/docs/configuration) for all available options.
+On start, the CLI:
 
-## Start Development
+1. Checks that Node 22+ and tmux are available.
+2. Loads (or generates) a token at `~/.tmuxremote/config.json`.
+3. Binds an HTTP server to `127.0.0.1:14100` that serves both the web UI and the
+   relay WebSocket (same-origin, at `/_relay`).
+4. Prints a banner with the URL and token, then opens your browser.
+
+Enter the token when the page prompts you, then create or attach to a tmux
+session. Press `Ctrl+C` to stop.
+
+## Flags
 
 ```bash
+tmuxremote start                       # bind 127.0.0.1:14100, auto-token, open browser
+tmuxremote start --port 9000           # custom port  (-p)
+tmuxremote start --host 0.0.0.0        # listen on all interfaces for LAN access  (-h)
+tmuxremote start --no-open             # don't open the browser
+tmuxremote start --token <value>       # one-shot token override for this run  (-t)
+tmuxremote start --allowed-paths /home/me,/var/log   # file-browser allow-list
+```
+
+| Flag                      | Default     | Description                                          |
+| ------------------------- | ----------- | ---------------------------------------------------- |
+| `-p, --port <number>`     | `14100`     | HTTP + WebSocket port                                |
+| `-h, --host <address>`    | `127.0.0.1` | Bind address (`0.0.0.0` to expose to the LAN)        |
+| `-t, --token <value>`     | auto        | Override the auth token for this run                 |
+| `--allowed-paths <paths>` | `$HOME`     | Comma-separated path allow-list for the file browser |
+| `--no-open`               | —           | Don't open the browser on start                      |
+
+## Managing the token
+
+The token is stored at `~/.tmuxremote/config.json` (mode `0600`) and reused
+across runs.
+
+```bash
+tmuxremote token print          # show the current token
+tmuxremote token rotate         # generate a new token
+tmuxremote token set <value>    # set the token to a specific value
+tmuxremote version              # print version info  (alias: v)
+```
+
+## Accessing from another device
+
+By default the server binds to `127.0.0.1` for safety. To reach it from other
+devices on your network:
+
+```bash
+tmuxremote start --host 0.0.0.0
+```
+
+For internet access, put it behind a reverse proxy with TLS. The CLI is
+**single-port**, so proxy everything to the one port with WebSocket upgrade
+headers — there is no separate relay port and no `NEXT_PUBLIC_RELAY_URL` in CLI
+mode. See [Self-Hosting](/docs/self-hosting) and [Security](/docs/security).
+
+## Development (contributor setup)
+
+To work on tmuxremote itself, run the monorepo in dev mode instead of the CLI.
+This starts the web app and relay as **separate** processes (the split model),
+which is a different topology from the single-port CLI above.
+
+```bash
+git clone https://github.com/GagnDeep/tmuxremote.git
+cd tmuxremote
+pnpm setup     # installs deps and creates .env from the template
 pnpm dev
 ```
 
-This starts:
+`pnpm dev` starts:
+
 - **Web app** at `http://localhost:14100`
 - **Relay server** at `ws://localhost:14300`
 - **Docs** at `http://localhost:14102`
 
-## Connect
+In dev the browser connects to the relay at `ws://localhost:14300` (set via
+`NEXT_PUBLIC_RELAY_URL`), not same-origin `/_relay`. See
+[Configuration](/docs/configuration) for all options and
+[CONTRIBUTING.md](https://github.com/GagnDeep/tmuxremote/blob/main/CONTRIBUTING.md)
+for the full workflow.
 
-1. Open `http://localhost:14100` in your browser
-2. Enter your auth token when prompted
-3. Create or attach to a tmux session
-
-## Next Steps
+## Next steps
 
 - [Self-Hosting Guide](/docs/self-hosting) — deploy with Docker or PM2
-- [Configuration Reference](/docs/configuration) — all environment variables
-- [Mobile Support](/docs/web-app/mobile) — use ccremote on your phone
+- [Configuration Reference](/docs/configuration) — all flags and environment variables
+- [Mobile Support](/docs/web-app/mobile) — use tmuxremote on your phone

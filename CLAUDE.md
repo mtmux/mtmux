@@ -1,6 +1,9 @@
-# CLAUDE.md — ccremote
+# CLAUDE.md — tmuxremote
+
+The shipped product is the **`tmuxremote`** npm CLI (`apps/cli`) — `npm install -g tmuxremote` then `tmuxremote start`. It bundles the web client and relay into one process on a single port. The other apps/packages are the source that CLI builds from, plus a split web+relay model for container/PM2 deployments.
 
 ## Tech Stack
+
 - **Runtime**: Node.js 22, pnpm workspaces, Turborepo
 - **Frontend**: Next.js 15 (App Router), React 19, Tailwind CSS 4, shadcn/ui
 - **Real-time**: Custom WebSocket protocol (@repo/protocol) with Zod schemas
@@ -9,6 +12,8 @@
 - **State Management**: Zustand (persisted stores for terminal settings, commands, settings)
 
 ## Repository Structure
+
+- `apps/cli` — The published **`tmuxremote`** CLI (primary product); bundles web + relay into one single-port process (`tmuxremote start`)
 - `apps/web` — Terminal web client (Next.js 15, port 14100)
 - `apps/relay` — WebSocket relay server (Node.js, port 14300)
 - `apps/docs` — Documentation site (Next.js + Fumadocs, port 14102)
@@ -21,6 +26,7 @@
 - `scripts/` — Setup and dev helper scripts
 
 ## Key Commands
+
 ```bash
 pnpm dev              # Start all apps in dev mode
 pnpm build            # Build all apps
@@ -36,6 +42,7 @@ pnpm setup            # Full setup (install + env)
 ```
 
 ## Naming Conventions
+
 - Internal packages: `@repo/*` (e.g., `@repo/ui`, `@repo/protocol`)
 - Apps: `@app/*` (e.g., `@app/web`, `@app/relay`, `@app/docs`)
 - All packages use `type: "module"` (ESM)
@@ -44,16 +51,21 @@ pnpm setup            # Full setup (install + env)
 ## Patterns
 
 ### UI
+
 Components from `@repo/ui`, apps import `@repo/ui/globals.css` for theming.
 
 ### Theming
+
 CSS variables (oklch), never use raw Tailwind colors — always semantic classes (bg-background, text-foreground, etc.).
 
 ### Env
+
 Validated with zod via @t3-oss/env-core (packages) and @t3-oss/env-nextjs (apps).
 
 ### Relay Architecture
+
 The relay server (`apps/relay`) bridges WebSocket connections to tmux sessions:
+
 1. Client connects via WebSocket and authenticates with a token
 2. Authenticated messages are routed through `message-router.ts`
 3. Session operations use `tmux-manager.ts` (execFile to tmux CLI)
@@ -61,13 +73,17 @@ The relay server (`apps/relay`) bridges WebSocket connections to tmux sessions:
 5. File operations use `file-service.ts` with path allow-listing
 
 ### Protocol Message Pattern
+
 All messages are defined as Zod discriminated unions in `@repo/protocol`:
+
 - `ClientMessage` — 20+ message types from client to server
 - `ServerMessage` — 15+ message types from server to client
 - Serialized as JSON, validated on both ends
 
 ### Zustand Store Pattern
+
 State management uses Zustand stores in `apps/web/src/stores/`:
+
 - `connection-store` — WebSocket connection status, latency
 - `session-store` — tmux session list, active session
 - `terminal-store` — persisted terminal settings (font, theme, cursor)
@@ -77,6 +93,7 @@ State management uses Zustand stores in `apps/web/src/stores/`:
 - `ui-store` — transient UI state (mobile tab)
 
 ### Terminal Component Hierarchy
+
 ```
 (terminal)/layout.tsx  → Auth guard, WebSocket init, app shell
   └─ (terminal)/page.tsx → Layout (sidebar + terminal + file preview)
@@ -87,17 +104,20 @@ State management uses Zustand stores in `apps/web/src/stores/`:
 ```
 
 ## Adding a New Package
+
 1. Create `packages/<name>/package.json` with `"name": "@repo/<name>"`
 2. Add `tsconfig.json` extending appropriate `@repo/tsconfig/*`
 3. Add `eslint.config.js` extending `@repo/eslint-config/*`
 4. Export via `src/index.ts`
 
 ## Adding a Protocol Message
+
 1. Add Zod schema to `packages/protocol/src/client-messages.ts` or `server-messages.ts`
 2. Add to the discriminated union
 3. Handle in relay's `message-router.ts` (server messages)
 4. Handle in web's `use-websocket.ts` hook (client messages)
 
 ## Commit Convention
+
 Conventional commits: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`
-Scopes: `web`, `docs`, `relay`, `protocol`, `ui`, `config`, `logger`, `infra`, `ci`
+Scopes: `cli`, `web`, `docs`, `relay`, `protocol`, `ui`, `config`, `logger`, `infra`, `ci`

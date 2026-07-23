@@ -1,11 +1,31 @@
 ---
 title: Deployment
-description: Deploy ccremote with Docker, PM2, or a reverse proxy.
+description: Deploy tmuxremote with the CLI, Docker, PM2, or a reverse proxy.
 ---
+
+## Two deployment models
+
+There are two distinct topologies. Picking the wrong reverse-proxy wiring for
+your model is the most common misconfiguration, so choose one and don't mix them:
+
+- **CLI, single-port (recommended for a single machine)** — `tmuxremote start`.
+  One Node process serves the web UI and the relay WebSocket on **one port**,
+  with the WS exposed **same-origin at `/_relay`**. There is no separate relay
+  port and you do **not** set `NEXT_PUBLIC_RELAY_URL`. Reverse-proxy setup is
+  just: proxy everything to that one port with WebSocket upgrade headers. See
+  [Getting Started](/docs/getting-started).
+- **Split web + relay (this page)** — the web app and relay run as **separate
+  services on separate ports** (web `14100`, relay `14300`). The browser reaches
+  the relay via `NEXT_PUBLIC_RELAY_URL`, and the reverse proxy routes a
+  dedicated **`/ws`** location to the relay. Use this for Docker/PM2 and
+  multi-tenant deployments.
+
+In short: `/_relay` with no `NEXT_PUBLIC_RELAY_URL` is CLI mode; `/ws` plus
+`NEXT_PUBLIC_RELAY_URL` is the split model.
 
 ## Quickstart with `pnpm start:prod`
 
-The fastest way to run ccremote in production on a single host is the bundled
+The fastest way to run tmuxremote's split model in production on a single host is the bundled
 PM2 script. It builds, starts, and supervises all three apps on the
 production port range (web `24100`, docs `24102`, relay `24300`) — distinct
 from the dev range (`14xxx`) so dev and prod can coexist on the same host.
@@ -124,21 +144,40 @@ timeouts.
 // ecosystem.config.cjs (excerpt)
 module.exports = {
   apps: [
-    { name: "relay", script: "apps/relay/dist/index.js",
-      exec_mode: "fork", max_memory_restart: "512M",
-      wait_ready: true, kill_timeout: 10000,
-      out_file: "./logs/relay-out.log", error_file: "./logs/relay-err.log",
-      env_file: ".env" },
-    { name: "web", script: "node_modules/.bin/next", args: "start --port 14100",
-      cwd: "./apps/web", exec_mode: "cluster", instances: "max",
-      max_memory_restart: "1G",
-      out_file: "./logs/web-out.log", error_file: "./logs/web-err.log",
-      env_file: ".env" },
-    { name: "docs", script: "node_modules/.bin/next", args: "start --port 14102",
-      cwd: "./apps/docs", exec_mode: "fork",
+    {
+      name: "relay",
+      script: "apps/relay/dist/index.js",
+      exec_mode: "fork",
       max_memory_restart: "512M",
-      out_file: "./logs/docs-out.log", error_file: "./logs/docs-err.log",
-      env_file: ".env" },
+      wait_ready: true,
+      kill_timeout: 10000,
+      out_file: "./logs/relay-out.log",
+      error_file: "./logs/relay-err.log",
+      env_file: ".env",
+    },
+    {
+      name: "web",
+      script: "node_modules/.bin/next",
+      args: "start --port 14100",
+      cwd: "./apps/web",
+      exec_mode: "cluster",
+      instances: "max",
+      max_memory_restart: "1G",
+      out_file: "./logs/web-out.log",
+      error_file: "./logs/web-err.log",
+      env_file: ".env",
+    },
+    {
+      name: "docs",
+      script: "node_modules/.bin/next",
+      args: "start --port 14102",
+      cwd: "./apps/docs",
+      exec_mode: "fork",
+      max_memory_restart: "512M",
+      out_file: "./logs/docs-out.log",
+      error_file: "./logs/docs-err.log",
+      env_file: ".env",
+    },
   ],
 };
 ```
