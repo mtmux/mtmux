@@ -49,7 +49,7 @@ import type { FileEntry } from "@repo/protocol";
 import { useFileStore } from "@/stores/file-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useUiStore } from "@/stores/ui-store";
-import { getRelayClient } from "@/hooks/use-websocket";
+import { getRelayClient, useRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
 
 function getFileIcon(entry: FileEntry) {
   if (entry.type === "directory") return Folder;
@@ -114,6 +114,7 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     setIsOperating,
     openEditor,
   } = useFileStore();
+  const relayClient = useRelayClient();
   const [filter, setFilter] = useState("");
   const [inlineInput, setInlineInput] = useState<{ type: "file" | "folder" | "rename"; value: string; path?: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
@@ -133,21 +134,20 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     [setCurrentPath, setIsLoading],
   );
 
-  useEffect(() => {
-    const client = getRelayClient();
-    if (!client) return;
-
-    return client.onMessage((msg) => {
+  useRelaySubscription(
+    (msg) => {
       if (msg.type === "file:list") {
         setEntries(msg.entries);
         setIsLoading(false);
       }
-    });
-  }, [setEntries, setIsLoading]);
+    },
+    [setEntries, setIsLoading],
+  );
 
   useEffect(() => {
     loadDirectory(currentPath);
-  }, [currentPath, loadDirectory]);
+    // relayClient re-runs this once the client attaches / reconnects
+  }, [currentPath, loadDirectory, relayClient]);
 
   // Focus inline input when it appears
   useEffect(() => {

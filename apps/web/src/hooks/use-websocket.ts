@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import type { DependencyList } from "react";
 import type { ClientMessage, ServerMessage } from "@repo/protocol";
 import { RelayClient } from "@/lib/ws-client";
 import { useConnectionStore } from "@/stores/connection-store";
@@ -18,6 +19,39 @@ const handledExits = new Set<string>();
 
 export function getRelayClient(): RelayClient | null {
   return globalClient;
+}
+
+/**
+ * Subscribe to relay messages, re-attaching whenever the connection status
+ * changes. This binds once the client exists (it's created asynchronously by
+ * the layout's `useWebSocket` effect, so it's null on first child mount) and
+ * re-binds on a new socket after a reconnect. The latest `handler` is kept in a
+ * ref so the subscription stays stable and doesn't churn on every render.
+ */
+export function useRelaySubscription(
+  handler: (msg: ServerMessage) => void,
+  deps: DependencyList = [],
+): void {
+  const status = useConnectionStore((s) => s.status);
+  const ref = useRef(handler);
+  ref.current = handler;
+  useEffect(() => {
+    const client = getRelayClient();
+    if (!client) return;
+    return client.onMessage((msg) => ref.current(msg));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, ...deps]);
+}
+
+/**
+ * Return the current relay client and subscribe the caller to the connection
+ * status so the component re-renders (and its client-dependent effects re-run)
+ * once the client attaches or reconnects. Use this for "send an initial request
+ * when connected" needs, e.g. the file tree's directory load.
+ */
+export function useRelayClient(): RelayClient | null {
+  useConnectionStore((s) => s.status); // re-render when the client attaches / reconnects
+  return getRelayClient();
 }
 
 export function useWebSocket(url: string, token: string) {

@@ -11,7 +11,7 @@ import {
 import { Input } from "@repo/ui/components/ui/input";
 import { Label } from "@repo/ui/components/ui/label";
 import { Button } from "@repo/ui/components/ui/button";
-import { getRelayClient } from "@/hooks/use-websocket";
+import { getRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
 import { useSessionStore } from "@/stores/session-store";
 
 interface SessionCreateDialogProps {
@@ -29,11 +29,8 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Listen for session:created to auto-attach
-  useEffect(() => {
-    const client = getRelayClient();
-    if (!client) return;
-
-    const unsub = client.onMessage((msg) => {
+  useRelaySubscription(
+    (msg) => {
       if (msg.type === "session:created" && waitingForSession.current) {
         waitingForSession.current = false;
         if (resetTimerRef.current) {
@@ -46,16 +43,19 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
           localStorage.setItem("ccremote-last-session", msg.session.name);
         }
       }
-    });
+    },
+    [setActiveSession],
+  );
 
+  // Clear any pending reset timer on unmount
+  useEffect(() => {
     return () => {
-      unsub();
       if (resetTimerRef.current) {
         clearTimeout(resetTimerRef.current);
         resetTimerRef.current = null;
       }
     };
-  }, [setActiveSession]);
+  }, []);
 
   const handleCreate = useCallback(() => {
     const client = getRelayClient();

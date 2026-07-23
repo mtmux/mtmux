@@ -13,7 +13,7 @@ import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAlertStore } from "@/stores/alert-store";
-import { getRelayClient } from "@/hooks/use-websocket";
+import { getRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
 import { Terminal, Plus } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { cn } from "@repo/ui/lib/utils";
@@ -376,46 +376,41 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       // at start of next effect run or on component unmount (init effect cleanup)
     }, [fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback]);
 
-    // Wire WebSocket output to terminal — use ref to prevent stale session output
-    useEffect(() => {
-      const client = getRelayClient();
-      if (!client) return;
-
-      const unsub = client.onMessage((msg: ServerMessage) => {
-        // On reconnect, re-attach the current session
-        if (msg.type === "auth:success") {
-          const session = attachedSessionRef.current;
-          if (session) {
-            // Reset ready state — wait for new session:attached before writing output
-            sessionReadyRef.current = false;
-            pendingSessionRef.current = session;
-            const size = terminalRef.current && terminalRef.current.cols > 0 && terminalRef.current.rows > 0
-              ? { cols: terminalRef.current.cols, rows: terminalRef.current.rows }
-              : { cols: 80, rows: 24 };
-            const c = getRelayClient();
-            c?.send({ type: "session:attach", name: session, size, capture: true });
-            c?.send({ type: "pane:list" });
-            c?.send({ type: "window:list" });
-          }
-          return;
+    // Wire WebSocket output to terminal — use ref to prevent stale session
+    // output. useRelaySubscription re-attaches once globalClient is set by the
+    // parent layout's useWebSocket effect and re-binds after a reconnect.
+    useRelaySubscription((msg: ServerMessage) => {
+      // On reconnect, re-attach the current session
+      if (msg.type === "auth:success") {
+        const session = attachedSessionRef.current;
+        if (session) {
+          // Reset ready state — wait for new session:attached before writing output
+          sessionReadyRef.current = false;
+          pendingSessionRef.current = session;
+          const size = terminalRef.current && terminalRef.current.cols > 0 && terminalRef.current.rows > 0
+            ? { cols: terminalRef.current.cols, rows: terminalRef.current.rows }
+            : { cols: 80, rows: 24 };
+          const c = getRelayClient();
+          c?.send({ type: "session:attach", name: session, size, capture: true });
+          c?.send({ type: "pane:list" });
+          c?.send({ type: "window:list" });
         }
-        if (msg.type === "session:attached" && msg.name === pendingSessionRef.current) {
-          // Only clear if not already attached (prevent double-clear)
-          if (attachedSessionRef.current !== msg.name) {
-            const terminal = terminalRef.current;
-            if (terminal) terminal.clear();
-          }
-          attachedSessionRef.current = msg.name;
-          sessionReadyRef.current = true;
-          pendingSessionRef.current = null;
+        return;
+      }
+      if (msg.type === "session:attached" && msg.name === pendingSessionRef.current) {
+        // Only clear if not already attached (prevent double-clear)
+        if (attachedSessionRef.current !== msg.name) {
+          const terminal = terminalRef.current;
+          if (terminal) terminal.clear();
         }
-        if (msg.type === "terminal:output" && terminalRef.current && sessionReadyRef.current && attachedSessionRef.current) {
-          terminalRef.current.write(msg.data);
-        }
-      });
-
-      return unsub;
-    }, []);
+        attachedSessionRef.current = msg.name;
+        sessionReadyRef.current = true;
+        pendingSessionRef.current = null;
+      }
+      if (msg.type === "terminal:output" && terminalRef.current && sessionReadyRef.current && attachedSessionRef.current) {
+        terminalRef.current.write(msg.data);
+      }
+    });
 
     // Attach/detach to session when sessionName changes
     useEffect(() => {
