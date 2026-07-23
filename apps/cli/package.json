@@ -1,6 +1,6 @@
 {
   "name": "tmuxremote",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Self-hosted browser terminal for tmux. One command, any device.",
   "keywords": [
     "claude",
@@ -12,15 +12,14 @@
     "self-hosted",
     "websocket"
   ],
-  "homepage": "https://ccremote.dev",
-  "bugs": "https://github.com/nicholasgriffintn/ccremote/issues",
+  "homepage": "https://github.com/GagnDeep/tmuxremote#readme",
+  "bugs": "https://github.com/GagnDeep/tmuxremote/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nicholasgriffintn/ccremote.git",
+    "url": "https://github.com/GagnDeep/tmuxremote.git",
     "directory": "apps/cli"
   },
   "license": "MIT",
-  "author": "Nicholas Griffin",
   "type": "module",
   "bin": {
     "tmuxremote": "./dist/bin.js"

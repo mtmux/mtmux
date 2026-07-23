@@ -46,6 +46,10 @@ tmuxremote start --host 0.0.0.0
 
 For internet access, put it behind a reverse proxy with TLS — `wss://` is required when the page is served over `https://`.
 
+## Source
+
+[github.com/GagnDeep/tmuxremote](https://github.com/GagnDeep/tmuxremote) — issues and PRs welcome.
+
 ## What you get in the browser
 
 - Full tmux: sessions, windows, panes, copy mode, resize
