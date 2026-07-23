@@ -1,22 +1,17 @@
 export default {
   extends: ["@commitlint/config-conventional"],
   rules: {
+    // Scopes mirror the monorepo's apps/packages (see CLAUDE.md "Commit Convention").
     "scope-enum": [
       2,
       "always",
       [
+        "cli",
         "web",
-        "admin",
         "docs",
-        "api",
-        "db",
-        "auth",
+        "relay",
+        "protocol",
         "ui",
-        "email",
-        "storage",
-        "ai",
-        "websockets",
-        "temporal",
         "config",
         "logger",
         "infra",

@@ -1,0 +1,199 @@
+import { describe, expect, it } from "vitest";
+import type { ClientMessage } from "./client-messages";
+import type { ServerMessage } from "./server-messages";
+import {
+  deserializeClientMessage,
+  deserializeServerMessage,
+  serialize,
+  tryDeserializeClientMessage,
+  tryDeserializeServerMessage,
+} from "./codec";
+
+// Representative ClientMessage variants exercising the wire contract.
+const clientMessages: ClientMessage[] = [
+  { type: "auth", token: "secret-token" },
+  { type: "ping", timestamp: 1_700_000_000 },
+  { type: "terminal:input", data: "ls -la\r" },
+  { type: "terminal:resize", size: { cols: 120, rows: 40 } },
+  { type: "session:list" },
+  { type: "session:create", name: "dev", cwd: "/home/user", command: "bash" },
+  { type: "session:create" }, // all-optional fields omitted
+  {
+    type: "session:attach",
+    name: "dev",
+    size: { cols: 80, rows: 24 },
+    capture: true,
+  },
+  { type: "session:kill", name: "dev" },
+  { type: "file:list", path: "/home/user/project" },
+  { type: "file:read", path: "/home/user/project/README.md" },
+  { type: "file:write", path: "/home/user/project/a.txt", content: "hello" },
+  {
+    type: "file:upload",
+    path: "/home/user/blob.bin",
+    content: "aGVsbG8=",
+    final: true,
+  },
+  { type: "command:send", command: "npm test" },
+  { type: "pane:resize", id: "%1", direction: "R", amount: 5 },
+  { type: "window:layout", preset: "tiled" },
+];
+
+// Representative ServerMessage variants exercising the wire contract.
+const serverMessages: ServerMessage[] = [
+  { type: "auth:success", serverVersion: "1.2.3" },
+  { type: "auth:failure", reason: "bad token" },
+  { type: "pong", timestamp: 1_700_000_000 },
+  { type: "error", code: "EPERM", message: "not allowed" },
+  // server:info WITHOUT the optional defaultPath
+  { type: "server:info", hostname: "box", platform: "linux", uptime: 12345 },
+  // server:info WITH the new optional defaultPath
+  {
+    type: "server:info",
+    hostname: "box",
+    platform: "linux",
+    uptime: 12345,
+    defaultPath: "/home/user",
+  },
+  { type: "terminal:output", data: "[32mok[0m\r\n" },
+  {
+    type: "session:list",
+    sessions: [
+      {
+        name: "dev",
+        id: "$0",
+        windows: 2,
+        attached: true,
+        created: "2026-01-01T00:00:00Z",
+        activity: "2026-01-01T00:05:00Z",
+      },
+    ],
+  },
+  {
+    type: "file:list",
+    path: "/home/user",
+    entries: [
+      {
+        name: "README.md",
+        path: "/home/user/README.md",
+        type: "file",
+        size: 42,
+        modified: "2026-01-01T00:00:00Z",
+      },
+    ],
+  },
+  {
+    type: "file:op:result",
+    op: "delete",
+    path: "/home/user/gone.txt",
+    success: true,
+  },
+];
+
+describe("codec round-trip", () => {
+  it.each(clientMessages.map((m) => [m.type, m] as const))(
+    "round-trips ClientMessage %s",
+    (_type, msg) => {
+      const wire = serialize(msg);
+      expect(typeof wire).toBe("string");
+      const decoded = deserializeClientMessage(wire);
+      expect(decoded).toEqual(msg);
+    },
+  );
+
+  it.each(serverMessages.map((m, i) => [`${m.type}#${i}`, m] as const))(
+    "round-trips ServerMessage %s",
+    (_label, msg) => {
+      const wire = serialize(msg);
+      expect(typeof wire).toBe("string");
+      const decoded = deserializeServerMessage(wire);
+      expect(decoded).toEqual(msg);
+    },
+  );
+
+  it("preserves the optional server:info defaultPath field", () => {
+    const msg: ServerMessage = {
+      type: "server:info",
+      hostname: "box",
+      platform: "linux",
+      uptime: 1,
+      defaultPath: "/srv/data",
+    };
+    const decoded = deserializeServerMessage(serialize(msg));
+    expect(decoded).toMatchObject({ defaultPath: "/srv/data" });
+  });
+});
+
+describe("deserialize rejects malformed input", () => {
+  it("throws on invalid JSON", () => {
+    expect(() => deserializeClientMessage("{not json")).toThrow();
+    expect(() => deserializeServerMessage("{not json")).toThrow();
+  });
+
+  it("throws on an unknown discriminant type", () => {
+    expect(() =>
+      deserializeClientMessage(JSON.stringify({ type: "does:not:exist" })),
+    ).toThrow();
+    expect(() =>
+      deserializeServerMessage(JSON.stringify({ type: "does:not:exist" })),
+    ).toThrow();
+  });
+
+  it("throws when required fields are missing", () => {
+    // auth requires token
+    expect(() =>
+      deserializeClientMessage(JSON.stringify({ type: "auth" })),
+    ).toThrow();
+    // error requires code + message
+    expect(() =>
+      deserializeServerMessage(JSON.stringify({ type: "error", code: "X" })),
+    ).toThrow();
+  });
+
+  it("throws when a field has the wrong type", () => {
+    // timestamp must be a number
+    expect(() =>
+      deserializeClientMessage(
+        JSON.stringify({ type: "ping", timestamp: "soon" }),
+      ),
+    ).toThrow();
+    // terminal:resize size out of range
+    expect(() =>
+      deserializeClientMessage(
+        JSON.stringify({
+          type: "terminal:resize",
+          size: { cols: 0, rows: 24 },
+        }),
+      ),
+    ).toThrow();
+  });
+});
+
+describe("tryDeserialize returns a discriminated result instead of throwing", () => {
+  it("returns ok:true with the parsed message on valid input", () => {
+    const res = tryDeserializeClientMessage(
+      serialize({ type: "terminal:input", data: "x" }),
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.message).toEqual({ type: "terminal:input", data: "x" });
+    }
+  });
+
+  it("returns ok:false with an error string on invalid input", () => {
+    const clientRes = tryDeserializeClientMessage("{bad");
+    expect(clientRes.ok).toBe(false);
+    if (!clientRes.ok) {
+      expect(typeof clientRes.error).toBe("string");
+      expect(clientRes.error.length).toBeGreaterThan(0);
+    }
+
+    const serverRes = tryDeserializeServerMessage(
+      JSON.stringify({ type: "auth:success" }),
+    );
+    expect(serverRes.ok).toBe(false);
+    if (!serverRes.ok) {
+      expect(typeof serverRes.error).toBe("string");
+    }
+  });
+});

@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@9.15.4",
   "scripts": {
+    "prepare": "husky",
     "dev": "turbo dev",
     "build": "turbo build",
     "lint": "turbo lint",
@@ -35,5 +36,10 @@
     "pm2": "^7.0.1",
     "prettier": "^3.8.3",
     "turbo": "^2.9.9"
+  },
+  "pnpm": {
+    "overrides": {
+      "ws": "^8"
+    }
   }
 }
