@@ -14,11 +14,16 @@ import { MobileNav } from "@/components/mobile/mobile-nav";
 import { KeyboardToolbar } from "@/components/mobile/keyboard-toolbar";
 import { MobileCommandBar } from "@/components/mobile/mobile-command-bar";
 import { useUiStore } from "@/stores/ui-store";
-import { useTerminalStore, getDefaultFontSize, clampFontSize } from "@/stores/terminal-store";
+import {
+  useTerminalStore,
+  getDefaultFontSize,
+  clampFontSize,
+} from "@/stores/terminal-store";
 import { CommandPalette } from "@/components/command/command-palette";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { AlertBanner } from "@/components/alert-banner";
+import { ConnectionBanner } from "@/components/connection-banner";
 import { VisualViewportSync } from "@/components/visual-viewport-sync";
 import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
@@ -95,10 +100,7 @@ export default function TerminalLayout({
     }
   }, []);
 
-  const { send } = useWebSocket(
-    token ? resolveRelayWsUrl() : "",
-    token ?? "",
-  );
+  const { send } = useWebSocket(token ? resolveRelayWsUrl() : "", token ?? "");
 
   if (!token) {
     return null; // Redirecting to login
@@ -114,7 +116,12 @@ export default function TerminalLayout({
           : "disconnected";
 
   const header = (
-    <div className={cn("flex min-w-0 items-center gap-3 px-3", isMobile ? "py-1" : "py-1.5")}>
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-3 px-3",
+        isMobile ? "py-1" : "py-1.5",
+      )}
+    >
       <Terminal className="h-4 w-4 text-primary" />
       {/* #5: Hide "ccremote" text on mobile — icon only */}
       {!isMobile && <span className="text-sm font-semibold">ccremote</span>}
@@ -157,6 +164,7 @@ export default function TerminalLayout({
 
   return (
     <AppShell header={header} toolbar={toolbar}>
+      <ConnectionBanner />
       <VisualViewportSync />
       <ErrorBoundary fallbackMessage="Terminal crashed">
         {children}

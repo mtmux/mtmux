@@ -6,7 +6,9 @@ import {
 } from "@repo/protocol";
 
 type MessageHandler = (msg: ServerMessage) => void;
-type StatusHandler = (status: "connecting" | "connected" | "reconnecting" | "disconnected") => void;
+type StatusHandler = (
+  status: "connecting" | "connected" | "reconnecting" | "disconnected",
+) => void;
 
 interface RelayClientOptions {
   url: string;
@@ -29,21 +31,27 @@ export class RelayClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private intentionalClose = false;
-  private _status: "connecting" | "connected" | "reconnecting" | "disconnected" = "disconnected";
+  private _status:
+    | "connecting"
+    | "connected"
+    | "reconnecting"
+    | "disconnected" = "disconnected";
   private _latency: number | null = null;
   private _reconnectCount = 0;
   // #15: Track last pong for zombie connection detection
   private lastPongAt = 0;
   // #12: Queue messages while disconnected
   private pendingMessages: ClientMessage[] = [];
-  private onMessageDroppedHandler: ((droppedCount: number) => void) | null = null;
+  private onMessageDroppedHandler: ((droppedCount: number) => void) | null =
+    null;
 
   constructor(options: RelayClientOptions) {
     this.url = options.url;
     this.token = options.token;
     if (options.onMessage) this.messageHandlers.add(options.onMessage);
     if (options.onStatusChange) this.statusHandlers.add(options.onStatusChange);
-    if (options.onMessageDropped) this.onMessageDroppedHandler = options.onMessageDropped;
+    if (options.onMessageDropped)
+      this.onMessageDroppedHandler = options.onMessageDropped;
   }
 
   get status() {
@@ -66,6 +74,32 @@ export class RelayClient {
   }
 
   connect(): void {
+    // Always clear a pending reconnect timer first so a queued reconnect can't
+    // fire a second connect() and open a parallel socket (e.g. the `online`
+    // event handler and a scheduled reconnect racing each other).
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Guard: if a socket is already connecting or open, don't open another.
+    // This makes concurrent connect() calls idempotent.
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING ||
+        this.ws.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
+
+    // Tear down any previous (closing/closed) socket so its stale handlers —
+    // especially onclose — can't schedule another reconnect against us or
+    // deliver messages onto the new connection.
+    if (this.ws) {
+      this.teardownSocket(this.ws);
+      this.ws = null;
+    }
+
     this.intentionalClose = false;
     this.setStatus(this._reconnectCount > 0 ? "reconnecting" : "connecting");
 
@@ -144,7 +178,10 @@ export class RelayClient {
     // Only send once the relay has confirmed auth (status === "connected").
     // The WS readyState becomes OPEN at handshake — before auth:success — so
     // sending here would race the auth handler and get dropped by the relay.
-    if (this.ws?.readyState === WebSocket.OPEN && this._status === "connected") {
+    if (
+      this.ws?.readyState === WebSocket.OPEN &&
+      this._status === "connected"
+    ) {
       this.ws.send(serialize(msg));
     } else if (msg.type !== "ping") {
       this.pendingMessages.push(msg);
@@ -165,6 +202,23 @@ export class RelayClient {
     return () => this.statusHandlers.delete(handler);
   }
 
+  /**
+   * Detach all handlers from a socket and close it. Detaching first ensures
+   * an orphaned socket's onclose can't schedule another reconnect, and its
+   * onmessage can't leak messages onto a freshly created connection.
+   */
+  private teardownSocket(ws: WebSocket): void {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    try {
+      ws.close();
+    } catch {
+      // ignore — socket may already be closing/closed
+    }
+  }
+
   private sendRaw(data: string): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(data);
@@ -180,7 +234,10 @@ export class RelayClient {
       this.connect();
     }, this.reconnectDelay);
 
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY);
+    this.reconnectDelay = Math.min(
+      this.reconnectDelay * 2,
+      MAX_RECONNECT_DELAY,
+    );
   }
 
   private startPing(): void {

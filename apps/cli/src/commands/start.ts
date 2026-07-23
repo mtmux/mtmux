@@ -32,7 +32,10 @@ export async function start(opts: StartOpts) {
   // Relay reads these on first import. Set BEFORE we import relay modules.
   process.env.AUTH_TOKEN = cfg.token;
   process.env.ALLOWED_PATHS =
-    opts.allowedPaths ?? process.env.ALLOWED_PATHS ?? process.env.HOME ?? process.cwd();
+    opts.allowedPaths ??
+    process.env.ALLOWED_PATHS ??
+    process.env.HOME ??
+    process.cwd();
   (process.env as Record<string, string>).NODE_ENV = "production";
   process.env.RELAY_HOST = opts.host;
   process.env.RELAY_PORT = String(opts.port);
@@ -48,17 +51,29 @@ export async function start(opts: StartOpts) {
       wss: import("ws").WebSocketServer,
       path: string,
     ) => void;
-    wireConnections: (wss: import("ws").WebSocketServer) => { shutdown: () => void };
-    handleRelayRequest: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
+    wireConnections: (wss: import("ws").WebSocketServer) => {
+      shutdown: () => void;
+    };
+    handleRelayRequest: (
+      req: http.IncomingMessage,
+      res: http.ServerResponse,
+    ) => Promise<boolean>;
   };
 
   const [relay, nextMod] = await Promise.all([
     import(RELAY_RUNTIME) as Promise<RelayRuntime>,
     import("next"),
   ]);
-  const { createWsServerNoBind, attachUpgrade, wireConnections, handleRelayRequest } = relay;
+  const {
+    createWsServerNoBind,
+    attachUpgrade,
+    wireConnections,
+    handleRelayRequest,
+  } = relay;
 
-  const nextFactory = (nextMod as unknown as { default: typeof import("next").default }).default;
+  const nextFactory = (
+    nextMod as unknown as { default: typeof import("next").default }
+  ).default;
   const app = nextFactory({ dev: false, dir: WEB_DIR });
   await app.prepare();
   const handler = app.getRequestHandler();
@@ -129,7 +144,9 @@ export async function start(opts: StartOpts) {
         kleur.red(`✗ Permission denied binding to ${opts.host}:${opts.port}.`),
       );
       console.error(
-        kleur.dim("  Ports < 1024 require elevated privileges. Pick a higher port."),
+        kleur.dim(
+          "  Ports < 1024 require elevated privileges. Pick a higher port.",
+        ),
       );
     } else {
       console.error(kleur.red(`✗ ${e.message}`));
@@ -142,7 +159,14 @@ export async function start(opts: StartOpts) {
   const url = `http://${visibleHost}:${opts.port}`;
   banner({ url, token: cfg.token, host: opts.host, port: opts.port });
 
-  if (opts.open) await openBrowser(url).catch(() => {});
+  if (opts.open) {
+    // Auto-open with the token in the URL *fragment* (never the query): the
+    // fragment is never sent to the server or logged, and the login page reads
+    // it on mount to auto-authenticate — no manual copy-paste. The banner above
+    // still prints the token for the --no-open / manual / mobile flow.
+    const openUrl = `${url}/login#token=${encodeURIComponent(cfg.token)}`;
+    await openBrowser(openUrl).catch(() => {});
+  }
 
   const shutdown = () => {
     console.log("\n  Stopping…");

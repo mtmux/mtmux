@@ -1,14 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import {
-  X,
-  Save,
-  WrapText,
-  Terminal,
-  AlertTriangle,
-  Lock,
-} from "lucide-react";
+import { X, Save, WrapText, Terminal, AlertTriangle, Lock } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { Badge } from "@repo/ui/components/ui/badge";
 import {
@@ -34,11 +27,13 @@ import { getMonacoLanguage, getLanguageLabel } from "@/lib/file-utils";
 import { useFileStore } from "@/stores/file-store";
 import { useSessionStore } from "@/stores/session-store";
 import { getRelayClient } from "@/hooks/use-websocket";
+import { useConnectionStore } from "@/stores/connection-store";
 
 export function FileEditor() {
   const { editorFile, editorTruncated, isSaving, closeEditor, setIsSaving } =
     useFileStore();
   const { activeSessionId } = useSessionStore();
+  const connectionStatus = useConnectionStore((s) => s.status);
 
   const [savedContent, setSavedContent] = useState<string | null>(null);
   const [currentContent, setCurrentContent] = useState<string | null>(null);
@@ -84,7 +79,6 @@ export function FileEditor() {
 
     client.send({ type: "file:read", path: editorFile });
     client.send({ type: "file:stat", path: editorFile });
-    client.send({ type: "file:watch", path: editorFile });
 
     const unsub = client.onMessage((msg) => {
       if (msg.type === "file:content" && msg.path === editorFile) {
@@ -118,7 +112,11 @@ export function FileEditor() {
           useAlertStore.getState().push("error", msg.error ?? "Save failed");
         }
       }
-      if (msg.type === "file:changed" && msg.path === editorFile && msg.event === "change") {
+      if (
+        msg.type === "file:changed" &&
+        msg.path === editorFile &&
+        msg.event === "change"
+      ) {
         // File changed externally
         if (isModified) {
           setExternalChange(true);
@@ -137,16 +135,36 @@ export function FileEditor() {
         clearTimeout(loadTimeoutRef.current);
         loadTimeoutRef.current = null;
       }
-      client.send({ type: "file:unwatch", path: editorFile });
     };
   }, [editorFile]);
+
+  // Establish (and re-establish) the server-side file watch whenever the
+  // connection (re)establishes. The relay forgets watches across reconnects,
+  // so a watch sent only on mount silently dies after a reconnect and
+  // external-change detection stops. Keying this on connection status makes it
+  // re-run — and re-issue file:watch — on every successful (re)connect without
+  // resetting the editor's content/edit state.
+  useEffect(() => {
+    if (!editorFile) return;
+    if (connectionStatus !== "connected") return;
+    const client = getRelayClient();
+    if (!client) return;
+    client.send({ type: "file:watch", path: editorFile });
+    return () => {
+      getRelayClient()?.send({ type: "file:unwatch", path: editorFile });
+    };
+  }, [editorFile, connectionStatus]);
 
   const handleSave = useCallback(() => {
     if (!editorFile || currentContent === null || isReadOnly) return;
     const client = getRelayClient();
     if (!client) return;
     setIsSaving(true);
-    client.send({ type: "file:write", path: editorFile, content: currentContent });
+    client.send({
+      type: "file:write",
+      path: editorFile,
+      content: currentContent,
+    });
   }, [editorFile, currentContent, isReadOnly, setIsSaving]);
 
   const handleClose = useCallback(() => {
@@ -201,7 +219,10 @@ export function FileEditor() {
           <span className="flex-1 truncate text-sm font-medium">
             {fileName}
             {isModified && (
-              <span className="ml-1 text-warning-foreground" title="Unsaved changes">
+              <span
+                className="ml-1 text-warning-foreground"
+                title="Unsaved changes"
+              >
                 ●
               </span>
             )}
@@ -223,11 +244,18 @@ export function FileEditor() {
             title="Toggle word wrap"
             aria-label="Toggle word wrap"
           >
-            <WrapText className={cn("h-3.5 w-3.5", wordWrap === "on" && "text-primary")} />
+            <WrapText
+              className={cn("h-3.5 w-3.5", wordWrap === "on" && "text-primary")}
+            />
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Terminal actions">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                aria-label="Terminal actions"
+              >
                 <Terminal className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
@@ -296,16 +324,22 @@ export function FileEditor() {
           ) : loadError ? (
             <div className="flex h-full flex-col items-center justify-center gap-2">
               <span className="text-sm text-destructive">{loadError}</span>
-              <Button variant="outline" size="sm" onClick={() => {
-                setLoadError(null);
-                const client = getRelayClient();
-                if (client && editorFile) {
-                  loadTimeoutRef.current = setTimeout(() => {
-                    setLoadError("Timed out waiting for file content");
-                  }, 10_000);
-                  client.send({ type: "file:read", path: editorFile });
-                }
-              }}>Retry</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setLoadError(null);
+                  const client = getRelayClient();
+                  if (client && editorFile) {
+                    loadTimeoutRef.current = setTimeout(() => {
+                      setLoadError("Timed out waiting for file content");
+                    }, 10_000);
+                    client.send({ type: "file:read", path: editorFile });
+                  }
+                }}
+              >
+                Retry
+              </Button>
             </div>
           ) : (
             <div className="flex h-full items-center justify-center">
@@ -330,7 +364,8 @@ export function FileEditor() {
           <AlertDialogHeader>
             <AlertDialogTitle>Unsaved changes</AlertDialogTitle>
             <AlertDialogDescription>
-              You have unsaved changes to {fileName}. Are you sure you want to close?
+              You have unsaved changes to {fileName}. Are you sure you want to
+              close?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

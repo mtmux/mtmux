@@ -1,7 +1,17 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import { Clock, PenLine, Trash2, ChevronRight, ChevronDown, MoreVertical, TerminalSquare, AppWindow, PanelTop } from "lucide-react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  Clock,
+  PenLine,
+  Trash2,
+  ChevronRight,
+  ChevronDown,
+  MoreVertical,
+  TerminalSquare,
+  AppWindow,
+  PanelTop,
+} from "lucide-react";
 import { Card, CardContent } from "@repo/ui/components/ui/card";
 import { Button } from "@repo/ui/components/ui/button";
 import { Input } from "@repo/ui/components/ui/input";
@@ -48,10 +58,19 @@ function timeAgo(dateStr: string): string {
 }
 
 function isRecentlyActive(dateStr: string): boolean {
-  return (Date.now() - new Date(dateStr).getTime()) < 30_000;
+  return Date.now() - new Date(dateStr).getTime() < 30_000;
 }
 
-const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
+const SHELL_COMMANDS = new Set([
+  "bash",
+  "zsh",
+  "fish",
+  "sh",
+  "dash",
+  "ksh",
+  "tcsh",
+  "csh",
+]);
 
 function shortenPath(path: string): string {
   if (!path) return "";
@@ -65,7 +84,12 @@ function formatPaneName(command?: string, path?: string): string {
   return path ? `${command} · ${shortenPath(path)}` : command;
 }
 
-export function SessionCard({ session, isActive, onAttach, onKill }: SessionCardProps) {
+export function SessionCard({
+  session,
+  isActive,
+  onAttach,
+  onKill,
+}: SessionCardProps) {
   const recentlyActive = isRecentlyActive(session.activity);
   const connectionStatus = useConnectionStore((s) => s.status);
   // Pending: user picked this session but the WS is still working through
@@ -79,6 +103,17 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
   const [detailPanes, setDetailPanes] = useState<PaneInfo[] | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const hasFetched = useRef(false);
+  const unsubRef = useRef<(() => void) | null>(null);
+  const detailTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearDetailSubscription = useCallback(() => {
+    unsubRef.current?.();
+    unsubRef.current = null;
+    if (detailTimeoutRef.current) {
+      clearTimeout(detailTimeoutRef.current);
+      detailTimeoutRef.current = null;
+    }
+  }, []);
 
   const fetchDetails = useCallback(() => {
     if (hasFetched.current) return;
@@ -88,29 +123,47 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
     setDetailLoading(true);
     hasFetched.current = true;
 
-    const unsub = client.onMessage((msg) => {
+    unsubRef.current = client.onMessage((msg) => {
       if (msg.type === "session:windows" && msg.name === session.name) {
         setDetailWindows(msg.windows);
         setDetailPanes(msg.panes);
         setDetailLoading(false);
-        unsub();
+        clearDetailSubscription();
       }
     });
 
-    client.send({ type: "session:windows", name: session.name });
-  }, [session.name]);
+    // Guard against a response that never arrives: clear the subscription so
+    // it can't leak, and allow a retry on the next expand.
+    detailTimeoutRef.current = setTimeout(() => {
+      setDetailLoading(false);
+      hasFetched.current = false;
+      clearDetailSubscription();
+    }, 10_000);
 
-  const handleToggleExpand = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    const next = !expanded;
-    setExpanded(next);
-    if (next) fetchDetails();
-  }, [expanded, fetchDetails]);
+    client.send({ type: "session:windows", name: session.name });
+  }, [session.name, clearDetailSubscription]);
+
+  // Ensure any in-flight subscription/timeout is torn down on unmount.
+  useEffect(() => clearDetailSubscription, [clearDetailSubscription]);
+
+  const handleToggleExpand = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const next = !expanded;
+      setExpanded(next);
+      if (next) fetchDetails();
+    },
+    [expanded, fetchDetails],
+  );
 
   const handleRenameSubmit = useCallback(() => {
     const trimmed = renameValue.trim();
     if (trimmed && trimmed !== session.name) {
-      getRelayClient()?.send({ type: "session:rename", oldName: session.name, newName: trimmed });
+      getRelayClient()?.send({
+        type: "session:rename",
+        oldName: session.name,
+        newName: trimmed,
+      });
     }
     setIsRenaming(false);
   }, [renameValue, session.name]);
@@ -120,10 +173,13 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
   }, []);
 
   // Group panes by window
-  const panesByWindow = detailPanes?.reduce<Record<string, PaneInfo[]>>((acc, pane) => {
-    (acc[pane.windowId] ??= []).push(pane);
-    return acc;
-  }, {});
+  const panesByWindow = detailPanes?.reduce<Record<string, PaneInfo[]>>(
+    (acc, pane) => {
+      (acc[pane.windowId] ??= []).push(pane);
+      return acc;
+    },
+    {},
+  );
 
   return (
     <div className="relative overflow-hidden rounded-lg">
@@ -144,7 +200,11 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
               onClick={handleToggleExpand}
               aria-label={expanded ? "Collapse" : "Expand"}
             >
-              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {expanded ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
             </button>
 
             <TooltipProvider delayDuration={300}>
@@ -153,12 +213,20 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
                   <span
                     className={cn(
                       "shrink-0 h-2 w-2 rounded-full",
-                      session.attached ? "bg-green-500" : recentlyActive ? "bg-yellow-500" : "bg-muted-foreground/40",
+                      session.attached
+                        ? "bg-green-500"
+                        : recentlyActive
+                          ? "bg-yellow-500"
+                          : "bg-muted-foreground/40",
                     )}
                   />
                 </TooltipTrigger>
                 <TooltipContent side="right" className="text-xs">
-                  {session.attached ? "Attached" : recentlyActive ? "Recently active" : "Detached"}
+                  {session.attached
+                    ? "Attached"
+                    : recentlyActive
+                      ? "Recently active"
+                      : "Detached"}
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -178,7 +246,9 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
                   onClick={(e) => e.stopPropagation()}
                 />
               ) : (
-                <span className="block truncate font-medium text-xs">{session.name}</span>
+                <span className="block truncate font-medium text-xs">
+                  {session.name}
+                </span>
               )}
             </div>
 
@@ -195,11 +265,13 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => {
-                  e.stopPropagation();
-                  setRenameValue(session.name);
-                  setIsRenaming(true);
-                }}>
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenameValue(session.name);
+                    setIsRenaming(true);
+                  }}
+                >
                   <PenLine className="mr-2 h-3.5 w-3.5" />
                   Rename
                 </DropdownMenuItem>
@@ -219,12 +291,18 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
 
           {/* Row 2: window/pane counts + time */}
           <div className="flex items-center gap-2.5 pl-[26px] text-muted-foreground">
-            <span className="flex items-center gap-0.5" title={`${session.windows} window${session.windows !== 1 ? "s" : ""}`}>
+            <span
+              className="flex items-center gap-0.5"
+              title={`${session.windows} window${session.windows !== 1 ? "s" : ""}`}
+            >
               <AppWindow className="h-3 w-3" />
               <span className="text-[10px]">{session.windows}</span>
             </span>
             {detailPanes && (
-              <span className="flex items-center gap-0.5" title={`${detailPanes.length} pane${detailPanes.length !== 1 ? "s" : ""}`}>
+              <span
+                className="flex items-center gap-0.5"
+                title={`${detailPanes.length} pane${detailPanes.length !== 1 ? "s" : ""}`}
+              >
                 <PanelTop className="h-3 w-3" />
                 <span className="text-[10px]">{detailPanes.length}</span>
               </span>
@@ -238,7 +316,10 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
 
         {/* Expanded windows/panes tree */}
         {expanded && (
-          <div className="border-t px-2.5 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="border-t px-2.5 py-1.5"
+            onClick={(e) => e.stopPropagation()}
+          >
             {detailLoading ? (
               <div className="space-y-1">
                 {Array.from({ length: 2 }).map((_, i) => (
@@ -254,13 +335,24 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
                   <div key={win.id}>
                     <div className="flex items-center gap-1 pl-3 text-[11px]">
                       <TerminalSquare className="h-2.5 w-2.5 text-muted-foreground" />
-                      <span className="font-medium truncate">{win.index}: {win.name}</span>
-                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{win.paneCount}p</span>
+                      <span className="font-medium truncate">
+                        {win.index}: {win.name}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
+                        {win.paneCount}p
+                      </span>
                     </div>
                     {panesByWindow[win.id]?.map((pane) => (
-                      <div key={pane.id} className="flex items-center gap-1 pl-6 border-l border-border ml-[14px] text-[11px] text-muted-foreground py-px">
-                        <span className="font-mono text-[10px]">{pane.index}</span>
-                        <span className="truncate">{formatPaneName(pane.command, pane.path)}</span>
+                      <div
+                        key={pane.id}
+                        className="flex items-center gap-1 pl-6 border-l border-border ml-[14px] text-[11px] text-muted-foreground py-px"
+                      >
+                        <span className="font-mono text-[10px]">
+                          {pane.index}
+                        </span>
+                        <span className="truncate">
+                          {formatPaneName(pane.command, pane.path)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -273,9 +365,12 @@ export function SessionCard({ session, isActive, onAttach, onKill }: SessionCard
       <AlertDialog open={showKillConfirm} onOpenChange={setShowKillConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Kill session &quot;{session.name}&quot;?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Kill session &quot;{session.name}&quot;?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently terminate the session and all its processes. This action cannot be undone.
+              This will permanently terminate the session and all its processes.
+              This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

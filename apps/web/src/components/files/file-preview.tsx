@@ -1,15 +1,32 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Download, Copy, Check, File, Film, Music, Archive, FileQuestion, Image } from "lucide-react";
+import {
+  X,
+  Download,
+  Copy,
+  Check,
+  File,
+  Film,
+  Music,
+  Archive,
+  FileQuestion,
+  Image,
+} from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { ScrollArea } from "@repo/ui/components/ui/scroll-area";
 import { Badge } from "@repo/ui/components/ui/badge";
 import { cn } from "@repo/ui/lib/utils";
 import { getRelayClient } from "@/hooks/use-websocket";
 import { useFileStore } from "@/stores/file-store";
-import { getLanguageLabel, isBinaryFile, getFileCategory, formatFileSize, getFileViewMode } from "@/lib/file-utils";
-import { getFileUrl } from "@/lib/file-url";
+import {
+  getLanguageLabel,
+  isBinaryFile,
+  getFileCategory,
+  formatFileSize,
+  getFileViewMode,
+} from "@/lib/file-utils";
+import { useFileObjectUrl } from "@/hooks/use-file-object-url";
 
 const CATEGORY_ICONS: Record<string, typeof File> = {
   image: Image,
@@ -31,45 +48,53 @@ function PreviewMediaError({ message }: { message: string }) {
 }
 
 function PreviewImage({ path, fileName }: { path: string; fileName: string }) {
-  const [error, setError] = useState(false);
-  if (error) return <PreviewMediaError message="Failed to load image" />;
+  const [decodeError, setDecodeError] = useState(false);
+  const { url, loading, error } = useFileObjectUrl(path);
+  if (error || decodeError)
+    return <PreviewMediaError message="Failed to load image" />;
+  if (!url) return loading ? <PreviewMediaError message="Loading…" /> : null;
   return (
     /* eslint-disable-next-line @next/next/no-img-element */
     <img
-      src={getFileUrl(path)}
+      src={url}
       alt={fileName}
       className="max-h-48 max-w-full object-contain"
-      onError={() => setError(true)}
+      onError={() => setDecodeError(true)}
     />
   );
 }
 
 function PreviewVideo({ path }: { path: string }) {
-  const [error, setError] = useState(false);
-  if (error) return <PreviewMediaError message="Failed to load video" />;
+  const [decodeError, setDecodeError] = useState(false);
+  const { url, loading, error } = useFileObjectUrl(path);
+  if (error || decodeError)
+    return <PreviewMediaError message="Failed to load video" />;
+  if (!url) return loading ? <PreviewMediaError message="Loading…" /> : null;
   return (
     <video
-      src={getFileUrl(path)}
+      src={url}
       controls
       preload="metadata"
       className="max-h-48 max-w-full"
-      onError={() => setError(true)}
+      onError={() => setDecodeError(true)}
     />
   );
 }
 
 function PreviewAudio({ path }: { path: string }) {
-  const [error, setError] = useState(false);
-  if (error) return <PreviewMediaError message="Failed to load audio" />;
+  const [decodeError, setDecodeError] = useState(false);
+  const { url, error } = useFileObjectUrl(path);
+  if (error || decodeError)
+    return <PreviewMediaError message="Failed to load audio" />;
   return (
     <>
       <Music className="h-12 w-12 mb-3 opacity-40" />
       <audio
-        src={getFileUrl(path)}
+        src={url ?? undefined}
         controls
         preload="metadata"
         className="w-full max-w-[200px]"
-        onError={() => setError(true)}
+        onError={() => setDecodeError(true)}
       />
     </>
   );
@@ -115,7 +140,12 @@ export function FilePreview({ path, onClose, className }: FilePreviewProps) {
 
   if (!path) {
     return (
-      <div className={cn("flex flex-col items-center justify-center border-l text-muted-foreground", className)}>
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center border-l text-muted-foreground",
+          className,
+        )}
+      >
         <File className="h-10 w-10 mb-2 opacity-40" />
         <p className="text-sm">Select a file to preview</p>
       </div>
@@ -140,10 +170,25 @@ export function FilePreview({ path, onClose, className }: FilePreviewProps) {
         <Badge variant="secondary" className="text-[10px]">
           {language}
         </Badge>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCopy} disabled={binary}>
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={handleCopy}
+          disabled={binary}
+        >
+          {copied ? (
+            <Check className="h-3 w-3" />
+          ) : (
+            <Copy className="h-3 w-3" />
+          )}
         </Button>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={onClose}
+        >
           <X className="h-3 w-3" />
         </Button>
       </div>
@@ -170,16 +215,24 @@ export function FilePreview({ path, onClose, className }: FilePreviewProps) {
               return (
                 <>
                   <Icon className="h-16 w-16 mb-4 opacity-40" />
-                  <p className="text-sm font-medium text-foreground mb-1">{fileName}</p>
-                  <Badge variant="secondary" className="mb-3 capitalize">{category}</Badge>
+                  <p className="text-sm font-medium text-foreground mb-1">
+                    {fileName}
+                  </p>
+                  <Badge variant="secondary" className="mb-3 capitalize">
+                    {category}
+                  </Badge>
                   {fileStat && (
                     <div className="flex flex-col items-center gap-1 text-xs">
                       <span>{formatFileSize(fileStat.size)}</span>
                       <span>{fileStat.permissions}</span>
-                      <span>{new Date(fileStat.modified).toLocaleString()}</span>
+                      <span>
+                        {new Date(fileStat.modified).toLocaleString()}
+                      </span>
                     </div>
                   )}
-                  <p className="mt-4 text-xs">Binary file — preview not available</p>
+                  <p className="mt-4 text-xs">
+                    Binary file — preview not available
+                  </p>
                 </>
               );
             })()}
