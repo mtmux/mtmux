@@ -14,6 +14,7 @@ import {
 import { createRateLimiter } from "./rate-limiter.js";
 import { createSessionMonitor } from "./session-monitor.js";
 import { routeMessage } from "./message-router.js";
+import { defaultBrowsePath } from "./file-service.js";
 
 const logger = createLogger("relay");
 const SERVER_VERSION = "1.0.0";
@@ -79,6 +80,7 @@ export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
           hostname: os.hostname(),
           platform: os.platform(),
           uptime: os.uptime(),
+          defaultPath: defaultBrowsePath(),
         });
 
         const pingInterval = setInterval(() => {

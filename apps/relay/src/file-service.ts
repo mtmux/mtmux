@@ -14,6 +14,15 @@ const MAX_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
 // Track in-progress uploads (path → accumulated size)
 const uploadSizes = new Map<string, number>();
 
+/**
+ * The directory the file browser should open to by default: the first
+ * configured allowed path, resolved to an absolute path. Falls back to $HOME
+ * and then the filesystem root so clients always receive something listable.
+ */
+export function defaultBrowsePath(): string {
+  return path.resolve(config.allowedPaths[0] ?? process.env.HOME ?? "/");
+}
+
 export function isPathAllowed(targetPath: string): boolean {
   const resolved = path.resolve(targetPath);
   return config.allowedPaths.some((allowed) => {

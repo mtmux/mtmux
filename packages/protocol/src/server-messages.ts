@@ -27,6 +27,9 @@ export const ServerInfoMessage = z.object({
   hostname: z.string(),
   platform: z.string(),
   uptime: z.number(),
+  // Primary allowed directory the file browser should open to. Advertised by
+  // the relay so the client doesn't have to guess the server's home path.
+  defaultPath: z.string().optional(),
 });
 
 export const TerminalOutputMessage = z.object({

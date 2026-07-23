@@ -8,7 +8,6 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useFileStore } from "@/stores/file-store";
-import { useSettingsStore } from "@/stores/settings-store";
 import { useAlertStore } from "@/stores/alert-store";
 import { useUiStore } from "@/stores/ui-store";
 
@@ -80,6 +79,12 @@ export function useWebSocket(url: string, token: string) {
           break;
         case "server:info":
           connectionStore.setServerInfo("", msg.hostname);
+          // Open the file browser to the relay's primary allowed directory so
+          // it lists successfully out of the box (the hardcoded "/home" default
+          // is outside the allow-list when the CLI scopes it to $HOME).
+          if (msg.defaultPath) {
+            useFileStore.getState().applyServerDefaultPath(msg.defaultPath);
+          }
           break;
         case "pong":
           connectionStore.setLatency(Date.now() - msg.timestamp);

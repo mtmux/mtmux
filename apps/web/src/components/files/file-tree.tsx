@@ -4,12 +4,10 @@ import { useEffect, useCallback, useState, useRef } from "react";
 import {
   File,
   Folder,
-  FolderOpen,
   FileText,
   FileCode,
   Image,
   ChevronRight,
-  ChevronDown,
   Grid3x3,
   List,
   ArrowUpDown,
@@ -138,6 +136,10 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     (msg) => {
       if (msg.type === "file:list") {
         setEntries(msg.entries);
+        setIsLoading(false);
+      } else if (msg.type === "error") {
+        // Don't leave the tree spinning forever if a listing was rejected
+        // (e.g. path outside the allow-list).
         setIsLoading(false);
       }
     },
