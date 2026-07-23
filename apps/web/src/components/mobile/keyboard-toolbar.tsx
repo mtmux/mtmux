@@ -9,6 +9,7 @@ import { useCommandStore } from "@/stores/command-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { useUiStore } from "@/stores/ui-store";
+import { useAlertStore } from "@/stores/alert-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
 interface KeyboardToolbarProps {
@@ -69,7 +70,7 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
   );
 
   const handleTouchStart = useCallback(
-    (id: string) => {
+    (_id: string) => {
       longPressTimer.current = setTimeout(() => {
         // Long press variants could show a popup
         if (hapticEnabled) triggerHaptic(30);
@@ -139,7 +140,9 @@ export function KeyboardToolbar({ className, onSearchOpen, onCopy }: KeyboardToo
               const client = getRelayClient();
               client?.send({ type: "terminal:input", data: text });
             }
-          } catch {}
+          } catch {
+            useAlertStore.getState().push("error", "Clipboard access denied");
+          }
         }}
       >
         <ClipboardPaste className="h-4 w-4" />

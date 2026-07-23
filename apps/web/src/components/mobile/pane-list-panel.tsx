@@ -24,7 +24,6 @@ const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcs
 
 function shortenPath(path: string): string {
   if (!path) return "";
-  const home = typeof window !== "undefined" ? "" : "";
   // Replace home dir with ~
   const shortened = path.replace(/^\/home\/[^/]+/, "~").replace(/^\/root/, "~");
   return shortened;

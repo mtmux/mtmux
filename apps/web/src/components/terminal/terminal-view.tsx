@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
+import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";

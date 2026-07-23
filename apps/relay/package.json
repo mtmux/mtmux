@@ -11,17 +11,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@repo/protocol": "workspace:*",
     "@repo/logger": "workspace:*",
-    "ws": "^8",
-    "node-pty": "^1",
+    "@repo/protocol": "workspace:*",
     "chokidar": "^4",
+    "node-pty": "^1",
+    "ws": "^8",
     "zod": "^3"
   },
   "devDependencies": {
-    "@repo/tsconfig": "workspace:*",
     "@repo/eslint-config": "workspace:*",
+    "@repo/tsconfig": "workspace:*",
     "@types/ws": "^8",
+    "eslint": "^9.17.0",
     "tsx": "^4",
     "typescript": "^5.8"
   }

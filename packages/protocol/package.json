@@ -14,8 +14,9 @@
     "zod": "^3"
   },
   "devDependencies": {
-    "@repo/tsconfig": "workspace:*",
     "@repo/eslint-config": "workspace:*",
+    "@repo/tsconfig": "workspace:*",
+    "eslint": "^9.17.0",
     "typescript": "^5.8"
   }
 }

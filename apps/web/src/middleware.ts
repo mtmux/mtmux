@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
+export function middleware(_request: NextRequest) {
   // Token is stored client-side in localStorage, which isn't available in middleware.
   // Auth guard is handled on the client side via the layout component.
   // Middleware is used for security headers.

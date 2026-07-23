@@ -6,7 +6,6 @@ import {
   Rows2,
   Plus,
   Maximize2,
-  X,
   Move,
   TerminalSquare,
   ArrowUpDown,
@@ -37,7 +36,7 @@ type FabTab = "panes" | "windows" | "advanced";
 export function TmuxFab() {
   const { activeSessionId } = useSessionStore();
   const { zoomedPaneId } = usePaneStore();
-  const { mobileTab, fabOpen, setFabOpen, setResizeModeActive } = useUiStore();
+  const { fabOpen, setFabOpen, setResizeModeActive } = useUiStore();
   const [activeTab, setActiveTab] = useState<FabTab>("panes");
   const [longPressOpen, setLongPressOpen] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

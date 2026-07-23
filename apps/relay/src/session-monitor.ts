@@ -1,6 +1,6 @@
 import type { SessionInfo } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
-import { listSessions, sessionExists } from "./tmux-manager.js";
+import { listSessions } from "./tmux-manager.js";
 import { config } from "./config.js";
 
 const logger = createLogger("relay:monitor");
