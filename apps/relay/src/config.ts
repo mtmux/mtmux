@@ -4,12 +4,17 @@ const DEFAULT_AUTH_TOKEN = "change-me-in-production";
 
 const ConfigSchema = z.object({
   port: z.coerce.number().default(14300),
-  host: z.string().default("0.0.0.0"),
+  host: z.string().default("127.0.0.1"),
   authToken: z.string().default(DEFAULT_AUTH_TOKEN),
   allowedPaths: z
     .string()
     .default("/home")
-    .transform((s) => s.split(",").map((p) => p.trim())),
+    .transform((s) =>
+      s
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean),
+    ),
   tmuxSocket: z.string().default(""),
   tmuxDefaultShell: z.string().default("/bin/bash"),
   wsRateLimit: z.coerce.number().default(100),
@@ -17,7 +22,14 @@ const ConfigSchema = z.object({
   corsOrigins: z
     .string()
     .default("http://localhost:14100")
-    .transform((s) => s.split(",").map((o) => o.trim())),
+    // Empty (e.g. the CLI's same-origin single-port mode) means "no Origin
+    // restriction"; filter blanks so "" doesn't become [""] and reject everyone.
+    .transform((s) =>
+      s
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+    ),
 });
 
 export const config = ConfigSchema.parse({
@@ -32,12 +44,16 @@ export const config = ConfigSchema.parse({
   corsOrigins: process.env.CORS_ORIGINS,
 });
 
-if (
-  process.env.NODE_ENV === "production" &&
-  (config.authToken === DEFAULT_AUTH_TOKEN || config.authToken.trim() === "")
-) {
+// Refuse the default/empty token when bound to a non-loopback host — a
+// network-exposed relay with the well-known token is effectively open. On
+// loopback (the default, and local dev) it's only reachable locally, so we
+// allow it there to keep `pnpm dev` friction-free.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", ""]);
+const tokenIsDefault =
+  config.authToken === DEFAULT_AUTH_TOKEN || config.authToken.trim() === "";
+if (tokenIsDefault && !LOOPBACK_HOSTS.has(config.host)) {
   throw new Error(
-    "AUTH_TOKEN must be set to a non-default value in production. " +
+    `AUTH_TOKEN must be set to a non-default value when binding to a non-loopback host (RELAY_HOST=${config.host}). ` +
       "Generate one with `openssl rand -hex 32` and set it in .env. " +
       "See .env.example for details.",
   );

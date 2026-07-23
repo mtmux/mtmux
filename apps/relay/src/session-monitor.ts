@@ -1,7 +1,6 @@
 import type { SessionInfo } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { listSessions } from "./tmux-manager.js";
-import { config } from "./config.js";
 
 const logger = createLogger("relay:monitor");
 
@@ -11,18 +10,14 @@ export interface SessionMonitor {
   onSessionExit(cb: (name: string) => void): void;
   onSessionCreated(cb: (session: SessionInfo) => void): void;
   onSessionActivity(cb: (name: string, activity: string) => void): void;
-  recordActivity(name: string): void;
-  isIdle(name: string): boolean;
 }
 
 export function createSessionMonitor(): SessionMonitor {
   let interval: NodeJS.Timeout | null = null;
   const knownSessions = new Set<string>();
-  const lastActivity = new Map<string, number>();
   const exitCallbacks: Array<(name: string) => void> = [];
   const createdCallbacks: Array<(session: SessionInfo) => void> = [];
   const activityCallbacks: Array<(name: string, activity: string) => void> = [];
-  const idleTimeoutMs = config.idleTimeoutMinutes * 60 * 1000;
 
   async function poll() {
     try {
@@ -35,7 +30,6 @@ export function createSessionMonitor(): SessionMonitor {
           logger.info({ name }, "Session exited");
           for (const cb of exitCallbacks) cb(name);
           knownSessions.delete(name);
-          lastActivity.delete(name);
         }
       }
 
@@ -43,7 +37,6 @@ export function createSessionMonitor(): SessionMonitor {
       for (const session of sessions) {
         if (!knownSessions.has(session.name)) {
           knownSessions.add(session.name);
-          lastActivity.set(session.name, Date.now());
           for (const cb of createdCallbacks) cb(session);
         }
         for (const cb of activityCallbacks) {
@@ -76,14 +69,6 @@ export function createSessionMonitor(): SessionMonitor {
     },
     onSessionActivity(cb) {
       activityCallbacks.push(cb);
-    },
-    recordActivity(name: string) {
-      lastActivity.set(name, Date.now());
-    },
-    isIdle(name: string): boolean {
-      const last = lastActivity.get(name);
-      if (!last) return false;
-      return Date.now() - last > idleTimeoutMs;
     },
   };
 }

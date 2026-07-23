@@ -6,8 +6,14 @@ import { createLogger } from "@repo/logger";
 import { config } from "./config.js";
 import { isPathAllowed } from "./file-service.js";
 import { getMimeType } from "./mime.js";
+import { timingSafeEqualToken } from "./auth.js";
 
 const logger = createLogger("relay:http");
+
+// Matches HTTP header-unsafe characters (C0 controls, DEL, double-quote,
+// backslash) used to sanitize the Content-Disposition ASCII filename fallback.
+// eslint-disable-next-line no-control-regex
+const UNSAFE_HEADER_CHARS = /[\u0000-\u001f\u007f"\\]/g;
 
 /**
  * Returns the relay's request handler for `/health` and `/file?...`. Returns
@@ -38,16 +44,28 @@ export async function handleRelayRequest(
   }
 
   if (req.url?.startsWith("/file?") && req.method === "GET") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // Echo the request Origin only when allow-listed (never a blanket `*`).
+    if (origin && config.corsOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization",
+    );
 
     const url = new URL(req.url, `http://${req.headers.host}`);
     const filePath = url.searchParams.get("path");
-    const token = url.searchParams.get("token");
+    // Accept the token from an `Authorization: Bearer <token>` header (preferred,
+    // keeps it out of the URL) or the legacy `?token=` query param (back-compat).
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length)
+      : null;
+    const token = bearerToken ?? url.searchParams.get("token");
     const download = url.searchParams.get("download") === "1";
 
-    if (!token || token !== config.authToken) {
+    if (!token || !timingSafeEqualToken(token, config.authToken)) {
       res.writeHead(401);
       res.end("Unauthorized");
       return true;
@@ -82,7 +100,13 @@ export async function handleRelayRequest(
       };
 
       if (download) {
-        headers["Content-Disposition"] = `attachment; filename="${fileName}"`;
+        // Strip header-unsafe chars from the ASCII fallback to prevent header
+        // injection / breaking out of the quoted-string, and additionally
+        // provide an RFC 5987 UTF-8 encoded filename for non-ASCII names.
+        const safeName = fileName.replace(UNSAFE_HEADER_CHARS, "_");
+        const encodedName = encodeURIComponent(fileName);
+        headers["Content-Disposition"] =
+          `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`;
       }
 
       const rangeHeader = req.headers.range;
@@ -97,7 +121,8 @@ export async function handleRelayRequest(
             return true;
           }
           const clampedEnd = Math.min(end, stat.size - 1);
-          headers["Content-Range"] = `bytes ${start}-${clampedEnd}/${stat.size}`;
+          headers["Content-Range"] =
+            `bytes ${start}-${clampedEnd}/${stat.size}`;
           headers["Content-Length"] = String(clampedEnd - start + 1);
           headers["Accept-Ranges"] = "bytes";
           res.writeHead(206, headers);

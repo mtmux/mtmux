@@ -11,6 +11,14 @@ import { config } from "./config.js";
 
 const logger = createLogger("relay:router");
 
+// Output backpressure thresholds. If the socket's send buffer grows past the
+// high-water mark (a slow/stalled client on a fast-producing PTY) we pause the
+// PTY, then resume once the buffer drains back below the low-water mark. This
+// bounds the relay's heap growth on fast producers.
+const OUTPUT_HIGH_WATER = 8 * 1024 * 1024; // 8 MiB
+const OUTPUT_LOW_WATER = 1 * 1024 * 1024; // 1 MiB
+const DRAIN_POLL_MS = 50;
+
 function send(ws: WebSocket, msg: ServerMessage): void {
   sendJson(ws, msg);
 }
@@ -38,7 +46,11 @@ export async function routeMessage(
       }
 
       case "session:create": {
-        const session = await tmux.createSession(msg.name, msg.cwd, msg.command);
+        const session = await tmux.createSession(
+          msg.name,
+          msg.cwd,
+          msg.command,
+        );
         send(ws, { type: "session:created", session });
         broadcastToAll({ type: "session:created", session }, ws);
         break;
@@ -48,7 +60,11 @@ export async function routeMessage(
         // Detach existing PTY first
         if (conn.pty) {
           conn.pty.markDetaching();
-          try { conn.pty.kill(); } catch { /* ignore */ }
+          try {
+            conn.pty.kill();
+          } catch {
+            /* ignore */
+          }
           conn.pty = null;
         }
 
@@ -75,9 +91,41 @@ export async function routeMessage(
         // Bind callbacks to *this* bridge instance. A previous PTY's late
         // onExit must not null out conn.pty if it has already been reassigned
         // to a newer bridge — only clear if conn.pty still points at us.
+        let paused = false;
+        let drainTimer: NodeJS.Timeout | null = null;
         bridge.onData((data) => {
-          if (conn.pty === bridge) {
-            send(ws, { type: "terminal:output", data });
+          if (conn.pty !== bridge) {
+            if (drainTimer) {
+              clearInterval(drainTimer);
+              drainTimer = null;
+            }
+            return;
+          }
+          send(ws, { type: "terminal:output", data });
+
+          // Apply backpressure: pause the PTY while the client's send buffer is
+          // backed up, resume once it drains below the low-water mark.
+          if (!paused && ws.bufferedAmount > OUTPUT_HIGH_WATER) {
+            paused = true;
+            bridge.pause();
+            drainTimer = setInterval(() => {
+              // Bridge was replaced/closed — stop polling and release.
+              if (conn.pty !== bridge) {
+                if (drainTimer) {
+                  clearInterval(drainTimer);
+                  drainTimer = null;
+                }
+                return;
+              }
+              if (ws.bufferedAmount <= OUTPUT_LOW_WATER) {
+                paused = false;
+                if (drainTimer) {
+                  clearInterval(drainTimer);
+                  drainTimer = null;
+                }
+                bridge.resume();
+              }
+            }, DRAIN_POLL_MS);
           }
         });
 
@@ -111,7 +159,11 @@ export async function routeMessage(
       case "session:detach": {
         if (conn.pty) {
           conn.pty.markDetaching();
-          try { conn.pty.kill(); } catch { /* ignore */ }
+          try {
+            conn.pty.kill();
+          } catch {
+            /* ignore */
+          }
           conn.pty = null;
           conn.attachedSession = null;
         }
@@ -128,7 +180,11 @@ export async function routeMessage(
       case "session:rename": {
         const renameExists = await tmux.sessionExists(msg.oldName);
         if (!renameExists) {
-          sendError(ws, "SESSION_NOT_FOUND", `Session "${msg.oldName}" not found`);
+          sendError(
+            ws,
+            "SESSION_NOT_FOUND",
+            `Session "${msg.oldName}" not found`,
+          );
           break;
         }
         await tmux.renameSession(msg.oldName, msg.newName);
@@ -243,7 +299,11 @@ export async function routeMessage(
           });
           conn.watchers.set(msg.path, watcher);
         } catch (e) {
-          sendError(ws, "WATCH_FAILED", e instanceof Error ? e.message : "Failed to watch path");
+          sendError(
+            ws,
+            "WATCH_FAILED",
+            e instanceof Error ? e.message : "Failed to watch path",
+          );
         }
         break;
       }
@@ -264,9 +324,19 @@ export async function routeMessage(
         }
         try {
           const { size } = await files.writeFile(msg.path, msg.content);
-          send(ws, { type: "file:write:result", path: msg.path, success: true, size });
+          send(ws, {
+            type: "file:write:result",
+            path: msg.path,
+            success: true,
+            size,
+          });
         } catch (e) {
-          send(ws, { type: "file:write:result", path: msg.path, success: false, error: e instanceof Error ? e.message : "Write failed" });
+          send(ws, {
+            type: "file:write:result",
+            path: msg.path,
+            success: false,
+            error: e instanceof Error ? e.message : "Write failed",
+          });
         }
         break;
       }
@@ -278,9 +348,20 @@ export async function routeMessage(
         }
         try {
           await files.createFile(msg.path, msg.content);
-          send(ws, { type: "file:op:result", op: "create", path: msg.path, success: true });
+          send(ws, {
+            type: "file:op:result",
+            op: "create",
+            path: msg.path,
+            success: true,
+          });
         } catch (e) {
-          send(ws, { type: "file:op:result", op: "create", path: msg.path, success: false, error: e instanceof Error ? e.message : "Create failed" });
+          send(ws, {
+            type: "file:op:result",
+            op: "create",
+            path: msg.path,
+            success: false,
+            error: e instanceof Error ? e.message : "Create failed",
+          });
         }
         break;
       }
@@ -292,9 +373,20 @@ export async function routeMessage(
         }
         try {
           await files.mkdir(msg.path);
-          send(ws, { type: "file:op:result", op: "mkdir", path: msg.path, success: true });
+          send(ws, {
+            type: "file:op:result",
+            op: "mkdir",
+            path: msg.path,
+            success: true,
+          });
         } catch (e) {
-          send(ws, { type: "file:op:result", op: "mkdir", path: msg.path, success: false, error: e instanceof Error ? e.message : "Mkdir failed" });
+          send(ws, {
+            type: "file:op:result",
+            op: "mkdir",
+            path: msg.path,
+            success: false,
+            error: e instanceof Error ? e.message : "Mkdir failed",
+          });
         }
         break;
       }
@@ -306,23 +398,48 @@ export async function routeMessage(
         }
         try {
           await files.deleteFile(msg.path);
-          send(ws, { type: "file:op:result", op: "delete", path: msg.path, success: true });
+          send(ws, {
+            type: "file:op:result",
+            op: "delete",
+            path: msg.path,
+            success: true,
+          });
         } catch (e) {
-          send(ws, { type: "file:op:result", op: "delete", path: msg.path, success: false, error: e instanceof Error ? e.message : "Delete failed" });
+          send(ws, {
+            type: "file:op:result",
+            op: "delete",
+            path: msg.path,
+            success: false,
+            error: e instanceof Error ? e.message : "Delete failed",
+          });
         }
         break;
       }
 
       case "file:rename": {
-        if (!files.isPathAllowed(msg.oldPath) || !files.isPathAllowed(msg.newPath)) {
+        if (
+          !files.isPathAllowed(msg.oldPath) ||
+          !files.isPathAllowed(msg.newPath)
+        ) {
           sendError(ws, "ACCESS_DENIED", "Path outside allowed directories");
           break;
         }
         try {
           await files.renameFile(msg.oldPath, msg.newPath);
-          send(ws, { type: "file:op:result", op: "rename", path: msg.newPath, success: true });
+          send(ws, {
+            type: "file:op:result",
+            op: "rename",
+            path: msg.newPath,
+            success: true,
+          });
         } catch (e) {
-          send(ws, { type: "file:op:result", op: "rename", path: msg.newPath, success: false, error: e instanceof Error ? e.message : "Rename failed" });
+          send(ws, {
+            type: "file:op:result",
+            op: "rename",
+            path: msg.newPath,
+            success: false,
+            error: e instanceof Error ? e.message : "Rename failed",
+          });
         }
         break;
       }
@@ -333,12 +450,28 @@ export async function routeMessage(
           break;
         }
         try {
-          await files.handleUpload(msg.path, msg.content, msg.final);
+          await files.handleUpload(
+            conn.uploads,
+            msg.path,
+            msg.content,
+            msg.final,
+          );
           if (msg.final) {
-            send(ws, { type: "file:op:result", op: "upload", path: msg.path, success: true });
+            send(ws, {
+              type: "file:op:result",
+              op: "upload",
+              path: msg.path,
+              success: true,
+            });
           }
         } catch (e) {
-          send(ws, { type: "file:op:result", op: "upload", path: msg.path, success: false, error: e instanceof Error ? e.message : "Upload failed" });
+          send(ws, {
+            type: "file:op:result",
+            op: "upload",
+            path: msg.path,
+            success: false,
+            error: e instanceof Error ? e.message : "Upload failed",
+          });
         }
         break;
       }
@@ -362,7 +495,11 @@ export async function routeMessage(
         await tmux.splitPane(conn.attachedSession, msg.direction);
         const splitPanes = await tmux.listPanes(conn.attachedSession);
         const splitWinId = splitPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: splitPanes, windowId: splitWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: splitPanes,
+          windowId: splitWinId,
+        });
         break;
       }
 
@@ -374,7 +511,11 @@ export async function routeMessage(
         await tmux.selectPane(msg.id);
         const selectPanes = await tmux.listPanes(conn.attachedSession);
         const selectWinId = selectPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: selectPanes, windowId: selectWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: selectPanes,
+          windowId: selectWinId,
+        });
         break;
       }
 
@@ -386,7 +527,11 @@ export async function routeMessage(
         await tmux.zoomPane(conn.attachedSession);
         const zoomPanes = await tmux.listPanes(conn.attachedSession);
         const zoomWinId = zoomPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: zoomPanes, windowId: zoomWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: zoomPanes,
+          windowId: zoomWinId,
+        });
         break;
       }
 
@@ -398,7 +543,11 @@ export async function routeMessage(
         await tmux.resizePane(msg.id, msg.direction, msg.amount);
         const resizePanes = await tmux.listPanes(conn.attachedSession);
         const resizeWinId = resizePanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: resizePanes, windowId: resizeWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: resizePanes,
+          windowId: resizeWinId,
+        });
         break;
       }
 
@@ -409,10 +558,19 @@ export async function routeMessage(
         }
         await tmux.killPane(msg.id);
         const killPanePanes = await tmux.listPanes(conn.attachedSession);
-        const killPaneWinId = killPanePanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: killPanePanes, windowId: killPaneWinId });
+        const killPaneWinId =
+          killPanePanes.find((p) => p.active)?.windowId ?? "";
+        send(ws, {
+          type: "pane:changed",
+          panes: killPanePanes,
+          windowId: killPaneWinId,
+        });
         const killPaneWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, { type: "window:changed", windows: killPaneWindows, sessionName: conn.attachedSession });
+        send(ws, {
+          type: "window:changed",
+          windows: killPaneWindows,
+          sessionName: conn.attachedSession,
+        });
         break;
       }
 
@@ -422,7 +580,11 @@ export async function routeMessage(
           break;
         }
         const windows = await tmux.listWindows(conn.attachedSession);
-        send(ws, { type: "window:list", windows, sessionName: conn.attachedSession });
+        send(ws, {
+          type: "window:list",
+          windows,
+          sessionName: conn.attachedSession,
+        });
         break;
       }
 
@@ -433,7 +595,11 @@ export async function routeMessage(
         }
         await tmux.createWindow(conn.attachedSession, msg.name);
         const createWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, { type: "window:changed", windows: createWinWindows, sessionName: conn.attachedSession });
+        send(ws, {
+          type: "window:changed",
+          windows: createWinWindows,
+          sessionName: conn.attachedSession,
+        });
         break;
       }
 
@@ -445,10 +611,18 @@ export async function routeMessage(
         await tmux.selectWindow(msg.id);
         conn.activeWindowId = msg.id;
         const selectWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, { type: "window:changed", windows: selectWinWindows, sessionName: conn.attachedSession });
+        send(ws, {
+          type: "window:changed",
+          windows: selectWinWindows,
+          sessionName: conn.attachedSession,
+        });
         const selectWinPanes = await tmux.listPanes(conn.attachedSession);
         const selWinId = selectWinPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: selectWinPanes, windowId: selWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: selectWinPanes,
+          windowId: selWinId,
+        });
         break;
       }
 
@@ -460,7 +634,11 @@ export async function routeMessage(
         const killedId = msg.id;
         await tmux.killWindow(killedId);
         const killWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, { type: "window:changed", windows: killWinWindows, sessionName: conn.attachedSession });
+        send(ws, {
+          type: "window:changed",
+          windows: killWinWindows,
+          sessionName: conn.attachedSession,
+        });
         // Reset stale activeWindowId
         if (conn.activeWindowId === killedId) {
           const activeWin = killWinWindows.find((w) => w.active);
@@ -468,7 +646,11 @@ export async function routeMessage(
         }
         const killWinPanes = await tmux.listPanes(conn.attachedSession);
         const killWinWinId = killWinPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: killWinPanes, windowId: killWinWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: killWinPanes,
+          windowId: killWinWinId,
+        });
         break;
       }
 
@@ -480,7 +662,11 @@ export async function routeMessage(
         await tmux.swapPane(msg.id, msg.direction);
         const swapPanes = await tmux.listPanes(conn.attachedSession);
         const swapWinId = swapPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: swapPanes, windowId: swapWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: swapPanes,
+          windowId: swapWinId,
+        });
         break;
       }
 
@@ -491,7 +677,11 @@ export async function routeMessage(
         }
         await tmux.renameWindow(msg.id, msg.name);
         const renameWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, { type: "window:changed", windows: renameWinWindows, sessionName: conn.attachedSession });
+        send(ws, {
+          type: "window:changed",
+          windows: renameWinWindows,
+          sessionName: conn.attachedSession,
+        });
         break;
       }
 
@@ -503,7 +693,11 @@ export async function routeMessage(
         await tmux.selectLayout(conn.attachedSession, msg.preset);
         const layoutPanes = await tmux.listPanes(conn.attachedSession);
         const layoutWinId = layoutPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: layoutPanes, windowId: layoutWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: layoutPanes,
+          windowId: layoutWinId,
+        });
         break;
       }
 
@@ -515,7 +709,11 @@ export async function routeMessage(
         await tmux.rotateLayout(conn.attachedSession);
         const rotatePanes = await tmux.listPanes(conn.attachedSession);
         const rotateWinId = rotatePanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:changed", panes: rotatePanes, windowId: rotateWinId });
+        send(ws, {
+          type: "pane:changed",
+          panes: rotatePanes,
+          windowId: rotateWinId,
+        });
         break;
       }
 
@@ -543,7 +741,11 @@ export async function routeMessage(
           break;
         }
         const capturedContent = await tmux.capturePaneById(msg.id);
-        send(ws, { type: "pane:captured", id: msg.id, content: capturedContent });
+        send(ws, {
+          type: "pane:captured",
+          id: msg.id,
+          content: capturedContent,
+        });
         break;
       }
 

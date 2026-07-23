@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { watch } from "chokidar";
 import { createLogger } from "@repo/logger";
@@ -11,8 +12,13 @@ const MAX_FILE_SIZE = 100 * 1024; // 100KB
 const MAX_WRITE_SIZE = 1 * 1024 * 1024; // 1MB
 const MAX_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
 
-// Track in-progress uploads (path → accumulated size)
-const uploadSizes = new Map<string, number>();
+/**
+ * In-progress upload state for a single connection: resolved path → accumulated
+ * byte count. Kept per-connection (see ConnectionState.uploads) so concurrent
+ * connections can't corrupt each other's partial files and leaks are cleaned on
+ * disconnect.
+ */
+export type UploadState = Map<string, number>;
 
 /**
  * The directory the file browser should open to by default: the first
@@ -23,23 +29,52 @@ export function defaultBrowsePath(): string {
   return path.resolve(config.allowedPaths[0] ?? process.env.HOME ?? "/");
 }
 
-export function isPathAllowed(targetPath: string): boolean {
+/**
+ * Resolve a path to its canonical real location, following symlinks. If the
+ * path itself doesn't exist yet (e.g. the target of a create/mkdir/upload), the
+ * PARENT directory is realpath'd and the basename re-appended — this still
+ * resolves any symlink in the existing ancestor chain while allowing new files.
+ * Falls back to the lexical resolve when even the parent is missing.
+ */
+function realpathResolve(targetPath: string): string {
   const resolved = path.resolve(targetPath);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    const parent = path.dirname(resolved);
+    const base = path.basename(resolved);
+    try {
+      return path.join(realpathSync(parent), base);
+    } catch {
+      return resolved;
+    }
+  }
+}
+
+export function isPathAllowed(targetPath: string): boolean {
+  const resolved = realpathResolve(targetPath);
   return config.allowedPaths.some((allowed) => {
-    const resolvedAllowed = path.resolve(allowed);
-    return resolved === resolvedAllowed || resolved.startsWith(resolvedAllowed + path.sep);
+    const resolvedAllowed = realpathResolve(allowed);
+    return (
+      resolved === resolvedAllowed ||
+      resolved.startsWith(resolvedAllowed + path.sep)
+    );
   });
 }
 
 function assertPathAllowed(targetPath: string): string {
-  const resolved = path.resolve(targetPath);
-  if (!isPathAllowed(resolved)) {
+  const resolved = realpathResolve(targetPath);
+  if (!isPathAllowed(targetPath)) {
     throw new Error(`Access denied: path outside allowed directories`);
   }
   return resolved;
 }
 
-function fileTypeFromDirent(dirent: { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }): FileEntry["type"] {
+function fileTypeFromDirent(dirent: {
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}): FileEntry["type"] {
   if (dirent.isFile()) return "file";
   if (dirent.isDirectory()) return "directory";
   if (dirent.isSymbolicLink()) return "symlink";
@@ -120,7 +155,13 @@ export async function getStats(filePath: string): Promise<FileStat> {
   return {
     name: path.basename(resolved),
     path: resolved,
-    type: stat.isFile() ? "file" : stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "symlink" : "other",
+    type: stat.isFile()
+      ? "file"
+      : stat.isDirectory()
+        ? "directory"
+        : stat.isSymbolicLink()
+          ? "symlink"
+          : "other",
     size: stat.size,
     modified: stat.mtime.toISOString(),
     created: stat.birthtime.toISOString(),
@@ -130,18 +171,26 @@ export async function getStats(filePath: string): Promise<FileStat> {
   };
 }
 
-export async function writeFile(filePath: string, content: string): Promise<{ size: number }> {
+export async function writeFile(
+  filePath: string,
+  content: string,
+): Promise<{ size: number }> {
   const resolved = assertPathAllowed(filePath);
   const bytes = Buffer.byteLength(content, "utf-8");
   if (bytes > MAX_WRITE_SIZE) {
-    throw new Error(`File too large to write (${bytes} bytes, max ${MAX_WRITE_SIZE})`);
+    throw new Error(
+      `File too large to write (${bytes} bytes, max ${MAX_WRITE_SIZE})`,
+    );
   }
   await fs.access(resolved, fs.constants.W_OK);
   await fs.writeFile(resolved, content, "utf-8");
   return { size: bytes };
 }
 
-export async function createFile(filePath: string, content = ""): Promise<void> {
+export async function createFile(
+  filePath: string,
+  content = "",
+): Promise<void> {
   const resolved = assertPathAllowed(filePath);
   // wx flag: create exclusive — fails if file exists
   await fs.writeFile(resolved, content, { encoding: "utf-8", flag: "wx" });
@@ -156,7 +205,7 @@ export async function deleteFile(filePath: string): Promise<void> {
   const resolved = assertPathAllowed(filePath);
   // Guard: cannot delete an allowed root
   const isRoot = config.allowedPaths.some(
-    (allowed) => path.resolve(allowed) === resolved,
+    (allowed) => realpathResolve(allowed) === resolved,
   );
   if (isRoot) {
     throw new Error("Cannot delete an allowed root directory");
@@ -164,13 +213,17 @@ export async function deleteFile(filePath: string): Promise<void> {
   await fs.rm(resolved, { recursive: true });
 }
 
-export async function renameFile(oldPath: string, newPath: string): Promise<void> {
+export async function renameFile(
+  oldPath: string,
+  newPath: string,
+): Promise<void> {
   const resolvedOld = assertPathAllowed(oldPath);
   const resolvedNew = assertPathAllowed(newPath);
   await fs.rename(resolvedOld, resolvedNew);
 }
 
 export async function handleUpload(
+  uploads: UploadState,
   filePath: string,
   base64Chunk: string,
   final: boolean,
@@ -178,11 +231,15 @@ export async function handleUpload(
   const resolved = assertPathAllowed(filePath);
   const chunk = Buffer.from(base64Chunk, "base64");
 
-  const currentSize = uploadSizes.get(resolved) ?? 0;
+  const currentSize = uploads.get(resolved) ?? 0;
   const newSize = currentSize + chunk.length;
   if (newSize > MAX_UPLOAD_SIZE) {
-    uploadSizes.delete(resolved);
-    throw new Error(`Upload too large (${newSize} bytes, max ${MAX_UPLOAD_SIZE})`);
+    uploads.delete(resolved);
+    // Remove the partial file so a rejected oversize upload leaves nothing behind.
+    await fs.rm(resolved, { force: true }).catch(() => {});
+    throw new Error(
+      `Upload too large (${newSize} bytes, max ${MAX_UPLOAD_SIZE})`,
+    );
   }
 
   if (currentSize === 0) {
@@ -193,19 +250,33 @@ export async function handleUpload(
   }
 
   if (final) {
-    uploadSizes.delete(resolved);
+    uploads.delete(resolved);
   } else {
-    uploadSizes.set(resolved, newSize);
+    uploads.set(resolved, newSize);
   }
 }
 
+/**
+ * Abort any in-progress uploads for a connection: unlink each partial file and
+ * clear the tracking map. Called from removeConnection on disconnect.
+ */
+export async function cleanupUploads(uploads: UploadState): Promise<void> {
+  for (const resolved of uploads.keys()) {
+    await fs.rm(resolved, { force: true }).catch(() => {});
+  }
+  uploads.clear();
+}
+
 export interface DirectoryWatcher {
-  close(): void;
+  close(): Promise<void>;
 }
 
 export function watchDirectory(
   dirPath: string,
-  onChange: (event: "add" | "change" | "unlink" | "addDir" | "unlinkDir", filePath: string) => void,
+  onChange: (
+    event: "add" | "change" | "unlink" | "addDir" | "unlinkDir",
+    filePath: string,
+  ) => void,
 ): DirectoryWatcher {
   const resolved = assertPathAllowed(dirPath);
 
@@ -216,7 +287,13 @@ export function watchDirectory(
   });
 
   watcher.on("all", (event, filePath) => {
-    const validEvents = ["add", "change", "unlink", "addDir", "unlinkDir"] as const;
+    const validEvents = [
+      "add",
+      "change",
+      "unlink",
+      "addDir",
+      "unlinkDir",
+    ] as const;
     if (validEvents.includes(event as (typeof validEvents)[number])) {
       onChange(event as (typeof validEvents)[number], filePath);
     }
@@ -227,8 +304,8 @@ export function watchDirectory(
   });
 
   return {
-    close() {
-      watcher.close();
+    close(): Promise<void> {
+      return watcher.close();
     },
   };
 }

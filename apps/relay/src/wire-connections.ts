@@ -1,4 +1,5 @@
 import os from "node:os";
+import type http from "node:http";
 import type { WebSocketServer } from "ws";
 import { WebSocket } from "ws";
 import { createLogger } from "@repo/logger";
@@ -9,15 +10,35 @@ import {
   createConnection,
   removeConnection,
   getAllConnections,
+  getConnectionCount,
+  getIpCount,
   broadcastToAll,
 } from "./connection-manager.js";
 import { createRateLimiter } from "./rate-limiter.js";
 import { createSessionMonitor } from "./session-monitor.js";
 import { routeMessage } from "./message-router.js";
 import { defaultBrowsePath } from "./file-service.js";
+import { config } from "./config.js";
+
+// The `ws` liveness protocol tags each socket with an `isAlive` flag toggled by
+// the pong handler; augment the type so it's available without casts.
+declare module "ws" {
+  interface WebSocket {
+    isAlive?: boolean;
+  }
+}
 
 const logger = createLogger("relay");
 const SERVER_VERSION = "1.0.0";
+
+// Global concurrent-connection cap and per-IP cap. Rejected upgrades are closed
+// with 1013 ("Try Again Later"). Sized for a self-hosted single-user tool.
+const MAX_CONNECTIONS = 100;
+const MAX_CONNECTIONS_PER_IP = 10;
+
+// How often the idle reaper runs; connections with no inbound traffic for
+// longer than config.idleTimeoutMinutes are closed.
+const IDLE_SWEEP_MS = 60_000;
 
 export type WireOptions = {
   monitor?: ReturnType<typeof createSessionMonitor>;
@@ -28,14 +49,40 @@ export type WireOptions = {
  * WebSocketServer. Used by both the standalone relay (apps/relay) and
  * the embedded CLI (apps/cli) which shares one HTTP server with Next.js.
  */
-export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
+export function wireConnections(
+  wss: WebSocketServer,
+  opts: WireOptions = {},
+): {
   monitor: ReturnType<typeof createSessionMonitor>;
   shutdown: () => void;
 } {
   const monitor = opts.monitor ?? createSessionMonitor();
 
-  wss.on("connection", (ws) => {
-    const conn = createConnection(ws, createRateLimiter());
+  wss.on("connection", (ws, req?: http.IncomingMessage) => {
+    // Behind a proxy on a self-host box the direct peer address is acceptable.
+    const remoteAddress = req?.socket?.remoteAddress ?? "unknown";
+
+    // Enforce global and per-IP concurrent-connection caps before doing any
+    // per-connection setup. 1013 = "Try Again Later".
+    if (getConnectionCount() >= MAX_CONNECTIONS) {
+      logger.warn({ remoteAddress }, "Rejected connection: global cap reached");
+      ws.close(1013, "Server at capacity");
+      return;
+    }
+    if (getIpCount(remoteAddress) >= MAX_CONNECTIONS_PER_IP) {
+      logger.warn({ remoteAddress }, "Rejected connection: per-IP cap reached");
+      ws.close(1013, "Too many connections from your address");
+      return;
+    }
+
+    const conn = createConnection(ws, createRateLimiter(), remoteAddress);
+
+    // ws liveness protocol: mark alive on connect and on every pong.
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+
     let authTimer: NodeJS.Timeout | null = createAuthTimeout(() => {
       sendJson(ws, { type: "auth:failure", reason: "Authentication timeout" });
       ws.close();
@@ -43,15 +90,24 @@ export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
 
     ws.on("message", async (raw) => {
       const data = raw.toString();
+      conn.lastActivityAt = Date.now();
 
       if (!conn.rateLimiter.check()) {
-        sendJson(ws, { type: "error", code: "RATE_LIMITED", message: "Too many messages" });
+        sendJson(ws, {
+          type: "error",
+          code: "RATE_LIMITED",
+          message: "Too many messages",
+        });
         return;
       }
 
       const result = tryDeserializeClientMessage(data);
       if (!result.ok) {
-        sendJson(ws, { type: "error", code: "INVALID_MESSAGE", message: result.error });
+        sendJson(ws, {
+          type: "error",
+          code: "INVALID_MESSAGE",
+          message: result.error,
+        });
         return;
       }
 
@@ -83,10 +139,17 @@ export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
           defaultPath: defaultBrowsePath(),
         });
 
+        // Heartbeat: standard `ws` liveness protocol. If a peer missed the
+        // previous round's pong it's presumed dead and terminated (which fires
+        // `close` → removeConnection → PTY/watcher/upload cleanup).
         const pingInterval = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.ping();
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (ws.isAlive === false) {
+            ws.terminate();
+            return;
           }
+          ws.isAlive = false;
+          ws.ping();
         }, 30_000);
         ws.on("close", () => clearInterval(pingInterval));
 
@@ -104,7 +167,7 @@ export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
       if (authTimer) clearTimeout(authTimer);
       conn.closing = true;
       await conn.drain();
-      removeConnection(conn);
+      await removeConnection(conn);
     });
 
     ws.on("error", (err) => {
@@ -129,9 +192,24 @@ export function wireConnections(wss: WebSocketServer, opts: WireOptions = {}): {
 
   monitor.start();
 
+  // Idle reaper: close connections with no inbound traffic for longer than the
+  // configured idle timeout. Uses close code 1000 so it reads as a normal close.
+  const idleTimeoutMs = config.idleTimeoutMinutes * 60 * 1000;
+  const idleSweep = setInterval(() => {
+    if (idleTimeoutMs <= 0) return;
+    const now = Date.now();
+    for (const conn of getAllConnections()) {
+      if (now - conn.lastActivityAt > idleTimeoutMs) {
+        logger.info({ connId: conn.id }, "Closing idle connection");
+        conn.ws.close(1000, "Idle timeout");
+      }
+    }
+  }, IDLE_SWEEP_MS);
+
   return {
     monitor,
     shutdown: () => {
+      clearInterval(idleSweep);
       monitor.stop();
       wss.close();
     },

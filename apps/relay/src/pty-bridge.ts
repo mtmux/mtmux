@@ -9,6 +9,8 @@ export interface PtyBridge {
   write(data: string): void;
   resize(size: TerminalSize): void;
   kill(): void;
+  pause(): void;
+  resume(): void;
   markDetaching(): void;
   onData(cb: (data: string) => void): void;
   onExit(cb: (exitCode: number) => void): void;
@@ -24,7 +26,12 @@ export function createPtyBridge(
   sessionName: string,
   size?: TerminalSize,
 ): PtyBridge {
-  const args = [...(config.tmuxSocket ? ["-S", config.tmuxSocket] : []), "attach-session", "-t", sessionName];
+  const args = [
+    ...(config.tmuxSocket ? ["-S", config.tmuxSocket] : []),
+    "attach-session",
+    "-t",
+    sessionName,
+  ];
 
   const cols = size?.cols ?? 80;
   const rows = size?.rows ?? 24;
@@ -59,7 +66,10 @@ export function createPtyBridge(
       cwd: process.env.HOME ?? "/",
       env: process.env as Record<string, string>,
     });
-    logger.info({ sessionName, pid: ptyProcess.pid, cols, rows }, "PTY spawned");
+    logger.info(
+      { sessionName, pid: ptyProcess.pid, cols, rows },
+      "PTY spawned",
+    );
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
     logger.error({ sessionName, err }, "PTY spawn failed");
@@ -96,13 +106,20 @@ export function createPtyBridge(
         clearTimeout(readyTimeout);
         readyTimeout = null;
       }
-      logger.info({ sessionName, exitCode, detaching, readyFired }, "PTY exited");
+      logger.info(
+        { sessionName, exitCode, detaching, readyFired },
+        "PTY exited",
+      );
       // Exiting before ready (and not because we initiated detach) means the
       // tmux attach failed — the session may have vanished between exists()
       // and attach-session, or tmux refused for another reason. Surface as
       // a spawn failure rather than a phony "ready" + silent dead session.
       if (!readyFired && !detaching) {
-        fireSpawnError(new Error(`tmux attach-session exited with code ${exitCode} before ready`));
+        fireSpawnError(
+          new Error(
+            `tmux attach-session exited with code ${exitCode} before ready`,
+          ),
+        );
         return;
       }
       if (!detaching) {
@@ -126,6 +143,12 @@ export function createPtyBridge(
         readyTimeout = null;
       }
       ptyProcess?.kill();
+    },
+    pause() {
+      ptyProcess?.pause();
+    },
+    resume() {
+      ptyProcess?.resume();
     },
     markDetaching() {
       detaching = true;
