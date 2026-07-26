@@ -1,5 +1,5 @@
 import type { WebSocket } from "ws";
-import type { ServerMessage } from "@repo/protocol";
+import type { ServerMessage, TerminalSize } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { sendJson } from "./ws-server.js";
 import type { PtyBridge } from "./pty-bridge.js";
@@ -18,6 +18,13 @@ export interface ConnectionState {
   uploads: UploadState;
   rateLimiter: RateLimiter;
   attachedSession: string | null;
+  /**
+   * Last size actually applied to the PTY. Clients emit a burst of fits while
+   * layout settles; forwarding every identical size to `pty.resize()` makes tmux
+   * redraw globally for every attached client (SIGWINCH), which reads as
+   * flicker. Compare against this before resizing.
+   */
+  lastSize: TerminalSize | null;
   activeWindowId: string | null;
   remoteAddress: string | null;
   lastActivityAt: number;
@@ -87,6 +94,7 @@ export function createConnection(
     uploads: new Map(),
     rateLimiter,
     attachedSession: null,
+    lastSize: null,
     activeWindowId: null,
     remoteAddress,
     lastActivityAt: Date.now(),

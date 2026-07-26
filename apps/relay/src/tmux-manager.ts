@@ -9,8 +9,49 @@ const logger = createLogger("relay:tmux");
 
 const TMUX_TIMEOUT = 10_000;
 
+// Node's default stdout cap for execFile is 1 MiB, and exceeding it rejects with
+// ERR_CHILD_PROCESS_STDIO_MAXBUFFER instead of truncating. A pane capture on a
+// host with a large `history-limit` blows straight past that (32 MB observed),
+// which used to abort session attach entirely. Captures are bounded below, so
+// this is only a backstop — but it applies to every tmux call, and list-sessions
+// on a very busy server can get large too.
+const TMUX_MAX_BUFFER = 16 * 1024 * 1024;
+
+// Default number of scrollback lines replayed to a client on attach. Enough to
+// fill any realistic viewport plus scroll history, small enough to send and
+// render in one paint.
+const DEFAULT_CAPTURE_LINES = 2000;
+
+export interface CaptureOptions {
+  /** Scrollback lines to include, counting back from the bottom. */
+  lines?: number;
+  /** Include SGR escape sequences so colours survive the replay. */
+  escapes?: boolean;
+}
+
 function execFileAsync(cmd: string, args: string[]) {
-  return execFileAsyncRaw(cmd, args, { timeout: TMUX_TIMEOUT });
+  return execFileAsyncRaw(cmd, args, {
+    timeout: TMUX_TIMEOUT,
+    maxBuffer: TMUX_MAX_BUFFER,
+  });
+}
+
+/** Shared argv builder for the two capture-pane entry points. */
+function captureArgs(
+  target: string,
+  lines: number,
+  escapes: boolean,
+): string[] {
+  return [
+    ...tmuxArgs(),
+    "capture-pane",
+    "-t",
+    target,
+    "-p",
+    ...(escapes ? ["-e"] : []),
+    "-S",
+    `-${lines}`,
+  ];
 }
 
 function tmuxArgs(): string[] {
@@ -31,7 +72,8 @@ export async function listSessions(): Promise<SessionInfo[]> {
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [name, id, windows, attached, created, activity, width, height] = line.split("\t");
+        const [name, id, windows, attached, created, activity, width, height] =
+          line.split("\t");
         return {
           name: name!,
           id: id!,
@@ -60,7 +102,14 @@ export async function createSession(
   cwd?: string,
   command?: string,
 ): Promise<SessionInfo> {
-  const args = [...tmuxArgs(), "new-session", "-d", "-P", "-F", "#{session_name}\t#{session_id}"];
+  const args = [
+    ...tmuxArgs(),
+    "new-session",
+    "-d",
+    "-P",
+    "-F",
+    "#{session_name}\t#{session_id}",
+  ];
 
   if (name) args.push("-s", name);
   if (cwd) args.push("-c", cwd);
@@ -90,8 +139,17 @@ export async function killSession(name: string): Promise<void> {
   logger.info({ name }, "Killed session");
 }
 
-export async function renameSession(oldName: string, newName: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "rename-session", "-t", oldName, newName]);
+export async function renameSession(
+  oldName: string,
+  newName: string,
+): Promise<void> {
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "rename-session",
+    "-t",
+    oldName,
+    newName,
+  ]);
   logger.info({ oldName, newName }, "Renamed session");
 }
 
@@ -105,23 +163,43 @@ export async function sessionExists(name: string): Promise<boolean> {
 }
 
 export async function sendKeys(session: string, keys: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "send-keys", "-t", session, keys, "Enter"]);
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "send-keys",
+    "-t",
+    session,
+    keys,
+    "Enter",
+  ]);
 }
 
 export async function sendInterrupt(session: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "send-keys", "-t", session, "C-c"]);
-}
-
-export async function capturePane(session: string): Promise<string> {
-  const { stdout } = await execFileAsync("tmux", [
+  await execFileAsync("tmux", [
     ...tmuxArgs(),
-    "capture-pane",
+    "send-keys",
     "-t",
     session,
-    "-p",
-    "-S",
-    "-",
+    "C-c",
   ]);
+}
+
+/**
+ * Capture a session's visible pane plus bounded scrollback, for replay into a
+ * freshly attached client. Colours are kept — this is written straight into
+ * xterm.js.
+ */
+export async function capturePane(
+  session: string,
+  opts: CaptureOptions = {},
+): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "tmux",
+    captureArgs(
+      session,
+      opts.lines ?? DEFAULT_CAPTURE_LINES,
+      opts.escapes ?? true,
+    ),
+  );
   return stdout;
 }
 
@@ -141,7 +219,8 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [id, index, name, active, paneCount, layout, width, height] = line.split("\t");
+        const [id, index, name, active, paneCount, layout, width, height] =
+          line.split("\t");
         return {
           id: id!,
           index: parseInt(index!, 10),
@@ -161,7 +240,10 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
   }
 }
 
-export async function listPanes(session: string, windowId?: string): Promise<PaneInfo[]> {
+export async function listPanes(
+  session: string,
+  windowId?: string,
+): Promise<PaneInfo[]> {
   try {
     const args = [...tmuxArgs(), "list-panes"];
     if (windowId) {
@@ -181,7 +263,19 @@ export async function listPanes(session: string, windowId?: string): Promise<Pan
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [id, index, winId, active, zoomed, width, height, left, top, command, path] = line.split("\t");
+        const [
+          id,
+          index,
+          winId,
+          active,
+          zoomed,
+          width,
+          height,
+          left,
+          top,
+          command,
+          path,
+        ] = line.split("\t");
         return {
           id: id!,
           index: parseInt(index!, 10),
@@ -206,20 +300,30 @@ export async function listPanes(session: string, windowId?: string): Promise<Pan
   }
 }
 
-export async function capturePaneById(paneId: string): Promise<string> {
-  const { stdout } = await execFileAsync("tmux", [
-    ...tmuxArgs(),
-    "capture-pane",
-    "-t",
-    paneId,
-    "-p",
-    "-S",
-    "-",
-  ]);
+/**
+ * Capture a single pane by id, for the copy-mode overlay. Escapes are OFF by
+ * default here: this content is shown as selectable plain text and copied to
+ * the clipboard, so SGR sequences would be pasted verbatim.
+ */
+export async function capturePaneById(
+  paneId: string,
+  opts: CaptureOptions = {},
+): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "tmux",
+    captureArgs(
+      paneId,
+      opts.lines ?? DEFAULT_CAPTURE_LINES,
+      opts.escapes ?? false,
+    ),
+  );
   return stdout;
 }
 
-export async function splitPane(session: string, direction: "h" | "v"): Promise<void> {
+export async function splitPane(
+  session: string,
+  direction: "h" | "v",
+): Promise<void> {
   await execFileAsync("tmux", [
     ...tmuxArgs(),
     "split-window",
@@ -236,7 +340,13 @@ export async function selectPane(paneId: string): Promise<void> {
 }
 
 export async function zoomPane(session: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "resize-pane", "-t", session, "-Z"]);
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "resize-pane",
+    "-t",
+    session,
+    "-Z",
+  ]);
   logger.info({ session }, "Toggled pane zoom");
 }
 
@@ -261,7 +371,10 @@ export async function killPane(paneId: string): Promise<void> {
   logger.info({ paneId }, "Killed pane");
 }
 
-export async function createWindow(session: string, name?: string): Promise<void> {
+export async function createWindow(
+  session: string,
+  name?: string,
+): Promise<void> {
   const args = [...tmuxArgs(), "new-window", "-t", session];
   if (name) args.push("-n", name);
   args.push(config.tmuxDefaultShell);
@@ -279,18 +392,45 @@ export async function killWindow(windowId: string): Promise<void> {
   logger.info({ windowId }, "Killed window");
 }
 
-export async function swapPane(paneId: string, direction: "U" | "D" | "L" | "R"): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "swap-pane", "-t", paneId, `-${direction}`]);
+export async function swapPane(
+  paneId: string,
+  direction: "U" | "D" | "L" | "R",
+): Promise<void> {
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "swap-pane",
+    "-t",
+    paneId,
+    `-${direction}`,
+  ]);
   logger.info({ paneId, direction }, "Swapped pane");
 }
 
-export async function renameWindow(windowId: string, name: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "rename-window", "-t", windowId, name]);
+export async function renameWindow(
+  windowId: string,
+  name: string,
+): Promise<void> {
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "rename-window",
+    "-t",
+    windowId,
+    name,
+  ]);
   logger.info({ windowId, name }, "Renamed window");
 }
 
-export async function selectLayout(session: string, preset: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "select-layout", "-t", session, preset]);
+export async function selectLayout(
+  session: string,
+  preset: string,
+): Promise<void> {
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "select-layout",
+    "-t",
+    session,
+    preset,
+  ]);
   logger.info({ session, preset }, "Selected layout");
 }
 

@@ -15,13 +15,13 @@ const pkg = JSON.parse(
 const program = new Command();
 
 program
-  .name("tmuxremote")
-  .description("Self-hosted browser terminal for tmux")
+  .name("mtmux")
+  .description("tmux in your browser. One command, any device.")
   .version(pkg.version);
 
 program
   .command("start")
-  .description("Start the tmuxremote server")
+  .description("Start the mtmux server")
   .option("-p, --port <number>", "port", (v) => parseInt(v, 10), 14100)
   .option("-h, --host <address>", "bind address", "127.0.0.1")
   .option("-t, --token <value>", "override the auth token for this run")
@@ -40,9 +40,16 @@ program
 const token = program.command("token").description("Manage the auth token");
 token.command("print").description("Show the current token").action(tokenPrint);
 token.command("rotate").description("Generate a new token").action(tokenRotate);
-token.command("set <value>").description("Set the token to a specific value").action(tokenSet);
+token
+  .command("set <value>")
+  .description("Set the token to a specific value")
+  .action(tokenSet);
 
-program.command("version").alias("v").description("Print version info").action(version);
+program
+  .command("version")
+  .alias("v")
+  .description("Print version info")
+  .action(version);
 
 program.parseAsync(process.argv).catch((err: Error) => {
   console.error(err.message);

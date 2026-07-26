@@ -60,6 +60,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # The relay's capture-pane tests drive a real tmux server on a private
+      # socket; without tmux they skip silently and the regression goes uncaught.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 

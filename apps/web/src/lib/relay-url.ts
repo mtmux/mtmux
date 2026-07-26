@@ -1,37 +1,39 @@
 import { env } from "@/env";
 
-const FALLBACK_DEV_WS = "ws://localhost:14300";
-const FALLBACK_DEV_HTTP = "http://localhost:14300";
 const RELAY_PATH = "/_relay";
-
-// Next.js inlines process.env.NODE_ENV at build time for client bundles, so
-// this constant is statically known per build.
-const isDev = process.env.NODE_ENV !== "production";
 
 /**
  * Resolve the WebSocket URL for the relay.
  *
  * Priority:
- *   1. `NEXT_PUBLIC_RELAY_URL` if set (Docker/PM2 split-deployment).
- *   2. In dev mode without that env, fall back to ws://localhost:14300
- *      so the standard `pnpm dev` (web on 14100, relay on 14300) works
- *      out of the box.
- *   3. In production same-origin `/_relay` (CLI single-port).
+ *   1. `NEXT_PUBLIC_RELAY_URL` if set — the split deployment (Docker/PM2), where
+ *      the relay lives on its own host/port. `pnpm dev:split` sets it too.
+ *   2. Same-origin `/_relay`. This is single-port mode: `tmuxremote start` and
+ *      `pnpm dev` both serve the relay off the web app's own port.
+ *
+ * There is deliberately no dev-vs-production branch. Dev used to hardcode
+ * ws://localhost:14300, which meant the shipped single-port topology was never
+ * exercised until release — and pointed the browser at a dead port as soon as
+ * dev became single-port.
+ *
+ * Both callers run in the browser; the empty string on the server is a
+ * never-connect placeholder for SSR/prerender.
  */
 export function resolveRelayWsUrl(): string {
   if (env.NEXT_PUBLIC_RELAY_URL) return env.NEXT_PUBLIC_RELAY_URL;
-  if (isDev) return FALLBACK_DEV_WS;
-  if (typeof window === "undefined") return FALLBACK_DEV_WS;
+  if (typeof window === "undefined") return "";
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}${RELAY_PATH}`;
 }
 
-/** HTTP base for `/file?...` requests (same-origin in CLI mode). */
+/** HTTP base for `/file?...` requests (same-origin in single-port mode). */
 export function resolveRelayHttpBase(): string {
   if (env.NEXT_PUBLIC_RELAY_URL) {
-    return env.NEXT_PUBLIC_RELAY_URL.replace(/^ws:/, "http:").replace(/^wss:/, "https:");
+    return env.NEXT_PUBLIC_RELAY_URL.replace(/^ws:/, "http:").replace(
+      /^wss:/,
+      "https:",
+    );
   }
-  if (isDev) return FALLBACK_DEV_HTTP;
-  if (typeof window === "undefined") return FALLBACK_DEV_HTTP;
+  if (typeof window === "undefined") return "";
   return window.location.origin;
 }

@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { SessionInfoSchema, FileEntrySchema, FileStatSchema, PaneInfoSchema, WindowInfoSchema } from "./types";
+import {
+  SessionInfoSchema,
+  FileEntrySchema,
+  FileStatSchema,
+  PaneInfoSchema,
+  WindowInfoSchema,
+} from "./types";
 
 export const AuthSuccessMessage = z.object({
   type: z.literal("auth:success"),
@@ -133,6 +139,8 @@ export const WindowChangedMessage = z.object({
 export const SessionAttachedMessage = z.object({
   type: z.literal("session:attached"),
   name: z.string(),
+  // Echoes `session:attach.attachId` — see client-messages.ts.
+  attachId: z.string().optional(),
 });
 
 export const PaneCapturedMessage = z.object({

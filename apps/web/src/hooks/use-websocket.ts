@@ -69,11 +69,14 @@ export function useWebSocket(url: string, token: string) {
           connectionStore.resetReconnect();
           // Auto-request session list on connect
           globalClient?.send({ type: "session:list" });
-          // Don't send session:attach here — terminal-view handles re-attachment
-          // via its own auth:success listener to avoid duplicate PTY bridges
+          // Don't send session:attach here. TerminalView re-attaches from its
+          // status-dependent effect, which guarantees exactly one attach per
+          // connection — a second one would kill and respawn the PTY.
           break;
         case "auth:failure":
-          useAlertStore.getState().push("error", msg.reason || "Authentication failed");
+          useAlertStore
+            .getState()
+            .push("error", msg.reason || "Authentication failed");
           localStorage.removeItem("ccremote-token");
           window.location.href = "/login";
           break;
@@ -110,7 +113,9 @@ export function useWebSocket(url: string, token: string) {
             if (sessionStore.activeSessionId === null) {
               usePaneStore.getState().clearAll();
             }
-            useAlertStore.getState().push("info", `Session "${msg.name}" exited`);
+            useAlertStore
+              .getState()
+              .push("info", `Session "${msg.name}" exited`);
             setTimeout(() => handledExits.delete(msg.name), 10000);
           }
           break;
@@ -121,7 +126,10 @@ export function useWebSocket(url: string, token: string) {
           // Auto-zoom: if pending and no pane is currently zoomed, zoom the active pane
           if (paneStore.pendingAutoZoom) {
             const zoomedPane = msg.panes.find((p) => p.zoomed);
-            if (!zoomedPane && window.matchMedia("(max-width: 768px)").matches) {
+            if (
+              !zoomedPane &&
+              window.matchMedia("(max-width: 768px)").matches
+            ) {
               globalClient?.send({ type: "pane:zoom" });
             }
             paneStore.setPendingAutoZoom(false);
@@ -140,12 +148,19 @@ export function useWebSocket(url: string, token: string) {
         case "file:op:result": {
           useFileStore.getState().setIsOperating(false);
           if (msg.success) {
-            useAlertStore.getState().push("success", `${msg.op} succeeded: ${msg.path.split("/").pop()}`);
+            useAlertStore
+              .getState()
+              .push(
+                "success",
+                `${msg.op} succeeded: ${msg.path.split("/").pop()}`,
+              );
             // Refresh current directory listing
             const { currentPath: dirPath } = useFileStore.getState();
             globalClient?.send({ type: "file:list", path: dirPath });
           } else {
-            useAlertStore.getState().push("error", msg.error ?? `${msg.op} failed`);
+            useAlertStore
+              .getState()
+              .push("error", msg.error ?? `${msg.op} failed`);
           }
           break;
         }
@@ -169,7 +184,12 @@ export function useWebSocket(url: string, token: string) {
       token,
       onMessage: handleMessage,
       onMessageDropped: (count) => {
-        useAlertStore.getState().push("warning", `${count} messages queued while disconnected — some may have been dropped`);
+        useAlertStore
+          .getState()
+          .push(
+            "warning",
+            `${count} queued request${count === 1 ? "" : "s"} dropped while disconnected`,
+          );
       },
       onStatusChange: (status) => {
         useConnectionStore.getState().setStatus(status);
@@ -184,13 +204,22 @@ export function useWebSocket(url: string, token: string) {
     client.connect();
 
     const handleOnline = () => {
-      if (client.status === "disconnected" || client.status === "reconnecting") {
+      if (
+        client.status === "disconnected" ||
+        client.status === "reconnecting"
+      ) {
         client.connect();
       }
     };
 
     const handleOffline = () => {
-      useConnectionStore.getState().setStatus("disconnected");
+      // Tear the socket down rather than only painting the banner. Writing the
+      // store status directly used to desync it from RelayClient — the UI said
+      // "Disconnected" while the client still believed it was connected, so
+      // nothing ever put it back and anything keyed on the store status stayed
+      // stuck. Going through disconnect() keeps the two in step; `online` above
+      // reconnects.
+      client.disconnect();
     };
 
     window.addEventListener("online", handleOnline);

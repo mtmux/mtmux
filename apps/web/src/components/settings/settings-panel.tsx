@@ -41,14 +41,20 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
               <div className="flex items-center gap-2">
                 <button
                   className="h-7 w-7 rounded border text-sm"
-                  onClick={() => terminal.setFontSize(Math.max(8, terminal.fontSize - 1))}
+                  onClick={() =>
+                    terminal.setFontSize(Math.max(8, terminal.fontSize - 1))
+                  }
                 >
                   -
                 </button>
-                <span className="w-8 text-center text-sm">{terminal.fontSize}</span>
+                <span className="w-8 text-center text-sm">
+                  {terminal.fontSize}
+                </span>
                 <button
                   className="h-7 w-7 rounded border text-sm"
-                  onClick={() => terminal.setFontSize(Math.min(24, terminal.fontSize + 1))}
+                  onClick={() =>
+                    terminal.setFontSize(Math.min(24, terminal.fontSize + 1))
+                  }
                 >
                   +
                 </button>
@@ -84,11 +90,26 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-xs">Auto-zoom Panes</Label>
-                <p className="text-[10px] text-muted-foreground">Auto-zoom into active pane on attach and split (mobile only)</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Auto-zoom into active pane on attach and split (mobile only)
+                </p>
               </div>
               <Switch
                 checked={settings.autoZoom}
                 onCheckedChange={(checked) => settings.setAutoZoom(checked)}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-xs">GPU Rendering</Label>
+                <p className="text-[10px] text-muted-foreground">
+                  Turn off if only part of each line is visible. Applies after
+                  reload.
+                </p>
+              </div>
+              <Switch
+                checked={terminal.gpuRendering}
+                onCheckedChange={(checked) => terminal.setGpuRendering(checked)}
               />
             </div>
             <div className="space-y-1">
@@ -98,7 +119,10 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                 value={terminal.scrollback}
                 onChange={(e) => terminal.setScrollback(Number(e.target.value))}
                 onBlur={(e) => {
-                  const v = Math.max(100, Math.min(50000, Number(e.target.value) || 1000));
+                  const v = Math.max(
+                    100,
+                    Math.min(50000, Number(e.target.value) || 1000),
+                  );
                   terminal.setScrollback(v);
                 }}
                 className="h-8 text-sm"
@@ -121,13 +145,18 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                 key={key}
                 className={cn(
                   "rounded-lg border p-2 transition-colors text-left",
-                  terminal.themeName === key ? "border-primary ring-1 ring-primary" : "hover:border-foreground/30",
+                  terminal.themeName === key
+                    ? "border-primary ring-1 ring-primary"
+                    : "hover:border-foreground/30",
                 )}
                 onClick={() => terminal.setThemeName(key)}
               >
                 <div
                   className="mb-1.5 rounded-md px-2 py-1 font-mono text-[10px]"
-                  style={{ backgroundColor: theme.background, color: theme.foreground }}
+                  style={{
+                    backgroundColor: theme.background,
+                    color: theme.foreground,
+                  }}
                 >
                   <span style={{ color: theme.green }}>$</span>{" "}
                   <span style={{ color: theme.cyan }}>hello</span>
@@ -179,7 +208,9 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                 <Label className="text-xs">{label}</Label>
                 <Switch
                   checked={settings.gestures[key]}
-                  onCheckedChange={(checked) => settings.setGesture(key, checked)}
+                  onCheckedChange={(checked) =>
+                    settings.setGesture(key, checked)
+                  }
                 />
               </div>
             ))}
@@ -193,7 +224,9 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold">Haptic Feedback</h3>
-              <p className="text-xs text-muted-foreground">Vibrate on key press</p>
+              <p className="text-xs text-muted-foreground">
+                Vibrate on key press
+              </p>
             </div>
             <Switch
               checked={settings.hapticEnabled}

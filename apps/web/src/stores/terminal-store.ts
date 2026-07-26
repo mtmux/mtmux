@@ -29,12 +29,19 @@ interface TerminalStore {
   cursorStyle: "block" | "underline" | "bar";
   cursorBlink: boolean;
   scrollback: number;
+  /**
+   * Use xterm's WebGL renderer. Faster, but it mis-scales cells by
+   * devicePixelRatio on HiDPI screens — see terminal-view.tsx. Turn it off if
+   * only part of each line is visible.
+   */
+  gpuRendering: boolean;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
   setThemeName: (name: string) => void;
   setCursorStyle: (style: "block" | "underline" | "bar") => void;
   setCursorBlink: (blink: boolean) => void;
   setScrollback: (lines: number) => void;
+  setGpuRendering: (on: boolean) => void;
 }
 
 export const useTerminalStore = create<TerminalStore>()(
@@ -46,12 +53,14 @@ export const useTerminalStore = create<TerminalStore>()(
       cursorStyle: "block",
       cursorBlink: true,
       scrollback: 5000,
+      gpuRendering: true,
       setFontSize: (fontSize) => set({ fontSize: clampFontSize(fontSize) }),
       setFontFamily: (fontFamily) => set({ fontFamily }),
       setThemeName: (themeName) => set({ themeName }),
       setCursorStyle: (cursorStyle) => set({ cursorStyle }),
       setCursorBlink: (cursorBlink) => set({ cursorBlink }),
       setScrollback: (scrollback) => set({ scrollback }),
+      setGpuRendering: (gpuRendering) => set({ gpuRendering }),
     }),
     { name: "ccremote-terminal" },
   ),

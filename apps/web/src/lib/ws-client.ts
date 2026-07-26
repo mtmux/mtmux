@@ -20,6 +20,34 @@ interface RelayClientOptions {
 
 const MIN_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
+const MAX_PENDING_MESSAGES = 50;
+
+/**
+ * Messages that must NOT survive a disconnect.
+ *
+ * Everything used to be queued and replayed on reconnect, which meant keystrokes
+ * typed against a dead socket were injected into the live shell minutes later
+ * (and made ConnectionBanner's "input paused" copy a lie), and a stale
+ * `session:attach` was flushed *before* the message handlers ran — racing the
+ * fresh attach and respawning the PTY twice.
+ *
+ * Attach/detach are re-driven by TerminalView's status-dependent effect, and
+ * resize is re-driven by the next fit, so dropping them loses nothing.
+ */
+const DROP_WHEN_DISCONNECTED: ReadonlySet<ClientMessage["type"]> = new Set([
+  "terminal:input",
+  "terminal:resize",
+  "command:send",
+  "tmux:prefix",
+  "session:attach",
+  "session:detach",
+]);
+
+/** Idempotent reads that are safe (and useful) to replay once connected. */
+function shouldQueue(msg: ClientMessage): boolean {
+  if (msg.type === "ping") return false;
+  return !DROP_WHEN_DISCONNECTED.has(msg.type);
+}
 
 export class RelayClient {
   private ws: WebSocket | null = null;
@@ -168,7 +196,11 @@ export class RelayClient {
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      // Detach handlers before dropping the reference. Merely calling close()
+      // leaves an orphaned socket whose late onclose still runs and re-emits a
+      // status — enough to knock a freshly reconnected client back to
+      // "reconnecting", after which send() silently queues forever.
+      this.teardownSocket(this.ws);
       this.ws = null;
     }
     this.setStatus("disconnected");
@@ -183,12 +215,16 @@ export class RelayClient {
       this._status === "connected"
     ) {
       this.ws.send(serialize(msg));
-    } else if (msg.type !== "ping") {
-      this.pendingMessages.push(msg);
-      if (this.pendingMessages.length > 50) {
-        this.pendingMessages.shift();
-        this.onMessageDroppedHandler?.(this.pendingMessages.length);
-      }
+      return;
+    }
+    if (!shouldQueue(msg)) return;
+    this.pendingMessages.push(msg);
+    if (this.pendingMessages.length > MAX_PENDING_MESSAGES) {
+      const dropped = this.pendingMessages.length - MAX_PENDING_MESSAGES;
+      this.pendingMessages.splice(0, dropped);
+      // Report how many were actually discarded — this used to pass the
+      // post-trim queue length, so the toast always said "50".
+      this.onMessageDroppedHandler?.(dropped);
     }
   }
 
@@ -241,6 +277,9 @@ export class RelayClient {
   }
 
   private startPing(): void {
+    // Idempotent — a duplicate auth:success on one socket would otherwise leak
+    // an interval.
+    this.stopPing();
     this.lastPongAt = Date.now();
     this.pingTimer = setInterval(() => {
       // #15: Zombie detection — if missed 2+ pongs (>25s), force reconnect

@@ -1,6 +1,6 @@
-# CLAUDE.md — tmuxremote
+# CLAUDE.md — mtmux
 
-The shipped product is the **`tmuxremote`** npm CLI (`apps/cli`) — `npm install -g tmuxremote` then `tmuxremote start`. It bundles the web client and relay into one process on a single port. The other apps/packages are the source that CLI builds from, plus a split web+relay model for container/PM2 deployments.
+The shipped product is the **`mtmux`** npm CLI (`apps/cli`) — `npm install -g mtmux` then `mtmux start`. It bundles the web client and relay into one process on a single port. The other apps/packages are the source that CLI builds from, plus a split web+relay model for container/PM2 deployments.
 
 ## Tech Stack
 
@@ -13,9 +13,9 @@ The shipped product is the **`tmuxremote`** npm CLI (`apps/cli`) — `npm instal
 
 ## Repository Structure
 
-- `apps/cli` — The published **`tmuxremote`** CLI (primary product); bundles web + relay into one single-port process (`tmuxremote start`)
+- `apps/cli` — The published **`mtmux`** CLI (primary product); bundles web + relay into one single-port process (`mtmux start`). Also hosts `scripts/dev.mjs`, the single-port dev server behind `pnpm dev`
 - `apps/web` — Terminal web client (Next.js 15, port 14100)
-- `apps/relay` — WebSocket relay server (Node.js, port 14300)
+- `apps/relay` — WebSocket relay server (Node.js, port 14300 — split mode only; single-port mode serves it at `/_relay`)
 - `apps/docs` — Documentation site (Next.js + Fumadocs, port 14102)
 - `packages/protocol` — Typed WebSocket message schemas (Zod discriminated unions)
 - `packages/ui` — shadcn/ui components + terminal themes
@@ -28,7 +28,9 @@ The shipped product is the **`tmuxremote`** npm CLI (`apps/cli`) — `npm instal
 ## Key Commands
 
 ```bash
-pnpm dev              # Start all apps in dev mode
+pnpm dev              # Web + relay on ONE port (14100), like `mtmux start`
+pnpm dev:split        # Split model: web 14100 + relay 14300 (Docker/PM2 shape)
+pnpm dev:docs         # Docs site (14102)
 pnpm build            # Build all apps
 pnpm lint             # Lint all packages
 pnpm typecheck        # Type check all packages

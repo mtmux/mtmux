@@ -13,10 +13,19 @@ interface PinchZoomHandlerProps {
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 24;
 
-export function PinchZoomHandler({ children, className }: PinchZoomHandlerProps) {
+export function PinchZoomHandler({
+  children,
+  className,
+}: PinchZoomHandlerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const initialDistance = useRef<number | null>(null);
   const initialFontSize = useRef<number>(14);
+  // touchmove fires far faster than a frame. Writing the persisted store on
+  // every event re-rendered the terminal and rebuilt the WebGL character atlas
+  // per event, which is what made pinch-zoom strobe. Coalesce to one write per
+  // frame, and skip it entirely when the rounded size hasn't moved.
+  const pendingSize = useRef<number | null>(null);
+  const rafId = useRef<number | null>(null);
 
   const handleTouchStart = useCallback((e: TouchEvent) => {
     if (e.touches.length !== 2) return;
@@ -37,10 +46,22 @@ export function PinchZoomHandler({ children, className }: PinchZoomHandlerProps)
 
     const scale = currentDistance / initialDistance.current;
     const newSize = Math.round(
-      Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, initialFontSize.current * scale)),
+      Math.min(
+        MAX_FONT_SIZE,
+        Math.max(MIN_FONT_SIZE, initialFontSize.current * scale),
+      ),
     );
 
-    useTerminalStore.getState().setFontSize(newSize);
+    pendingSize.current = newSize;
+    if (rafId.current !== null) return;
+    rafId.current = requestAnimationFrame(() => {
+      rafId.current = null;
+      const size = pendingSize.current;
+      pendingSize.current = null;
+      if (size === null) return;
+      if (useTerminalStore.getState().fontSize === size) return;
+      useTerminalStore.getState().setFontSize(size);
+    });
   }, []);
 
   const handleTouchEnd = useCallback(() => {
@@ -59,6 +80,10 @@ export function PinchZoomHandler({ children, className }: PinchZoomHandlerProps)
       el.removeEventListener("touchstart", handleTouchStart);
       el.removeEventListener("touchmove", handleTouchMove);
       el.removeEventListener("touchend", handleTouchEnd);
+      if (rafId.current !== null) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
     };
   }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
 

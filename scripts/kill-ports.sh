@@ -6,7 +6,7 @@ PORTS=(14100 14102 14300)
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Kill any orphaned dev processes from this repo
-orphans=$(ps aux | grep "$SCRIPT_DIR" | grep -E "next dev|tsx watch" | grep -v grep | awk '{print $2}' || true)
+orphans=$(ps aux | grep "$SCRIPT_DIR" | grep -E "next dev|tsx watch|scripts/dev\.mjs" | grep -v grep | awk '{print $2}' || true)
 if [ -n "$orphans" ]; then
   echo "Killing orphaned dev processes..."
   echo "$orphans" | xargs kill -9 2>/dev/null || true

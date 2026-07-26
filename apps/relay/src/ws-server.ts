@@ -57,15 +57,28 @@ export function createWsServerNoBind(): WebSocketServer {
   return wss;
 }
 
+/**
+ * Route WebSocket upgrades on `httpServer`: `path` goes to the relay, anything
+ * else to `fallback` (or is destroyed when there is no fallback).
+ *
+ * The fallback exists for single-port dev, where Next.js needs its own upgrades
+ * for HMR. In the shipped CLI nothing else upgrades, so the default stands.
+ */
 export function attachUpgrade(
   httpServer: http.Server,
   wss: WebSocketServer,
   path: string,
+  fallback?: (
+    req: http.IncomingMessage,
+    socket: import("node:stream").Duplex,
+    head: Buffer,
+  ) => void,
 ): void {
   httpServer.on("upgrade", (req, socket, head) => {
     const { pathname } = new URL(req.url ?? "/", "http://localhost");
     if (pathname !== path) {
-      socket.destroy();
+      if (fallback) fallback(req, socket, head);
+      else socket.destroy();
       return;
     }
     if (!isOriginAllowed(req.headers.origin)) {

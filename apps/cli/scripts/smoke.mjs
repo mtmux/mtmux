@@ -3,7 +3,7 @@
 //   2. probe /health, /, /_relay (websocket upgrade)
 //   3. kill the process; exit non-zero on any failure
 //
-// Used by `pnpm --filter tmuxremote test` and the cli-smoke CI job.
+// Used by `pnpm --filter mtmux test` and the cli-smoke CI job.
 
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -16,7 +16,7 @@ const BIN = path.join(ROOT, "dist/bin.js");
 const PORT = Number(process.env.SMOKE_PORT ?? 0) || pickPort();
 
 if (!existsSync(BIN)) {
-  console.error(`✗ ${BIN} missing — run \`pnpm --filter tmuxremote build\` first.`);
+  console.error(`✗ ${BIN} missing — run \`pnpm --filter mtmux build\` first.`);
   process.exit(1);
 }
 
@@ -32,7 +32,10 @@ function fetch(path) {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("end", () =>
-          resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }),
+          resolve({
+            status: res.statusCode,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
         );
       },
     );
@@ -69,10 +72,14 @@ function probeUpgrade(path) {
 }
 
 console.log(`→ booting CLI on port ${PORT}`);
-const child = spawn("node", [BIN, "start", "--port", String(PORT), "--no-open"], {
-  stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, NODE_ENV: "production" },
-});
+const child = spawn(
+  "node",
+  [BIN, "start", "--port", String(PORT), "--no-open"],
+  {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, NODE_ENV: "production" },
+  },
+);
 
 const stderr = [];
 child.stdout.on("data", (b) => process.stdout.write(b));
@@ -112,14 +119,16 @@ async function check(name, fn) {
 await check("/health returns 200", async () => {
   const r = await fetch("/health");
   if (r.status !== 200) throw new Error(`status ${r.status}`);
-  if (!r.body.includes('"status":"ok"')) throw new Error(`unexpected body: ${r.body}`);
+  if (!r.body.includes('"status":"ok"'))
+    throw new Error(`unexpected body: ${r.body}`);
   return r.status;
 });
 
 await check("/ returns Next.js HTML", async () => {
   const r = await fetch("/");
   if (r.status !== 200) throw new Error(`status ${r.status}`);
-  if (!r.body.includes("<!DOCTYPE html>")) throw new Error("no <!DOCTYPE html> in body");
+  if (!r.body.includes("<!DOCTYPE html>"))
+    throw new Error("no <!DOCTYPE html> in body");
   return { status: r.status, bytes: r.body.length };
 });
 
@@ -139,7 +148,7 @@ await check("WS auth survives a prior Next request", async () => {
   const { homedir } = await import("node:os");
   const { join } = await import("node:path");
   const cfg = JSON.parse(
-    await readFile(join(homedir(), ".tmuxremote/config.json"), "utf8"),
+    await readFile(join(homedir(), ".mtmux/config.json"), "utf8"),
   );
   return await new Promise((resolve, reject) => {
     const ws = new WS(`ws://127.0.0.1:${PORT}/_relay`, {
@@ -152,7 +161,9 @@ await check("WS auth survives a prior Next request", async () => {
       ws.close();
       reject(new Error("no auth:success within 4s"));
     }, 4000);
-    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", token: cfg.token })));
+    ws.on("open", () =>
+      ws.send(JSON.stringify({ type: "auth", token: cfg.token })),
+    );
     ws.on("message", (d) => {
       const msg = JSON.parse(d.toString());
       if (msg.type === "auth:success") {

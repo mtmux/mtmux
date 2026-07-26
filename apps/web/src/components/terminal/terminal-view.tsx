@@ -8,12 +8,25 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { getTerminalTheme, terminalThemeToXterm } from "@repo/ui/terminal-themes";
+import {
+  getTerminalTheme,
+  terminalThemeToXterm,
+} from "@repo/ui/terminal-themes";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAlertStore } from "@/stores/alert-store";
+import { useConnectionStore } from "@/stores/connection-store";
 import { getRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
+import {
+  IDLE,
+  attachedName,
+  needsAttach,
+  nextAttachId,
+  reduceAttach,
+  shouldWriteOutput,
+  type AttachState,
+} from "@/lib/attach-state";
 import { Terminal, Plus } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { cn } from "@repo/ui/lib/utils";
@@ -31,6 +44,22 @@ export interface TerminalViewHandle {
   findPrevious: () => void;
 }
 
+/**
+ * All layout signals (ResizeObserver, window resize, orientation, visualViewport,
+ * tab visibility, font changes) funnel into a single debounced fit. Previously
+ * each had its own timer ladder, producing up to a dozen fits — and a dozen
+ * `terminal:resize` round-trips — in the first 1.5s after mount. Every distinct
+ * size is a SIGWINCH that makes tmux redraw for *all* attached clients, which is
+ * what the flicker actually was.
+ */
+const FIT_DEBOUNCE_MS = 80;
+/** One trailing fit after CSS transitions settle (the sidebar toggle is 200ms). */
+const FIT_SETTLE_MS = 260;
+/** Mount-time ladder for a container that is still 0-height (mobile tabs, CSS). */
+const MOUNT_FIT_RETRY_DELAYS = [0, 50, 100, 200, 400, 800, 1500];
+const ATTACH_TIMEOUT_MS = 5000;
+const FALLBACK_SIZE = { cols: 80, rows: 24 };
+
 export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
   function TerminalView({ sessionName, className, onCreateSession }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -38,17 +67,39 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     const fitAddonRef = useRef<FitAddon | null>(null);
     const searchAddonRef = useRef<SearchAddon | null>(null);
     const webglAddonRef = useRef<WebglAddon | null>(null);
-    const attachedSessionRef = useRef<string | null>(null);
-    const sessionReadyRef = useRef(false);
-    const pendingSessionRef = useRef<string | null>(null);
-    const recoveryRef = useRef<{
-      debounceTimer: ReturnType<typeof setTimeout> | null;
-      atlasDisposable: { dispose: () => void } | null;
-      rafIds: number[];
-      timerIds: ReturnType<typeof setTimeout>[];
-    }>({ debounceTimer: null, atlasDisposable: null, rafIds: [], timerIds: [] });
-    const { fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback } =
-      useTerminalStore();
+
+    // Single source of truth for the attach lifecycle — see lib/attach-state.ts.
+    const attachStateRef = useRef<AttachState>(IDLE);
+    // Last size actually sent to the relay, so repeated fits at the same
+    // dimensions never hit the wire.
+    const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+
+    // Imperative handles owned by the init effect, used by the effects below.
+    const scheduleFitRef = useRef<(() => void) | null>(null);
+    const syncSizeRef = useRef<(() => void) | null>(null);
+
+    const fitTimersRef = useRef<{
+      debounce: ReturnType<typeof setTimeout> | null;
+      settle: ReturnType<typeof setTimeout> | null;
+      mountRetries: ReturnType<typeof setTimeout>[];
+    }>({ debounce: null, settle: null, mountRetries: [] });
+    const optionsRafRef = useRef<number | null>(null);
+    const atlasDisposableRef = useRef<{ dispose: () => void } | null>(null);
+
+    // Per-field selectors: a change to one setting shouldn't re-render this
+    // component for the others (pinch-zoom writes fontSize many times a second).
+    const fontSize = useTerminalStore((s) => s.fontSize);
+    const fontFamily = useTerminalStore((s) => s.fontFamily);
+    const themeName = useTerminalStore((s) => s.themeName);
+    const cursorStyle = useTerminalStore((s) => s.cursorStyle);
+    const cursorBlink = useTerminalStore((s) => s.cursorBlink);
+    const scrollback = useTerminalStore((s) => s.scrollback);
+    // Read once per mount: swapping renderers on a live terminal is not
+    // something xterm supports cleanly, so the init effect below owns this and
+    // the toggle takes effect on the next mount/reload.
+    const gpuRendering = useTerminalStore((s) => s.gpuRendering);
+    const status = useConnectionStore((s) => s.status);
+
     useImperativeHandle(ref, () => ({
       search: (term: string) => {
         searchAddonRef.current?.findNext(term);
@@ -65,6 +116,9 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     useEffect(() => {
       if (!containerRef.current) return;
 
+      // Stable object for the lifetime of this effect — captured once so the
+      // cleanup below doesn't read a ref that could have been reassigned.
+      const timers = fitTimersRef.current;
       const theme = getTerminalTheme(themeName);
       const terminal = new XTerm({
         fontSize,
@@ -75,7 +129,9 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         theme: terminalThemeToXterm(theme),
         allowProposedApi: true,
         macOptionIsMeta: true,
-        convertEol: true,
+        // A tmux PTY already emits CRLF. Rewriting bare \n corrupts the output
+        // of applications that emit a lone linefeed deliberately.
+        convertEol: false,
       });
 
       const fitAddon = new FitAddon();
@@ -98,12 +154,14 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       // Viewport's deferred `setTimeout(() => syncScrollArea())` fires during
       // the swap. This causes "Cannot read properties of undefined (reading
       // 'dimensions')" from RenderService.ts:50 / Viewport.ts:84.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const core = (terminal as any)._core;
       if (core?._renderService) {
         const rs = core._renderService;
         const proto = Object.getPrototypeOf(rs);
         const desc = Object.getOwnPropertyDescriptor(proto, "dimensions");
         if (desc?.get) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let lastValidDimensions: any = null;
           Object.defineProperty(rs, "dimensions", {
             get() {
@@ -117,7 +175,10 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
                 return lastValidDimensions;
               }
               return {
-                css: { canvas: { width: 0, height: 0 }, cell: { width: 0, height: 0 } },
+                css: {
+                  canvas: { width: 0, height: 0 },
+                  cell: { width: 0, height: 0 },
+                },
                 device: {
                   canvas: { width: 0, height: 0 },
                   cell: { width: 0, height: 0 },
@@ -130,6 +191,10 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         }
       }
 
+      terminalRef.current = terminal;
+      fitAddonRef.current = fitAddon;
+      searchAddonRef.current = searchAddon;
+
       // Safe fit wrapper — renderer may not be initialized during deferred calls
       const safeFit = () => {
         try {
@@ -139,154 +204,182 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         }
       };
 
+      const runFit = () => {
+        safeFit();
+        try {
+          if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1);
+        } catch {
+          // refresh can throw if the renderer is mid-swap
+        }
+      };
+
+      // THE fit entry point. Every layout signal calls this and nothing else.
+      const scheduleFit = () => {
+        if (timers.debounce) clearTimeout(timers.debounce);
+        timers.debounce = setTimeout(() => {
+          timers.debounce = null;
+          runFit();
+        }, FIT_DEBOUNCE_MS);
+        if (timers.settle) clearTimeout(timers.settle);
+        timers.settle = setTimeout(() => {
+          timers.settle = null;
+          runFit();
+        }, FIT_SETTLE_MS);
+      };
+      scheduleFitRef.current = scheduleFit;
+
+      // THE resize send point. Guarded on an attached session (an unguarded send
+      // during startup earns a NOT_ATTACHED error toast) and deduped against the
+      // last size we actually sent.
+      const sendResize = (cols: number, rows: number) => {
+        if (cols < 1 || rows < 1) return;
+        if (!shouldWriteOutput(attachStateRef.current)) return;
+        const last = lastSentSizeRef.current;
+        if (last && last.cols === cols && last.rows === rows) return;
+        lastSentSizeRef.current = { cols, rows };
+        getRelayClient()?.send({
+          type: "terminal:resize",
+          size: { cols, rows },
+        });
+      };
+
+      // Reconcile after an attach: the size advertised in `session:attach` may
+      // predate the container being laid out.
+      syncSizeRef.current = () => {
+        sendResize(terminal.cols, terminal.rows);
+      };
+
+      const hasBox = () =>
+        !!containerRef.current &&
+        containerRef.current.offsetWidth > 0 &&
+        containerRef.current.offsetHeight > 0;
+
       let webglAddon: WebglAddon | null = null;
-      try {
-        webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-          try {
-            webglAddon?.dispose();
-          } catch {
-            // Already disposed
-          }
+      // The WebGL renderer places cells using device-pixel metrics in CSS space
+      // — it applies devicePixelRatio exactly one time too many. At DPR 2 only
+      // half the columns paint, at DPR 3 only a third; the rest of every line is
+      // drawn off-canvas and is simply invisible. At DPR 1 the error cancels,
+      // which is why this only shows up on mobile / HiDPI. Disabling the addon
+      // renders correctly at every DPR, so `gpuRendering` exists as an escape
+      // hatch (Settings → Terminal) for anyone hitting it.
+      if (gpuRendering) {
+        try {
+          webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            try {
+              webglAddon?.dispose();
+            } catch {
+              // Already disposed
+            }
+            webglAddon = null;
+            webglAddonRef.current = null;
+          });
+          terminal.loadAddon(webglAddon);
+          webglAddonRef.current = webglAddon;
+        } catch {
+          // WebGL not supported, using default canvas renderer
           webglAddon = null;
           webglAddonRef.current = null;
-        });
-        terminal.loadAddon(webglAddon);
-        webglAddonRef.current = webglAddon;
-      } catch {
-        // WebGL not supported, using default canvas renderer
-        webglAddon = null;
-        webglAddonRef.current = null;
+        }
       }
 
-      // Initial fit — if container has dimensions, fit immediately; otherwise
-      // retry over several rAF frames (container may be 0-height at mount due
-      // to CSS layout settling, mobile tab visibility, etc.)
-      if (containerRef.current.offsetWidth > 0 && containerRef.current.offsetHeight > 0) {
+      // Initial fit — if the container has dimensions, fit immediately;
+      // otherwise walk a retry ladder until it does (0-height at mount happens
+      // with mobile tab visibility and CSS layout settling), stopping at the
+      // first success.
+      if (hasBox()) {
         safeFit();
       } else {
-        const delays = [0, 50, 100, 200, 400, 800, 1500];
         let attempt = 0;
         const retryFit = () => {
-          if (attempt >= delays.length) return;
-          const delay = delays[attempt++];
+          if (attempt >= MOUNT_FIT_RETRY_DELAYS.length) return;
+          const delay = MOUNT_FIT_RETRY_DELAYS[attempt++]!;
           const timerId = setTimeout(() => {
-            if (containerRef.current && containerRef.current.offsetWidth > 0 && containerRef.current.offsetHeight > 0) {
+            if (hasBox()) {
               safeFit();
-            } else {
-              retryFit();
+              return;
             }
+            retryFit();
           }, delay);
-          recoveryRef.current.timerIds.push(timerId);
+          timers.mountRetries.push(timerId);
         };
         retryFit();
       }
 
-      terminalRef.current = terminal;
-      fitAddonRef.current = fitAddon;
-      searchAddonRef.current = searchAddon;
-
       // Wire terminal input to WebSocket
       const dataDisposable = terminal.onData((data) => {
-        const client = getRelayClient();
-        if (client) {
-          client.send({ type: "terminal:input", data });
-        }
+        getRelayClient()?.send({ type: "terminal:input", data });
       });
 
-      // Wire terminal resize to WebSocket
+      // xterm fires onResize only when fit() actually changes the dimensions,
+      // which makes it the natural single place to notify the relay.
       const resizeDisposable = terminal.onResize(({ cols, rows }) => {
-        const client = getRelayClient();
-        if (client) {
-          client.send({ type: "terminal:resize", size: { cols, rows } });
-        }
+        sendResize(cols, rows);
       });
 
-      // Debounced ResizeObserver with double-timeout for CSS transitions
-      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-      let transitionTimer: ReturnType<typeof setTimeout> | null = null;
-      const resizeObserver = new ResizeObserver(() => {
-        if (resizeTimer) clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => safeFit(), 100);
-        // Second fit after CSS transitions settle (sidebar toggle is 200ms)
-        if (transitionTimer) clearTimeout(transitionTimer);
-        transitionTimer = setTimeout(() => safeFit(), 250);
-      });
+      const resizeObserver = new ResizeObserver(() => scheduleFit());
       resizeObserver.observe(containerRef.current);
 
-      // Window resize handler — catches devtools responsive toggle, window resize
-      let windowResizeTimer: ReturnType<typeof setTimeout> | null = null;
-      const handleWindowResize = () => {
-        if (windowResizeTimer) clearTimeout(windowResizeTimer);
-        windowResizeTimer = setTimeout(() => safeFit(), 100);
-      };
+      // Window resize — catches devtools responsive toggle, desktop resize
+      const handleWindowResize = () => scheduleFit();
       window.addEventListener("resize", handleWindowResize);
 
-      // Orientation change handler for mobile
-      const handleOrientationChange = () => {
-        setTimeout(() => safeFit(), 300);
-      };
+      // Orientation change on mobile
+      const handleOrientationChange = () => scheduleFit();
       window.addEventListener("orientationchange", handleOrientationChange);
 
-      // visualViewport resize handler — fires on browser-level zoom (pinch past
-      // the viewport meta lock, accessibility zoom, etc.)
-      const handleViewportResize = () => {
-        if (resizeTimer) clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          safeFit();
-          // After zoom-triggered refit, sync cols/rows with relay so tmux adjusts
-          const t = terminalRef.current;
-          if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
-            getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
-          }
-        }, 150);
-      };
-      window.visualViewport?.addEventListener("resize", handleViewportResize);
-      // Also re-fit on visualViewport scroll — fires when user pans the zoomed
-      // visual viewport. Without this, layout-anchored chrome repositions
-      // correctly but the terminal can be drawn at a stale offset.
-      window.visualViewport?.addEventListener("scroll", handleViewportResize);
+      // visualViewport resize/scroll — browser-level zoom, on-screen keyboard,
+      // panning a zoomed viewport
+      const handleViewportChange = () => scheduleFit();
+      window.visualViewport?.addEventListener("resize", handleViewportChange);
+      window.visualViewport?.addEventListener("scroll", handleViewportChange);
 
-      // IntersectionObserver for mobile tab visibility (display:none → display:flex)
+      // Mobile tab visibility (display:none → display:flex)
       const intersectionObserver = new IntersectionObserver((entries) => {
-        if (entries[0]?.isIntersecting) {
-          setTimeout(() => {
-            safeFit();
-            const t = terminalRef.current;
-            if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
-              getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
-            }
-          }, 150);
-          setTimeout(() => {
-            safeFit();
-            const t = terminalRef.current;
-            if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
-              getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
-            }
-          }, 300);
-          setTimeout(() => safeFit(), 500);
-        }
+        if (entries[0]?.isIntersecting) scheduleFit();
       });
       intersectionObserver.observe(containerRef.current);
 
       return () => {
-        if (resizeTimer) clearTimeout(resizeTimer);
-        if (transitionTimer) clearTimeout(transitionTimer);
-        if (windowResizeTimer) clearTimeout(windowResizeTimer);
+        if (timers.debounce) clearTimeout(timers.debounce);
+        if (timers.settle) clearTimeout(timers.settle);
+        timers.mountRetries.forEach((id) => clearTimeout(id));
+        timers.debounce = null;
+        timers.settle = null;
+        timers.mountRetries = [];
+        if (optionsRafRef.current !== null) {
+          cancelAnimationFrame(optionsRafRef.current);
+          optionsRafRef.current = null;
+        }
+        atlasDisposableRef.current?.dispose();
+        atlasDisposableRef.current = null;
         resizeObserver.disconnect();
         intersectionObserver.disconnect();
         window.removeEventListener("resize", handleWindowResize);
-        window.removeEventListener("orientationchange", handleOrientationChange);
-        window.visualViewport?.removeEventListener("resize", handleViewportResize);
-        window.visualViewport?.removeEventListener("scroll", handleViewportResize);
+        window.removeEventListener(
+          "orientationchange",
+          handleOrientationChange,
+        );
+        window.visualViewport?.removeEventListener(
+          "resize",
+          handleViewportChange,
+        );
+        window.visualViewport?.removeEventListener(
+          "scroll",
+          handleViewportChange,
+        );
         dataDisposable.dispose();
         resizeDisposable.dispose();
-        // Cancel any pending recovery
-        const rec = recoveryRef.current;
-        if (rec.debounceTimer) clearTimeout(rec.debounceTimer);
-        rec.atlasDisposable?.dispose();
-        rec.rafIds.forEach(id => cancelAnimationFrame(id));
-        rec.timerIds.forEach(id => clearTimeout(id));
+        // Real unmount — release the relay-side PTY. (Session *switches* don't
+        // detach: the relay's attach handler replaces the bridge, and an
+        // unpaired detach is exactly what used to wedge the client.)
+        if (attachedName(attachStateRef.current)) {
+          getRelayClient()?.send({ type: "session:detach" });
+        }
+        attachStateRef.current = IDLE;
+        lastSentSizeRef.current = null;
+        scheduleFitRef.current = null;
+        syncSizeRef.current = null;
         terminal.dispose();
         terminalRef.current = null;
         fitAddonRef.current = null;
@@ -295,182 +388,170 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps -- terminal created once on mount
 
-    // Update terminal options when settings change
+    // Apply terminal option changes. Writes are coalesced into a single frame:
+    // each write can trigger a WebGL character-atlas rebuild, and pinch-to-zoom
+    // drives fontSize many times per second.
     useEffect(() => {
-      const terminal = terminalRef.current;
-      if (!terminal) return;
+      if (!terminalRef.current) return;
 
-      // Apply options immediately (cheap, no rendering)
-      const theme = getTerminalTheme(themeName);
-      terminal.options.fontSize = fontSize;
-      terminal.options.fontFamily = fontFamily;
-      terminal.options.cursorStyle = cursorStyle;
-      terminal.options.cursorBlink = cursorBlink;
-      terminal.options.scrollback = scrollback;
-      terminal.options.theme = terminalThemeToXterm(theme);
+      if (optionsRafRef.current !== null) {
+        cancelAnimationFrame(optionsRafRef.current);
+      }
+      optionsRafRef.current = requestAnimationFrame(() => {
+        optionsRafRef.current = null;
+        const terminal = terminalRef.current;
+        if (!terminal) return;
 
-      // Cancel any pending recovery from a previous rapid change
-      const recovery = recoveryRef.current;
-      if (recovery.debounceTimer) clearTimeout(recovery.debounceTimer);
-      recovery.atlasDisposable?.dispose();
-      recovery.atlasDisposable = null;
-      recovery.rafIds.forEach(id => cancelAnimationFrame(id));
-      recovery.rafIds = [];
-      recovery.timerIds.forEach(id => clearTimeout(id));
-      recovery.timerIds = [];
+        terminal.options.fontSize = fontSize;
+        terminal.options.fontFamily = fontFamily;
+        terminal.options.cursorStyle = cursorStyle;
+        terminal.options.cursorBlink = cursorBlink;
+        terminal.options.scrollback = scrollback;
+        terminal.options.theme = terminalThemeToXterm(
+          getTerminalTheme(themeName),
+        );
 
-      // Debounce the actual fit/refresh recovery.
-      // During pinch-to-zoom, fontSize changes many times per second.
-      // We only need to recover once after changes settle.
-      recovery.debounceTimer = setTimeout(() => {
-        const fitAndRefresh = () => {
-          try {
-            fitAddonRef.current?.fit();
-          } catch {
-            // Renderer not ready
-          }
-          try {
-            const t = terminalRef.current;
-            if (t && t.rows > 0) {
-              t.refresh(0, t.rows - 1);
-            }
-          } catch {
-            // refresh can throw if renderer is mid-swap
-          }
-          const t = terminalRef.current;
-          if (t && t.cols > 0 && t.rows > 0 && attachedSessionRef.current) {
-            getRelayClient()?.send({ type: "terminal:resize", size: { cols: t.cols, rows: t.rows } });
-          }
-        };
+        scheduleFitRef.current?.();
 
-        // Immediate attempt
-        fitAndRefresh();
-
-        // Listen for WebGL atlas rebuild completion
+        // A font/theme change rebuilds the WebGL atlas asynchronously; refit
+        // once it lands, otherwise cell metrics can be stale. Debounced through
+        // scheduleFit, so this is bounded no matter how often the atlas churns.
+        atlasDisposableRef.current?.dispose();
         const webgl = webglAddonRef.current;
         if (webgl) {
-          recovery.atlasDisposable = webgl.onChangeTextureAtlas(() => {
-            const rafId = requestAnimationFrame(() => {
-              fitAndRefresh();
-            });
-            recovery.rafIds.push(rafId);
+          atlasDisposableRef.current = webgl.onChangeTextureAtlas(() => {
+            scheduleFitRef.current?.();
           });
         }
-
-        // rAF fallback chain (5 frames)
-        let count = 0;
-        const scheduleRetry = () => {
-          if (count >= 5) return;
-          count++;
-          const rafId = requestAnimationFrame(() => {
-            fitAndRefresh();
-            scheduleRetry();
-          });
-          recovery.rafIds.push(rafId);
-        };
-        const initialId = requestAnimationFrame(() => scheduleRetry());
-        recovery.rafIds.push(initialId);
-      }, 80); // 80ms debounce — batches rapid pinch changes while staying responsive
-
-      // NO cleanup function — recovery is managed via recoveryRef, cleaned up
-      // at start of next effect run or on component unmount (init effect cleanup)
+      });
     }, [fontSize, fontFamily, themeName, cursorStyle, cursorBlink, scrollback]);
 
-    // Wire WebSocket output to terminal — use ref to prevent stale session
-    // output. useRelaySubscription re-attaches once globalClient is set by the
-    // parent layout's useWebSocket effect and re-binds after a reconnect.
     useRelaySubscription((msg: ServerMessage) => {
-      // On reconnect, re-attach the current session
-      if (msg.type === "auth:success") {
-        const session = attachedSessionRef.current;
-        if (session) {
-          // Reset ready state — wait for new session:attached before writing output
-          sessionReadyRef.current = false;
-          pendingSessionRef.current = session;
-          const size = terminalRef.current && terminalRef.current.cols > 0 && terminalRef.current.rows > 0
-            ? { cols: terminalRef.current.cols, rows: terminalRef.current.rows }
-            : { cols: 80, rows: 24 };
-          const c = getRelayClient();
-          c?.send({ type: "session:attach", name: session, size, capture: true });
-          c?.send({ type: "pane:list" });
-          c?.send({ type: "window:list" });
-        }
+      // NOTE: there is deliberately no auth:success re-attach here. Reconnects
+      // flow through the status-dependent attach effect below, so exactly one
+      // session:attach is sent per connection — two would kill and respawn the
+      // PTY, replaying the capture twice.
+      if (msg.type === "session:attached") {
+        const prev = attachStateRef.current;
+        const next = reduceAttach(prev, {
+          type: "serverAttached",
+          name: msg.name,
+          attachId: msg.attachId,
+        });
+        // Stale ack for a superseded attach — ignore it rather than let it
+        // corrupt the state machine.
+        if (next === prev) return;
+        attachStateRef.current = next;
+        // reset(), not clear(): clear() leaves modes and the alternate buffer
+        // intact, so old content bleeds through the replayed scrollback.
+        terminalRef.current?.reset();
+        syncSizeRef.current?.();
         return;
       }
-      if (msg.type === "session:attached" && msg.name === pendingSessionRef.current) {
-        // Only clear if not already attached (prevent double-clear)
-        if (attachedSessionRef.current !== msg.name) {
-          const terminal = terminalRef.current;
-          if (terminal) terminal.clear();
-        }
-        attachedSessionRef.current = msg.name;
-        sessionReadyRef.current = true;
-        pendingSessionRef.current = null;
-      }
-      if (msg.type === "terminal:output" && terminalRef.current && sessionReadyRef.current && attachedSessionRef.current) {
+      if (
+        msg.type === "terminal:output" &&
+        terminalRef.current &&
+        shouldWriteOutput(attachStateRef.current)
+      ) {
         terminalRef.current.write(msg.data);
       }
     });
 
-    // Attach/detach to session when sessionName changes
+    // Attach when the session changes *or* the connection comes up. The status
+    // dependency is what fixes the mount-order race: TerminalView's effects run
+    // before the parent layout has created the relay client, so the first pass
+    // has nothing to send to and must re-run once the client exists.
+    //
+    // `status` is used purely as a re-run trigger — the decision below reads the
+    // client's own status. The store can be written directly (the browser
+    // `offline` event does), and trusting a value that doesn't match the live
+    // socket would freeze the terminal while its connection is perfectly fine.
     useEffect(() => {
       if (!sessionName) {
-        attachedSessionRef.current = null;
-        sessionReadyRef.current = false;
-        pendingSessionRef.current = null;
+        if (attachedName(attachStateRef.current)) {
+          getRelayClient()?.send({ type: "session:detach" });
+        }
+        attachStateRef.current = reduceAttach(attachStateRef.current, {
+          type: "detach",
+        });
+        lastSentSizeRef.current = null;
         return;
       }
 
-      // Skip re-attach if already attached to this session
-      if (sessionName === attachedSessionRef.current) return;
-
-      pendingSessionRef.current = sessionName;
-      sessionReadyRef.current = false;
-
-      const client = getRelayClient();
-      if (!client) return;
-
-      // Don't clear terminal here — defer to session:attached handler
-
-      const size = terminalRef.current && terminalRef.current.cols > 0 && terminalRef.current.rows > 0
-        ? { cols: terminalRef.current.cols, rows: terminalRef.current.rows }
-        : { cols: 80, rows: 24 };
-
-      client.send({ type: "session:attach", name: sessionName, size, capture: true });
-      client.send({ type: "pane:list" });
-      client.send({ type: "window:list" });
-
-      if (useSettingsStore.getState().autoZoom && window.matchMedia("(max-width: 768px)").matches) {
-        usePaneStore.getState().setPendingAutoZoom(true);
-      }
-
-      // If session:attached doesn't arrive in 5s, surface a visible error
-      // and leave the click un-handled (don't flip ready=true to mask it).
+      // Armed before any early return so a stuck attach is always surfaced,
+      // whatever the reason it stalled.
       const errorTimer = setTimeout(() => {
-        if (!sessionReadyRef.current && pendingSessionRef.current === sessionName) {
+        if (
+          !shouldWriteOutput(attachStateRef.current) &&
+          attachedName(attachStateRef.current) === sessionName &&
+          // While the relay is unreachable the ConnectionBanner already says so;
+          // a second "couldn't open session" toast per switch is just noise.
+          getRelayClient()?.status === "connected"
+        ) {
           useAlertStore
             .getState()
-            .push("error", `Couldn't open session "${sessionName}" — try again or check the relay.`);
+            .push(
+              "error",
+              `Couldn't open session "${sessionName}" — try again or check the relay.`,
+            );
         }
-      }, 5000);
+      }, ATTACH_TIMEOUT_MS);
 
-      return () => {
-        clearTimeout(errorTimer);
-        pendingSessionRef.current = null;
-        sessionReadyRef.current = false;
-        client.send({ type: "session:detach" });
-      };
-    }, [sessionName]);
+      const client = getRelayClient();
+      if (!client || client.status !== "connected") {
+        // Nothing to send to yet. Remember the desired session so the next run
+        // (triggered by the status change) issues exactly one attach.
+        attachStateRef.current = reduceAttach(attachStateRef.current, {
+          type: "connectionLost",
+        });
+        return () => clearTimeout(errorTimer);
+      }
+
+      if (needsAttach(attachStateRef.current, sessionName)) {
+        const terminal = terminalRef.current;
+        const size =
+          terminal && terminal.cols > 0 && terminal.rows > 0
+            ? { cols: terminal.cols, rows: terminal.rows }
+            : FALLBACK_SIZE;
+        const attachId = nextAttachId();
+
+        attachStateRef.current = reduceAttach(attachStateRef.current, {
+          type: "requestAttach",
+          name: sessionName,
+          attachId,
+        });
+        lastSentSizeRef.current = size;
+
+        client.send({
+          type: "session:attach",
+          name: sessionName,
+          size,
+          capture: true,
+          attachId,
+        });
+        client.send({ type: "pane:list" });
+        client.send({ type: "window:list" });
+
+        if (
+          useSettingsStore.getState().autoZoom &&
+          window.matchMedia("(max-width: 768px)").matches
+        ) {
+          usePaneStore.getState().setPendingAutoZoom(true);
+        }
+      }
+
+      return () => clearTimeout(errorTimer);
+    }, [sessionName, status]);
 
     return (
-      <div className={cn("relative", className)} style={{ width: "100%", height: "100%" }}>
+      <div
+        className={cn("relative", className)}
+        style={{ width: "100%", height: "100%" }}
+      >
         {/* Terminal container — always mounted */}
         <div
           ref={containerRef}
-          className={cn(
-            "h-full w-full",
-            !sessionName && "invisible",
-          )}
+          className={cn("h-full w-full", !sessionName && "invisible")}
           style={{ touchAction: "manipulation" }}
         />
 
@@ -479,18 +560,24 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-muted-foreground bg-background">
             <Terminal className="h-16 w-16 text-muted-foreground/20" />
             <div className="text-center">
-              <p className="text-base font-semibold text-foreground">No session selected</p>
-              <p className="text-sm mt-1">Create or select a session to get started</p>
+              <p className="text-base font-semibold text-foreground">
+                No session selected
+              </p>
+              <p className="text-sm mt-1">
+                Create or select a session to get started
+              </p>
             </div>
             {onCreateSession && (
-              <Button onClick={onCreateSession} className="animate-pulse hover:animate-none">
+              <Button
+                onClick={onCreateSession}
+                className="animate-pulse hover:animate-none"
+              >
                 <Plus className="mr-1.5 h-4 w-4" />
                 Create Session
               </Button>
             )}
           </div>
         )}
-
       </div>
     );
   },

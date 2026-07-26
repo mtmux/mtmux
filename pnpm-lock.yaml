@@ -86,6 +86,9 @@ importers:
       esbuild:
         specifier: ^0.27.0
         version: 0.27.4
+      tsx:
+        specifier: ^4
+        version: 4.21.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -278,6 +281,9 @@ importers:
       typescript:
         specifier: ^5.8
         version: 5.9.3
+      vitest:
+        specifier: ^2
+        version: 2.1.9(@types/node@25.5.0)(lightningcss@1.31.1)
 
   packages/config:
     dependencies:

@@ -1,17 +1,17 @@
 <div align="center">
 
-# tmuxremote
+# mtmux
 
 **Your tmux, in any browser.**
 
 Self-hosted browser terminal for [tmux](https://github.com/tmux/tmux). Connect to your sessions from any device — phone, tablet, laptop — over a single secure WebSocket. Works great with [Claude Code](https://www.anthropic.com/claude-code), Vim, REPLs, and long-running jobs. One npm install away.
 
-[![npm](https://img.shields.io/npm/v/tmuxremote?color=e87958)](https://www.npmjs.com/package/tmuxremote)
+[![npm](https://img.shields.io/npm/v/mtmux?color=e87958)](https://www.npmjs.com/package/mtmux)
 [![CI](https://github.com/GagnDeep/tmuxremote/actions/workflows/ci.yml/badge.svg)](https://github.com/GagnDeep/tmuxremote/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED)](https://github.com/GagnDeep/tmuxremote/pkgs/container/tmuxremote)
 
-[GitHub](https://github.com/GagnDeep/tmuxremote) · [npm](https://www.npmjs.com/package/tmuxremote)
+[GitHub](https://github.com/GagnDeep/tmuxremote) · [npm](https://www.npmjs.com/package/mtmux)
 
 </div>
 
@@ -20,33 +20,33 @@ Self-hosted browser terminal for [tmux](https://github.com/tmux/tmux). Connect t
 ## Install
 
 ```bash
-npm install -g tmuxremote
-tmuxremote start
+npm install -g mtmux
+mtmux start
 ```
 
-That's it. tmuxremote auto-generates a token, opens your browser, and connects you to tmux on the same machine. No config file, no Docker, no reverse proxy.
+That's it. mtmux auto-generates a token, opens your browser, and connects you to tmux on the same machine. No config file, no Docker, no reverse proxy.
 
 <details>
 <summary>Other package managers & Docker</summary>
 
 ```bash
-bun install -g tmuxremote
-pnpm add -g tmuxremote
+bun install -g mtmux
+pnpm add -g mtmux
 docker run -p 14100:14100 ghcr.io/gagndeep/tmuxremote
 ```
 
 </details>
 
-## Why tmuxremote?
+## Why mtmux?
 
-|                                 | tmuxremote | ttyd / GoTTY | Web SSH | tmate    |
-| ------------------------------- | ---------- | ------------ | ------- | -------- |
-| Mobile-first UX                 | ✓          | —            | —       | —        |
-| File browser + Monaco editor    | ✓          | —            | —       | —        |
-| Single-port (HTTP + WS)         | ✓          | ✓            | ✓       | —        |
-| Self-hosted                     | ✓          | ✓            | ✓       | optional |
-| WebGL terminal                  | ✓          | —            | —       | —        |
-| Built for Claude Code workflows | ✓          | —            | —       | —        |
+|                                 | mtmux | ttyd / GoTTY | Web SSH | tmate    |
+| ------------------------------- | ----- | ------------ | ------- | -------- |
+| Mobile-first UX                 | ✓     | —            | —       | —        |
+| File browser + Monaco editor    | ✓     | —            | —       | —        |
+| Single-port (HTTP + WS)         | ✓     | ✓            | ✓       | —        |
+| Self-hosted                     | ✓     | ✓            | ✓       | optional |
+| WebGL terminal                  | ✓     | —            | —       | —        |
+| Built for Claude Code workflows | ✓     | —            | —       | —        |
 
 ## Features
 
@@ -60,13 +60,13 @@ docker run -p 14100:14100 ghcr.io/gagndeep/tmuxremote
 ## Quick start
 
 ```bash
-tmuxremote start                    # localhost:14100, auto-token, opens browser
-tmuxremote start --host 0.0.0.0 --port 8080
-tmuxremote start --no-open          # don't open the browser
-tmuxremote token print              # show current token
-tmuxremote token rotate             # generate a new one
-tmuxremote token set <value>        # set a specific token
-tmuxremote --help
+mtmux start                    # localhost:14100, auto-token, opens browser
+mtmux start --host 0.0.0.0 --port 8080
+mtmux start --no-open          # don't open the browser
+mtmux token print              # show current token
+mtmux token rotate             # generate a new one
+mtmux token set <value>        # set a specific token
+mtmux --help
 ```
 
 ## Behind a reverse proxy
@@ -92,7 +92,7 @@ location / {
 Caddy:
 
 ```caddy
-tmuxremote.example.com {
+mtmux.example.com {
   reverse_proxy 127.0.0.1:14100
 }
 ```
@@ -107,14 +107,14 @@ tmuxremote.example.com {
 | `--allowed-paths` / `ALLOWED_PATHS` | `$HOME`     | Comma-separated path allow-list for the file browser |
 | `--no-open`                         | —           | Don't open the browser on start                      |
 
-The auto-generated token is stored at `~/.tmuxremote/config.json` (mode `0600`).
+The auto-generated token is stored at `~/.mtmux/config.json` (mode `0600`).
 
 ## Architecture
 
 One Node process, one HTTP server, three layers:
 
 ```
-Browser  ⇄ wss/https ⇄  tmuxremote node  ⇄ pty ⇄  tmux
+Browser  ⇄ wss/https ⇄  mtmux node  ⇄ pty ⇄  tmux
             (one port)   Next.js + ws         your sessions
 ```
 
@@ -124,18 +124,30 @@ Browser  ⇄ wss/https ⇄  tmuxremote node  ⇄ pty ⇄  tmux
 
 ```bash
 pnpm install
-pnpm dev          # web (14100), relay (14300), docs (14102)
+pnpm dev          # web + relay on ONE port (14100), same as `mtmux start`
 pnpm build
 pnpm test
 pnpm typecheck
 pnpm lint
 ```
 
+`pnpm dev` runs the shipped single-port topology — Next.js (Turbopack, with
+HMR) and the relay in one process, relay WebSocket at `/_relay` — so single-port
+bugs surface while you work rather than at release. It prints a login URL with
+the dev token (`dev-token`) baked in. Override the port with `PORT=…`.
+
+Two escape hatches:
+
+```bash
+pnpm dev:split    # the split model: web 14100 + relay 14300 (Docker/PM2 shape)
+pnpm dev:docs     # docs site on 14102
+```
+
 The repo is a pnpm + Turborepo monorepo. See [CLAUDE.md](CLAUDE.md) for the full layout.
 
 ## Production deployments
 
-The CLI (`tmuxremote start`) is the primary path for self-hosting on a single
+The CLI (`mtmux start`) is the primary path for self-hosting on a single
 machine: one process, one port, WebSocket at `/_relay`. For multi-tenant or
 container deployments, the repo also ships a **split web+relay** model with
 separate ports (web `14100`, relay `14300`), configured via

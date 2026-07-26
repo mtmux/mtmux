@@ -37,6 +37,10 @@ export const SessionAttachMessage = z.object({
   name: z.string(),
   size: TerminalSizeSchema.optional(),
   capture: z.boolean().optional(),
+  // Attach epoch. Echoed back on `session:attached` so the client can reject
+  // acks from a superseded attach instead of letting a stale one corrupt its
+  // state machine. Optional so older clients/relays stay compatible.
+  attachId: z.string().optional(),
 });
 
 export const SessionDetachMessage = z.object({
@@ -201,7 +205,13 @@ export const WindowRenameMessage = z.object({
 
 export const WindowLayoutMessage = z.object({
   type: z.literal("window:layout"),
-  preset: z.enum(["even-horizontal", "even-vertical", "main-horizontal", "main-vertical", "tiled"]),
+  preset: z.enum([
+    "even-horizontal",
+    "even-vertical",
+    "main-horizontal",
+    "main-vertical",
+    "tiled",
+  ]),
 });
 
 export const LayoutRotateMessage = z.object({

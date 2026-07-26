@@ -57,7 +57,10 @@ export async function routeMessage(
       }
 
       case "session:attach": {
-        // Detach existing PTY first
+        // Detach existing PTY first. `attachedSession` must be cleared with it:
+        // every step below can fail, and leaving the old name in place would
+        // point pane/window/interrupt handlers at a session this connection is
+        // no longer attached to.
         if (conn.pty) {
           conn.pty.markDetaching();
           try {
@@ -67,6 +70,8 @@ export async function routeMessage(
           }
           conn.pty = null;
         }
+        conn.attachedSession = null;
+        conn.lastSize = null;
 
         const exists = await tmux.sessionExists(msg.name);
         if (!exists) {
@@ -74,10 +79,20 @@ export async function routeMessage(
           break;
         }
 
-        // Capture pane content BEFORE creating PTY bridge
+        // Capture pane content BEFORE creating the PTY bridge, but never let a
+        // capture failure abort the attach — the old PTY is already dead at this
+        // point, so throwing here would leave the client with a dead terminal
+        // and no way to recover. Degrade to no replay instead.
         let captured: string | null = null;
         if (msg.capture) {
-          captured = await tmux.capturePane(msg.name);
+          try {
+            captured = await tmux.capturePane(msg.name);
+          } catch (err) {
+            logger.warn(
+              { err, session: msg.name },
+              "capture-pane failed; attaching without scrollback replay",
+            );
+          }
         }
 
         const bridge = createPtyBridge(msg.name, msg.size);
@@ -87,6 +102,7 @@ export async function routeMessage(
         }
         conn.pty = bridge;
         conn.attachedSession = msg.name;
+        conn.lastSize = msg.size ?? null;
 
         // Bind callbacks to *this* bridge instance. A previous PTY's late
         // onExit must not null out conn.pty if it has already been reassigned
@@ -134,6 +150,7 @@ export async function routeMessage(
           if (conn.pty === bridge) {
             conn.pty = null;
             conn.attachedSession = null;
+            conn.lastSize = null;
           }
         });
 
@@ -142,15 +159,22 @@ export async function routeMessage(
           if (conn.pty === bridge) {
             conn.pty = null;
             conn.attachedSession = null;
+            conn.lastSize = null;
           }
         });
 
-        // When PTY is ready: send captured data first, then attached ack
+        // Ack FIRST, then replay. The client drops terminal:output until it has
+        // seen session:attached, so sending the capture ahead of the ack meant
+        // it was always discarded and the first paint was blank.
         bridge.onReady(() => {
+          send(ws, {
+            type: "session:attached",
+            name: msg.name,
+            ...(msg.attachId ? { attachId: msg.attachId } : {}),
+          });
           if (captured) {
             send(ws, { type: "terminal:output", data: captured });
           }
-          send(ws, { type: "session:attached", name: msg.name });
         });
 
         break;
@@ -165,8 +189,11 @@ export async function routeMessage(
             /* ignore */
           }
           conn.pty = null;
-          conn.attachedSession = null;
         }
+        // Cleared unconditionally: a detach with no live PTY (a failed attach,
+        // an exited session) must still leave this connection unattached.
+        conn.attachedSession = null;
+        conn.lastSize = null;
         break;
       }
 
@@ -215,6 +242,17 @@ export async function routeMessage(
           sendError(ws, "NOT_ATTACHED", "No session attached");
           break;
         }
+        // Drop no-op resizes. Each pty.resize() is a SIGWINCH, and with
+        // `window-size latest` + `aggressive-resize on` tmux redraws for every
+        // attached client — including unrelated SSH sessions.
+        if (
+          conn.lastSize &&
+          conn.lastSize.cols === msg.size.cols &&
+          conn.lastSize.rows === msg.size.rows
+        ) {
+          break;
+        }
+        conn.lastSize = msg.size;
         conn.pty.resize(msg.size);
         break;
       }

@@ -1,6 +1,6 @@
-# Contributing to tmuxremote
+# Contributing to mtmux
 
-Thanks for your interest in contributing to tmuxremote. This guide will help you get started.
+Thanks for your interest in contributing to mtmux. This guide will help you get started.
 
 ## Prerequisites
 
@@ -31,7 +31,13 @@ Thanks for your interest in contributing to tmuxremote. This guide will help you
    pnpm dev
    ```
 
-4. Open the web client at `http://localhost:14100` and the relay server runs on port `14300`.
+4. Open `http://localhost:14100`. Web and relay share that one port — the same
+   layout `mtmux start` ships — with the relay WebSocket at `/_relay`. The
+   startup banner prints a login URL containing the dev token.
+
+   Use `pnpm dev:split` if you need the split web (`14100`) + relay (`14300`)
+   model that the Docker and PM2 deployments use, and `pnpm dev:docs` for the
+   docs site (`14102`).
 
 ## Pull Request Process
 

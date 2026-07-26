@@ -1,8 +1,9 @@
 {
-  "name": "tmuxremote",
-  "version": "0.1.1",
-  "description": "Self-hosted browser terminal for tmux. One command, any device.",
+  "name": "mtmux",
+  "version": "0.2.0",
+  "description": "tmux in your browser. One command, any device.",
   "keywords": [
+    "mtmux",
     "claude",
     "claude-code",
     "tmux",
@@ -22,7 +23,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "tmuxremote": "./dist/bin.js"
+    "mtmux": "./dist/bin.js"
   },
   "files": [
     "dist",
@@ -33,8 +34,9 @@
     "node": ">=22"
   },
   "scripts": {
+    "dev": "tsx scripts/dev.mjs",
+    "watch": "tsc --watch",
     "build": "node scripts/build.mjs",
-    "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "start": "node dist/bin.js start",
@@ -64,6 +66,7 @@
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
     "esbuild": "^0.27.0",
+    "tsx": "^4",
     "typescript": "^5.6.0"
   },
   "publishConfig": {

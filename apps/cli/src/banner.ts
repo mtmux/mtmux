@@ -1,11 +1,15 @@
 import kleur from "kleur";
 
-export function banner(opts: { url: string; token: string; host: string; port: number }) {
+export function banner(opts: {
+  url: string;
+  token: string;
+  host: string;
+  port: number;
+}) {
   const coral = kleur.red; // closest stock color; full RGB requires kleur/colors
   console.log();
   console.log(
-    coral().bold("  ›  tmuxremote") +
-      kleur.dim("  Your tmux, in any browser."),
+    coral().bold("  ›  mtmux") + kleur.dim("  Your tmux, in any browser."),
   );
   console.log();
   console.log(`  ${kleur.bold("URL")}      ${coral(opts.url)}`);
