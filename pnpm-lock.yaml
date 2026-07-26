@@ -316,6 +316,31 @@ importers:
         specifier: ^5.8
         version: 5.9.3
 
+  packages/crypto:
+    dependencies:
+      "@noble/curves":
+        specifier: ^2.2.0
+        version: 2.2.0
+      "@noble/hashes":
+        specifier: ^2.2.0
+        version: 2.2.0
+    devDependencies:
+      "@repo/eslint-config":
+        specifier: workspace:*
+        version: link:../../tooling/eslint
+      "@repo/tsconfig":
+        specifier: workspace:*
+        version: link:../../tooling/typescript
+      eslint:
+        specifier: ^9.17.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.8
+        version: 5.9.3
+      vitest:
+        specifier: ^2
+        version: 2.1.9(@types/node@25.5.0)(lightningcss@1.31.1)
+
   packages/logger:
     dependencies:
       pino:
@@ -1853,6 +1878,20 @@ packages:
     engines: { node: ">= 10" }
     cpu: [x64]
     os: [win32]
+
+  "@noble/curves@2.2.0":
+    resolution:
+      {
+        integrity: sha512-T/BoHgFXirb0ENSPBquzX0rcjXeM6Lo892a2jlYJkqk83LqZx0l1Of7DzlKJ6jkpvMrkHSnAcgb5JegL8SeIkQ==,
+      }
+    engines: { node: ">= 20.19.0" }
+
+  "@noble/hashes@2.2.0":
+    resolution:
+      {
+        integrity: sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==,
+      }
+    engines: { node: ">= 20.19.0" }
 
   "@nodelib/fs.scandir@2.1.5":
     resolution:
@@ -9368,6 +9407,12 @@ snapshots:
 
   "@next/swc-win32-x64-msvc@16.2.12":
     optional: true
+
+  "@noble/curves@2.2.0":
+    dependencies:
+      "@noble/hashes": 2.2.0
+
+  "@noble/hashes@2.2.0": {}
 
   "@nodelib/fs.scandir@2.1.5":
     dependencies:

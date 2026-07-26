@@ -1,0 +1,125 @@
+import { describe, it, expect } from "vitest";
+import {
+  deriveSessionKeys,
+  confirmationTag,
+  verifyConfirmation,
+} from "./kdf.js";
+import { bytesToHex, randomBytes, utf8ToBytes } from "./bytes.js";
+
+const ISK = new Uint8Array(64).fill(3);
+const TRANSCRIPT = utf8ToBytes("transcript");
+
+describe("deriveSessionKeys", () => {
+  it("is deterministic for the same ISK and transcript", () => {
+    const a = deriveSessionKeys(ISK, TRANSCRIPT);
+    const b = deriveSessionKeys(ISK, TRANSCRIPT);
+    expect(bytesToHex(a.c2s)).toBe(bytesToHex(b.c2s));
+    expect(bytesToHex(a.s2c)).toBe(bytesToHex(b.s2c));
+    expect(bytesToHex(a.confirm)).toBe(bytesToHex(b.confirm));
+    expect(a.directToken).toBe(b.directToken);
+  });
+
+  it("produces four distinct 32-byte keys", () => {
+    const k = deriveSessionKeys(ISK, TRANSCRIPT);
+    expect(k.c2s).toHaveLength(32);
+    expect(k.s2c).toHaveLength(32);
+    expect(k.confirm).toHaveLength(32);
+    expect(k.directToken).toMatch(/^[0-9a-f]{64}$/);
+
+    const all = new Set([
+      bytesToHex(k.c2s),
+      bytesToHex(k.s2c),
+      bytesToHex(k.confirm),
+      k.directToken,
+    ]);
+    expect(all.size).toBe(4);
+  });
+
+  it("changes completely when the ISK changes by one bit", () => {
+    const other = Uint8Array.from(ISK);
+    other[0] = (other[0] ?? 0) ^ 0x01;
+    const a = deriveSessionKeys(ISK, TRANSCRIPT);
+    const b = deriveSessionKeys(other, TRANSCRIPT);
+    expect(bytesToHex(a.c2s)).not.toBe(bytesToHex(b.c2s));
+    expect(a.directToken).not.toBe(b.directToken);
+  });
+
+  it("changes when only the transcript changes", () => {
+    const a = deriveSessionKeys(ISK, utf8ToBytes("transcript-a"));
+    const b = deriveSessionKeys(ISK, utf8ToBytes("transcript-b"));
+    expect(bytesToHex(a.c2s)).not.toBe(bytesToHex(b.c2s));
+  });
+
+  it("never leaks the ISK into any derived value", () => {
+    const isk = randomBytes(64);
+    const k = deriveSessionKeys(isk, TRANSCRIPT);
+    const iskHex = bytesToHex(isk);
+    for (const value of [
+      bytesToHex(k.c2s),
+      bytesToHex(k.s2c),
+      bytesToHex(k.confirm),
+      k.directToken,
+    ]) {
+      expect(iskHex).not.toContain(value);
+      expect(value).not.toContain(iskHex);
+    }
+  });
+});
+
+describe("key confirmation", () => {
+  const keys = deriveSessionKeys(ISK, TRANSCRIPT);
+
+  it("accepts a tag from the matching role", () => {
+    expect(
+      verifyConfirmation(
+        keys.confirm,
+        "cli",
+        confirmationTag(keys.confirm, "cli"),
+      ),
+    ).toBe(true);
+    expect(
+      verifyConfirmation(
+        keys.confirm,
+        "browser",
+        confirmationTag(keys.confirm, "browser"),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a tag from the other role — no reflection", () => {
+    expect(
+      verifyConfirmation(
+        keys.confirm,
+        "cli",
+        confirmationTag(keys.confirm, "browser"),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a tag derived from a different key", () => {
+    const other = deriveSessionKeys(randomBytes(64), TRANSCRIPT);
+    expect(
+      verifyConfirmation(
+        keys.confirm,
+        "cli",
+        confirmationTag(other.confirm, "cli"),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a truncated or padded tag", () => {
+    const tag = confirmationTag(keys.confirm, "cli");
+    expect(verifyConfirmation(keys.confirm, "cli", tag.subarray(0, 31))).toBe(
+      false,
+    );
+    expect(verifyConfirmation(keys.confirm, "cli", new Uint8Array(33))).toBe(
+      false,
+    );
+  });
+
+  it("rejects a single flipped bit", () => {
+    const tag = confirmationTag(keys.confirm, "cli");
+    tag[5] = (tag[5] ?? 0) ^ 0x01;
+    expect(verifyConfirmation(keys.confirm, "cli", tag)).toBe(false);
+  });
+});
