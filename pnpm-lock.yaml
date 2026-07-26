@@ -35,6 +35,46 @@ importers:
         specifier: ^2.9.9
         version: 2.9.9
 
+  apps/api:
+    dependencies:
+      "@repo/crypto":
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      "@repo/logger":
+        specifier: workspace:*
+        version: link:../../packages/logger
+      "@repo/protocol":
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      ws:
+        specifier: ^8
+        version: 8.20.0
+      zod:
+        specifier: ^3
+        version: 3.25.76
+    devDependencies:
+      "@repo/eslint-config":
+        specifier: workspace:*
+        version: link:../../tooling/eslint
+      "@repo/tsconfig":
+        specifier: workspace:*
+        version: link:../../tooling/typescript
+      "@types/ws":
+        specifier: ^8
+        version: 8.18.1
+      eslint:
+        specifier: ^9.17.0
+        version: 9.39.4(jiti@2.6.1)
+      tsx:
+        specifier: ^4
+        version: 4.21.0
+      typescript:
+        specifier: ^5.8
+        version: 5.9.3
+      vitest:
+        specifier: ^2
+        version: 2.1.9(@types/node@25.5.0)(lightningcss@1.31.1)
+
   apps/cli:
     dependencies:
       chokidar:

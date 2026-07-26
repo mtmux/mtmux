@@ -44,34 +44,61 @@ export const MAX_FRAME_BYTES = 1024 * 1024 + 1024;
 // ---------------------------------------------------------------------------
 
 /**
- * The browser's CPace share, sent in response to a claim.
+ * Opaque handle for the other end of one pairing attempt.
  *
- * `share` is a ristretto255 element. The broker cannot do anything with it
- * without the four-digit secret, which it never receives.
+ * A slot is shared by many simultaneous pairings, so a single claim is fanned
+ * out to every live mailbox under it and may hear back from several. The peer
+ * handle keeps those conversations apart. It is minted per attempt by the
+ * broker and means nothing outside it.
  */
-export const PairMailboxShareMessage = z.object({
+export const PeerHandleSchema = z.string().min(4).max(64);
+
+/**
+ * A CPace share. `share` is a ristretto255 element; the broker can do nothing
+ * with it, because the four-digit secret never reaches the broker.
+ */
+export const PairShareMessage = z.object({
   type: z.literal("pair:share"),
+  peer: PeerHandleSchema,
   share: hex(32),
   /** Associated data bound into the CPace transcript. */
   ad: z.string().max(256),
 });
 
-/** Key confirmation, proving the browser derived the same key. */
-export const PairMailboxConfirmMessage = z.object({
+/** Key confirmation, proving this side derived the same key. */
+export const PairConfirmMessage = z.object({
   type: z.literal("pair:confirm"),
+  peer: PeerHandleSchema,
   tag: hex(32),
 });
 
-/** The browser giving up on a mailbox (navigated away, code expired). */
-export const PairMailboxCloseMessage = z.object({
+/**
+ * CLI → broker: the sealed connection descriptor, forwarded verbatim to the
+ * browser as `pair:established`.
+ */
+export const PairEstablishMessage = z.object({
+  type: z.literal("pair:establish"),
+  peer: PeerHandleSchema,
+  sealedDescriptor: blob(8192),
+});
+
+/**
+ * Give up on one peer (bad confirmation, navigated away, expired).
+ *
+ * A close after a claim always destroys the mailbox. That is what makes a
+ * wrong guess cost the attacker the whole code.
+ */
+export const PairCloseMessage = z.object({
   type: z.literal("pair:close"),
+  peer: PeerHandleSchema.optional(),
   reason: z.string().max(256).optional(),
 });
 
 export const PairingClientMessage = z.discriminatedUnion("type", [
-  PairMailboxShareMessage,
-  PairMailboxConfirmMessage,
-  PairMailboxCloseMessage,
+  PairShareMessage,
+  PairConfirmMessage,
+  PairEstablishMessage,
+  PairCloseMessage,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -87,13 +114,16 @@ export const PairReadyMessage = z.object({
 });
 
 /**
- * Someone claimed this mailbox's slot. Fanned out to every live mailbox under
- * that slot — only the one whose secret matches will produce a valid
- * confirmation, so this message is not evidence the claimant knows anything.
+ * The other side's CPace share.
+ *
+ * Sent to a browser when someone claims its slot, and to a claiming CLI for
+ * each mailbox that answers. Because a claim is fanned out to every live
+ * mailbox on the slot, receiving this is not evidence that the peer knows the
+ * secret — only a valid `pair:peer-confirm` is.
  */
-export const PairClaimedMessage = z.object({
-  type: z.literal("pair:claimed"),
-  /** The claimant's CPace share. */
+export const PairPeerShareMessage = z.object({
+  type: z.literal("pair:peer-share"),
+  peer: PeerHandleSchema,
   share: hex(32),
   ad: z.string().max(256),
   /** Session id for this CPace run, chosen by the claimant. */
@@ -103,6 +133,7 @@ export const PairClaimedMessage = z.object({
 /** The peer's key confirmation tag. */
 export const PairPeerConfirmMessage = z.object({
   type: z.literal("pair:peer-confirm"),
+  peer: PeerHandleSchema,
   tag: hex(32),
 });
 
@@ -113,6 +144,7 @@ export const PairPeerConfirmMessage = z.object({
  */
 export const PairEstablishedMessage = z.object({
   type: z.literal("pair:established"),
+  peer: PeerHandleSchema,
   sealedDescriptor: blob(8192),
 });
 
@@ -123,6 +155,7 @@ export const PairEstablishedMessage = z.object({
  */
 export const PairFailedMessage = z.object({
   type: z.literal("pair:failed"),
+  peer: PeerHandleSchema.optional(),
   reason: z.enum([
     "expired",
     "already-claimed",
@@ -136,7 +169,7 @@ export const PairFailedMessage = z.object({
 
 export const PairingServerMessage = z.discriminatedUnion("type", [
   PairReadyMessage,
-  PairClaimedMessage,
+  PairPeerShareMessage,
   PairPeerConfirmMessage,
   PairEstablishedMessage,
   PairFailedMessage,
@@ -190,6 +223,17 @@ export const TunnelClosedMessage = z.object({
   ]),
 });
 
+/**
+ * Broker → CLI, first message on /v1/agent: a fresh nonce to sign.
+ *
+ * The challenge is server-issued on purpose. If the CLI chose it, a captured
+ * registration frame could be replayed forever to impersonate the device.
+ */
+export const TunnelChallengeMessage = z.object({
+  type: z.literal("tunnel:challenge"),
+  challenge: hex(32),
+});
+
 /** Broker → CLI: registration accepted. */
 export const TunnelReadyMessage = z.object({
   type: z.literal("tunnel:ready"),
@@ -203,6 +247,7 @@ export const TunnelClientMessage = z.discriminatedUnion("type", [
 ]);
 
 export const TunnelServerMessage = z.discriminatedUnion("type", [
+  TunnelChallengeMessage,
   TunnelReadyMessage,
   TunnelStreamOpenMessage,
   TunnelStreamCloseMessage,
@@ -229,10 +274,20 @@ export const PairClaimRequest = z.object({
   sid: hex(16),
 });
 
+export const ClaimIdSchema = z.string().min(8).max(64);
+
 export const PairClaimResponse = z.object({
   /** How many live mailboxes the claim was offered to. Never which. */
   offered: z.number().int().nonnegative(),
-  claimId: z.string().min(8).max(64),
+  /**
+   * Handle for `WS /v1/claim/:claimId`, where the CLI collects the replies.
+   *
+   * The claim is a POST (per plan) but the answer is inherently many-valued
+   * and asynchronous, so the socket is separate. Messages produced before the
+   * socket attaches are buffered for the mailbox TTL, which removes the race
+   * between fan-out and connect.
+   */
+  claimId: ClaimIdSchema,
 });
 
 /** GET /v1/discover */
@@ -266,16 +321,16 @@ export type PairingServerMessage = z.infer<typeof PairingServerMessage>;
 export type TunnelClientMessage = z.infer<typeof TunnelClientMessage>;
 export type TunnelServerMessage = z.infer<typeof TunnelServerMessage>;
 
-export type PairMailboxShareMessage = z.infer<typeof PairMailboxShareMessage>;
-export type PairMailboxConfirmMessage = z.infer<
-  typeof PairMailboxConfirmMessage
->;
-export type PairMailboxCloseMessage = z.infer<typeof PairMailboxCloseMessage>;
+export type PairShareMessage = z.infer<typeof PairShareMessage>;
+export type PairConfirmMessage = z.infer<typeof PairConfirmMessage>;
+export type PairEstablishMessage = z.infer<typeof PairEstablishMessage>;
+export type PairCloseMessage = z.infer<typeof PairCloseMessage>;
 export type PairReadyMessage = z.infer<typeof PairReadyMessage>;
-export type PairClaimedMessage = z.infer<typeof PairClaimedMessage>;
+export type PairPeerShareMessage = z.infer<typeof PairPeerShareMessage>;
 export type PairPeerConfirmMessage = z.infer<typeof PairPeerConfirmMessage>;
 export type PairEstablishedMessage = z.infer<typeof PairEstablishedMessage>;
 export type PairFailedMessage = z.infer<typeof PairFailedMessage>;
+export type TunnelChallengeMessage = z.infer<typeof TunnelChallengeMessage>;
 export type TunnelRegisterMessage = z.infer<typeof TunnelRegisterMessage>;
 export type TunnelReadyMessage = z.infer<typeof TunnelReadyMessage>;
 export type TunnelStreamOpenMessage = z.infer<typeof TunnelStreamOpenMessage>;

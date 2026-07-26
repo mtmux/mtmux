@@ -20,6 +20,7 @@ describe("pairing client messages", () => {
     expect(
       PairingClientMessage.safeParse({
         type: "pair:share",
+        peer: "peer-1",
         share: HEX32,
         ad: "browser",
       }).success,
@@ -34,16 +35,23 @@ describe("pairing client messages", () => {
       "zz",
     ]) {
       expect(
-        PairingClientMessage.safeParse({ type: "pair:share", share, ad: "" })
-          .success,
+        PairingClientMessage.safeParse({
+          type: "pair:share",
+          peer: "peer-1",
+          share,
+          ad: "",
+        }).success,
       ).toBe(false);
     }
   });
 
   it("accepts confirm and close", () => {
     expect(
-      PairingClientMessage.safeParse({ type: "pair:confirm", tag: HEX32 })
-        .success,
+      PairingClientMessage.safeParse({
+        type: "pair:confirm",
+        peer: "peer-1",
+        tag: HEX32,
+      }).success,
     ).toBe(true);
     expect(PairingClientMessage.safeParse({ type: "pair:close" }).success).toBe(
       true,
@@ -60,6 +68,7 @@ describe("pairing client messages", () => {
     expect(
       PairingClientMessage.safeParse({
         type: "pair:share",
+        peer: "peer-1",
         share: HEX32,
         ad: "x".repeat(257),
       }).success,
@@ -95,10 +104,11 @@ describe("pairing server messages", () => {
     }
   });
 
-  it("accepts pair:claimed with a 16-byte sid", () => {
+  it("accepts pair:peer-share with a 16-byte sid", () => {
     expect(
       PairingServerMessage.safeParse({
-        type: "pair:claimed",
+        type: "pair:peer-share",
+        peer: "peer-1",
         share: HEX32,
         ad: "cli",
         sid: HEX16,
@@ -106,7 +116,8 @@ describe("pairing server messages", () => {
     ).toBe(true);
     expect(
       PairingServerMessage.safeParse({
-        type: "pair:claimed",
+        type: "pair:peer-share",
+        peer: "peer-1",
         share: HEX32,
         ad: "cli",
         sid: HEX32,
@@ -130,6 +141,7 @@ describe("pairing server messages", () => {
   it("round-trips through the codec", () => {
     const msg = {
       type: "pair:established" as const,
+      peer: "peer-1",
       sealedDescriptor: "AAEC-_8",
     };
     const parsed = tryDeserializePairingServerMessage(JSON.stringify(msg));

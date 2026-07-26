@@ -32,31 +32,54 @@ const DIRECTION_TAG: Record<Direction, Uint8Array> = {
 };
 
 /**
- * TypeScript 5.7 made `Uint8Array` generic over its backing buffer, so a plain
- * `Uint8Array` no longer satisfies `BufferSource` (which insists on
- * `ArrayBuffer`, not `SharedArrayBuffer`). Nothing here is ever backed by
- * shared memory; this narrows the type without copying.
+ * WebCrypto, typed structurally instead of via the DOM lib.
+ *
+ * This package is imported by the browser, the CLI and the broker, and the
+ * node-targeted tsconfigs deliberately omit `lib.dom`. Declaring just the
+ * slice we use keeps @repo/crypto compilable from all of them rather than
+ * forcing every consumer to widen its `lib` for three type names.
  */
-function asBufferSource(bytes: Uint8Array): BufferSource {
-  return bytes as unknown as BufferSource;
-}
+declare const AES_KEY: unique symbol;
+type OpaqueKey = { readonly [AES_KEY]: true };
 
-function subtle(): SubtleCrypto {
-  const c = globalThis.crypto;
+type GcmParams = { name: "AES-GCM"; iv: Uint8Array; tagLength: number };
+
+type SubtleLike = {
+  importKey(
+    format: "raw",
+    keyData: Uint8Array,
+    algorithm: "AES-GCM",
+    extractable: boolean,
+    usages: string[],
+  ): Promise<OpaqueKey>;
+  encrypt(
+    algorithm: GcmParams,
+    key: OpaqueKey,
+    data: Uint8Array,
+  ): Promise<ArrayBuffer>;
+  decrypt(
+    algorithm: GcmParams,
+    key: OpaqueKey,
+    data: Uint8Array,
+  ): Promise<ArrayBuffer>;
+};
+
+function subtle(): SubtleLike {
+  const c = (globalThis as { crypto?: { subtle?: unknown } }).crypto;
   if (!c?.subtle) {
     throw new Error(
       "WebCrypto is unavailable. Sealed frames need globalThis.crypto.subtle " +
         "(browsers, or Node 22+).",
     );
   }
-  return c.subtle;
+  return c.subtle as SubtleLike;
 }
 
-async function importKey(raw: Uint8Array): Promise<CryptoKey> {
+async function importKey(raw: Uint8Array): Promise<OpaqueKey> {
   if (raw.length !== 32) {
     throw new Error("Sealed frames need a 32-byte AES-256 key");
   }
-  return subtle().importKey("raw", asBufferSource(raw), "AES-GCM", false, [
+  return subtle().importKey("raw", raw, "AES-GCM", false, [
     "encrypt",
     "decrypt",
   ]);
@@ -77,7 +100,7 @@ function readCounter(frame: Uint8Array): bigint {
 
 /** Encrypts outbound frames on one direction of a connection. */
 export class FrameSealer {
-  #key: Promise<CryptoKey>;
+  #key: Promise<OpaqueKey>;
   #counter = 0n;
 
   constructor(
@@ -101,11 +124,11 @@ export class FrameSealer {
       await subtle().encrypt(
         {
           name: "AES-GCM",
-          iv: asBufferSource(nonceFor(this.direction, counter)),
+          iv: nonceFor(this.direction, counter),
           tagLength: TAG_BITS,
         },
         await this.#key,
-        asBufferSource(plaintext),
+        plaintext,
       ),
     );
 
@@ -118,7 +141,7 @@ export class FrameSealer {
 
 /** Decrypts inbound frames on one direction, enforcing replay protection. */
 export class FrameOpener {
-  #key: Promise<CryptoKey>;
+  #key: Promise<OpaqueKey>;
   #highest: bigint | null = null;
 
   constructor(
@@ -149,11 +172,11 @@ export class FrameOpener {
       opened = await subtle().decrypt(
         {
           name: "AES-GCM",
-          iv: asBufferSource(nonceFor(this.direction, counter)),
+          iv: nonceFor(this.direction, counter),
           tagLength: TAG_BITS,
         },
         await this.#key,
-        asBufferSource(frame.subarray(COUNTER_BYTES)),
+        frame.subarray(COUNTER_BYTES),
       );
     } catch {
       // Deliberately opaque: a tampered frame and a wrong key are the same
