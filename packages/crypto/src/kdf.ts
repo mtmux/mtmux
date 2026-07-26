@@ -2,7 +2,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
-import { bytesToHex, constantTimeEqual } from "./bytes.js";
+import { bytesToHex, constantTimeEqual } from "./bytes";
 
 /**
  * The key schedule hanging off a completed CPace run.

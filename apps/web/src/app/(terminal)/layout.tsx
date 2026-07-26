@@ -29,6 +29,13 @@ import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { useMobileHistory } from "@/hooks/use-mobile-history";
 import { resolveRelayWsUrl } from "@/lib/relay-url";
+import {
+  loadDescriptor,
+  loadSessionKeys,
+  serverIdFor,
+} from "@/lib/session-store";
+import { sealedTransport, type TransportFactory } from "@/lib/transport";
+import { env } from "@/env";
 import { Terminal } from "lucide-react";
 
 export default function TerminalLayout({
@@ -38,6 +45,9 @@ export default function TerminalLayout({
 }) {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
+  // Set only for a session paired through the broker that fell back to the
+  // tunnel; the direct path uses a plain socket like everything else.
+  const [transport, setTransport] = useState<TransportFactory | undefined>();
   const { mobileTab, setMobileTab } = useUiStore();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const isMobile = useStableMediaQuery("(max-width: 768px)");
@@ -46,14 +56,43 @@ export default function TerminalLayout({
 
   useMobileHistory();
 
-  // Auth guard - check token on mount
+  // Auth guard. Two accepted credentials:
+  //
+  //   1. localStorage["ccremote-token"] — the self-hosted path, unchanged.
+  //   2. A session paired through the broker, whose keys live in IndexedDB
+  //      rather than localStorage so an XSS cannot read them. The relay is
+  //      authenticated with the direct-path token both sides derived, so no
+  //      long-lived secret was ever sent to this device.
   useEffect(() => {
     const storedToken = localStorage.getItem("ccremote-token");
-    if (!storedToken) {
+    if (storedToken) {
+      setToken(storedToken);
+      return;
+    }
+
+    const session = loadDescriptor();
+    if (!session) {
       router.push("/login");
       return;
     }
-    setToken(storedToken);
+
+    let cancelled = false;
+    void loadSessionKeys(serverIdFor(session.descriptor)).then((keys) => {
+      if (cancelled) return;
+      if (!keys) {
+        router.push("/login");
+        return;
+      }
+      setToken(keys.directToken);
+      if (!session.preferredCandidate && env.NEXT_PUBLIC_API_URL) {
+        // No direct candidate won, so everything rides the sealed tunnel.
+        const url = `${env.NEXT_PUBLIC_API_URL.replace(/^http/, "ws")}/v1/tunnel/${session.descriptor.tunnelId}`;
+        setTransport(() => sealedTransport({ url, keys }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   // Auto-restore last session
@@ -100,7 +139,11 @@ export default function TerminalLayout({
     }
   }, []);
 
-  const { send } = useWebSocket(token ? resolveRelayWsUrl() : "", token ?? "");
+  const { send } = useWebSocket(
+    token ? resolveRelayWsUrl() : "",
+    token ?? "",
+    transport,
+  );
 
   if (!token) {
     return null; // Redirecting to login

@@ -10,7 +10,7 @@ import {
   isValidSecret,
   SECRET_COUNT,
   SLOT_COUNT,
-} from "./pairing-code.js";
+} from "./pairing-code";
 
 describe("code generation", () => {
   it("always produces exactly four secret digits, zeros included", () => {

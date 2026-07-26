@@ -3,13 +3,10 @@ import { redeemLocalPairingNonce, PAIR_LOCAL_PATH } from "./local-pairing";
 
 type FetchCall = { url: string; init: RequestInit };
 
-function stubFetch(
-  reply: { status: number; body?: unknown } | (() => never),
-): FetchCall[] {
+function stubFetch(reply: { status: number; body?: unknown }): FetchCall[] {
   const calls: FetchCall[] = [];
   vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
     calls.push({ url, init });
-    if (typeof reply === "function") reply();
     return Promise.resolve({
       ok: reply.status >= 200 && reply.status < 300,
       status: reply.status,

@@ -4,5 +4,9 @@
 
 export { createWsServerNoBind, attachUpgrade } from "./ws-server.js";
 export { wireConnections } from "./wire-connections.js";
-export { handleRelayRequest, PAIR_LOCAL_PATH } from "./server.js";
+export {
+  handleRelayRequest,
+  PAIR_LOCAL_PATH,
+  PAIR_SESSION_PATH,
+} from "./server.js";
 export { issuePairingNonce, onPairingRedeemed } from "./pairing-local.js";

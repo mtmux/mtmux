@@ -9,6 +9,8 @@ import * as tmux from "./tmux-manager.js";
 import * as files from "./file-service.js";
 import { config } from "./config.js";
 
+const SERVER_VERSION = "1.0.0";
+
 const logger = createLogger("relay:router");
 
 // Output backpressure thresholds. If the socket's send buffer grows past the
@@ -788,7 +790,13 @@ export async function routeMessage(
       }
 
       case "auth":
-        // Auth is handled before routing
+        // Auth normally happens before routing, so reaching here means the
+        // connection is already authenticated. That is the ordinary case on
+        // the tunnel path: the CLI's agent authenticates the loopback socket
+        // with the machine's own token, and the browser's own `auth` frame
+        // then arrives second. Acknowledge it so the client's state machine
+        // advances instead of stalling on a reply that never comes.
+        sendJson(ws, { type: "auth:success", serverVersion: SERVER_VERSION });
         break;
 
       default: {

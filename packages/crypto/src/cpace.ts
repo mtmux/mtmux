@@ -1,7 +1,7 @@
 import { sha512 } from "@noble/hashes/sha2.js";
 import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { ristretto255, ristretto255_hasher } from "@noble/curves/ed25519.js";
-import { lvCat, prependLen, randomBytes } from "./bytes.js";
+import { lvCat, prependLen, randomBytes } from "./bytes";
 
 /**
  * CPace — balanced PAKE, ciphersuite CPACE-RISTR255-SHA512.

@@ -1,4 +1,4 @@
-import { randomBytes } from "./bytes.js";
+import { randomBytes } from "./bytes";
 
 /**
  * The six digits the user reads off their phone and types into the CLI.

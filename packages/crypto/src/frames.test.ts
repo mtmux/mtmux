@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { FrameSealer, FrameOpener, createFramePair } from "./frames.js";
-import { randomBytes, utf8ToBytes, bytesToHex } from "./bytes.js";
+import { FrameSealer, FrameOpener, createFramePair } from "./frames";
+import { randomBytes, utf8ToBytes, bytesToHex } from "./bytes";
 
 const KEY = new Uint8Array(32).fill(7);
 const OTHER_KEY = new Uint8Array(32).fill(9);

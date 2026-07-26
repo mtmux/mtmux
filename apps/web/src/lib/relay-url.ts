@@ -1,4 +1,5 @@
 import { env } from "@/env";
+import { loadDescriptor } from "@/lib/session-store";
 
 const RELAY_PATH = "/_relay";
 
@@ -20,14 +21,49 @@ const RELAY_PATH = "/_relay";
  * never-connect placeholder for SSR/prerender.
  */
 export function resolveRelayWsUrl(): string {
+  // Third branch, ahead of the other two: a hosted pairing established in this
+  // tab wins, because the relay it points at is not this origin at all. The
+  // two branches below are untouched, so split-mode and self-hosting behave
+  // byte-for-byte as before.
+  const paired = pairedRelayUrl();
+  if (paired) return paired;
+
   if (env.NEXT_PUBLIC_RELAY_URL) return env.NEXT_PUBLIC_RELAY_URL;
   if (typeof window === "undefined") return "";
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}${RELAY_PATH}`;
 }
 
+/**
+ * The relay URL for a session paired through the broker, or null.
+ *
+ * Returns the candidate that won the direct race if there is one, and
+ * otherwise the tunnel. Both are only reachable with the session keys held in
+ * IndexedDB, so a descriptor on its own grants nothing.
+ */
+export function pairedRelayUrl(): string | null {
+  const session = loadDescriptor();
+  if (!session) return null;
+
+  if (session.preferredCandidate) {
+    return `${session.preferredCandidate.replace(/^http/, "ws")}${RELAY_PATH}`;
+  }
+
+  const apiBase = env.NEXT_PUBLIC_API_URL;
+  if (!apiBase) return null;
+  return `${apiBase.replace(/^http/, "ws")}/v1/tunnel/${session.descriptor.tunnelId}`;
+}
+
+/** True when this tab is driving a relay reached through hosted pairing. */
+export function isPairedSession(): boolean {
+  return loadDescriptor() !== null;
+}
+
 /** HTTP base for `/file?...` requests (same-origin in single-port mode). */
 export function resolveRelayHttpBase(): string {
+  const session = loadDescriptor();
+  if (session?.preferredCandidate) return session.preferredCandidate;
+
   if (env.NEXT_PUBLIC_RELAY_URL) {
     return env.NEXT_PUBLIC_RELAY_URL.replace(/^ws:/, "http:").replace(
       /^wss:/,

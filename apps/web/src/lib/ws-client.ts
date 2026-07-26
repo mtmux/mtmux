@@ -4,6 +4,11 @@ import {
   type ClientMessage,
   type ServerMessage,
 } from "@repo/protocol";
+import {
+  directTransport,
+  type Transport,
+  type TransportFactory,
+} from "./transport";
 
 type MessageHandler = (msg: ServerMessage) => void;
 type StatusHandler = (
@@ -11,8 +16,15 @@ type StatusHandler = (
 ) => void;
 
 interface RelayClientOptions {
-  url: string;
+  /** Ignored when `transport` is supplied. */
+  url?: string;
   token: string;
+  /**
+   * How to reach the relay. Defaults to a plain WebSocket at `url`, which is
+   * the self-hosted and single-port path and is unchanged by the seam. The
+   * hosted tunnel supplies a SealedTransport instead.
+   */
+  transport?: TransportFactory;
   onMessage?: MessageHandler;
   onStatusChange?: StatusHandler;
   onMessageDropped?: (droppedCount: number) => void;
@@ -50,8 +62,8 @@ function shouldQueue(msg: ClientMessage): boolean {
 }
 
 export class RelayClient {
-  private ws: WebSocket | null = null;
-  private url: string;
+  private transport: Transport | null = null;
+  private readonly makeTransport: TransportFactory;
   private token: string;
   private messageHandlers: Set<MessageHandler> = new Set();
   private statusHandlers: Set<StatusHandler> = new Set();
@@ -70,11 +82,16 @@ export class RelayClient {
   private lastPongAt = 0;
   // #12: Queue messages while disconnected
   private pendingMessages: ClientMessage[] = [];
+  /** True between connect() and either auth:success or a close. */
+  private connecting = false;
   private onMessageDroppedHandler: ((droppedCount: number) => void) | null =
     null;
 
   constructor(options: RelayClientOptions) {
-    this.url = options.url;
+    if (!options.transport && !options.url) {
+      throw new Error("RelayClient needs either a url or a transport");
+    }
+    this.makeTransport = options.transport ?? directTransport(options.url!);
     this.token = options.token;
     if (options.onMessage) this.messageHandlers.add(options.onMessage);
     if (options.onStatusChange) this.statusHandlers.add(options.onStatusChange);
@@ -110,99 +127,91 @@ export class RelayClient {
       this.reconnectTimer = null;
     }
 
-    // Guard: if a socket is already connecting or open, don't open another.
+    // Guard: if a transport is already connecting or open, don't open another.
     // This makes concurrent connect() calls idempotent.
-    if (
-      this.ws &&
-      (this.ws.readyState === WebSocket.CONNECTING ||
-        this.ws.readyState === WebSocket.OPEN)
-    ) {
-      return;
-    }
+    if (this.connecting) return;
 
-    // Tear down any previous (closing/closed) socket so its stale handlers —
-    // especially onclose — can't schedule another reconnect against us or
+    // Tear down any previous (closing/closed) transport so its stale handlers —
+    // especially onClose — can't schedule another reconnect against us or
     // deliver messages onto the new connection.
-    if (this.ws) {
-      this.teardownSocket(this.ws);
-      this.ws = null;
+    if (this.transport) {
+      this.transport.close();
+      this.transport = null;
     }
 
     this.intentionalClose = false;
+    this.connecting = true;
     this.setStatus(this._reconnectCount > 0 ? "reconnecting" : "connecting");
 
-    try {
-      this.ws = new WebSocket(this.url);
-    } catch {
-      this.scheduleReconnect();
-      return;
+    const transport = this.makeTransport();
+    this.transport = transport;
+
+    transport.connect({
+      onOpen: () => {
+        // Send auth immediately.
+        this.sendRaw(serialize({ type: "auth", token: this.token }));
+      },
+      onMessage: (data) => this.handleMessage(data),
+      onClose: () => {
+        this.connecting = false;
+        this.stopPing();
+        if (!this.intentionalClose) {
+          this.setStatus("reconnecting");
+          this.scheduleReconnect();
+        } else {
+          this.setStatus("disconnected");
+        }
+      },
+    });
+  }
+
+  private handleMessage(data: string): void {
+    const result = tryDeserializeServerMessage(data);
+    if (!result.ok) return;
+
+    const msg = result.message;
+
+    if (msg.type === "auth:success") {
+      this.connecting = false;
+      this.setStatus("connected");
+      this.reconnectDelay = MIN_RECONNECT_DELAY;
+      this._reconnectCount = 0;
+      this.startPing();
+      this.flushPendingMessages();
     }
 
-    this.ws.onopen = () => {
-      // Send auth message immediately
-      this.sendRaw(serialize({ type: "auth", token: this.token }));
-    };
+    if (msg.type === "auth:failure") {
+      this.intentionalClose = true;
+      this.connecting = false;
+      this.transport?.close();
+      this.transport = null;
+      this.setStatus("disconnected");
+    }
 
-    this.ws.onmessage = (event) => {
-      const result = tryDeserializeServerMessage(event.data as string);
-      if (!result.ok) return;
+    if (msg.type === "pong") {
+      this._latency = Date.now() - msg.timestamp;
+      this.lastPongAt = Date.now();
+    }
 
-      const msg = result.message;
-
-      if (msg.type === "auth:success") {
-        this.setStatus("connected");
-        this.reconnectDelay = MIN_RECONNECT_DELAY;
-        this._reconnectCount = 0;
-        this.startPing();
-        this.flushPendingMessages();
-      }
-
-      if (msg.type === "auth:failure") {
-        this.intentionalClose = true;
-        this.ws?.close();
-        this.setStatus("disconnected");
-      }
-
-      if (msg.type === "pong") {
-        this._latency = Date.now() - msg.timestamp;
-        this.lastPongAt = Date.now();
-      }
-
-      for (const handler of this.messageHandlers) {
-        handler(msg);
-      }
-    };
-
-    this.ws.onclose = () => {
-      this.stopPing();
-      if (!this.intentionalClose) {
-        this.setStatus("reconnecting");
-        this.scheduleReconnect();
-      } else {
-        this.setStatus("disconnected");
-      }
-    };
-
-    this.ws.onerror = () => {
-      // onclose will fire after onerror
-    };
+    for (const handler of this.messageHandlers) {
+      handler(msg);
+    }
   }
 
   disconnect(): void {
     this.intentionalClose = true;
+    this.connecting = false;
     this.stopPing();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.ws) {
-      // Detach handlers before dropping the reference. Merely calling close()
-      // leaves an orphaned socket whose late onclose still runs and re-emits a
-      // status — enough to knock a freshly reconnected client back to
-      // "reconnecting", after which send() silently queues forever.
-      this.teardownSocket(this.ws);
-      this.ws = null;
-    }
+    // Transports detach their handlers on close. Merely closing the underlying
+    // socket would leave an orphan whose late onClose still runs and re-emits a
+    // status — enough to knock a freshly reconnected client back to
+    // "reconnecting", after which send() silently queues forever.
+    this.transport?.close();
+    this.transport = null;
     this.setStatus("disconnected");
   }
 
@@ -210,11 +219,8 @@ export class RelayClient {
     // Only send once the relay has confirmed auth (status === "connected").
     // The WS readyState becomes OPEN at handshake — before auth:success — so
     // sending here would race the auth handler and get dropped by the relay.
-    if (
-      this.ws?.readyState === WebSocket.OPEN &&
-      this._status === "connected"
-    ) {
-      this.ws.send(serialize(msg));
+    if (this.transport?.isOpen && this._status === "connected") {
+      this.transport.send(serialize(msg));
       return;
     }
     if (!shouldQueue(msg)) return;
@@ -238,27 +244,8 @@ export class RelayClient {
     return () => this.statusHandlers.delete(handler);
   }
 
-  /**
-   * Detach all handlers from a socket and close it. Detaching first ensures
-   * an orphaned socket's onclose can't schedule another reconnect, and its
-   * onmessage can't leak messages onto a freshly created connection.
-   */
-  private teardownSocket(ws: WebSocket): void {
-    ws.onopen = null;
-    ws.onmessage = null;
-    ws.onclose = null;
-    ws.onerror = null;
-    try {
-      ws.close();
-    } catch {
-      // ignore — socket may already be closing/closed
-    }
-  }
-
   private sendRaw(data: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(data);
-    }
+    this.transport?.send(data);
   }
 
   private scheduleReconnect(): void {
@@ -284,16 +271,30 @@ export class RelayClient {
     this.pingTimer = setInterval(() => {
       // #15: Zombie detection — if missed 2+ pongs (>25s), force reconnect
       if (this.lastPongAt && Date.now() - this.lastPongAt > 25000) {
-        this.ws?.close();
+        this.dropConnection();
         return;
       }
       // Close if send buffer is backed up (>1MB)
-      if (this.ws && this.ws.bufferedAmount > 1_048_576) {
-        this.ws.close();
+      if (this.transport && this.transport.bufferedAmount > 1_048_576) {
+        this.dropConnection();
         return;
       }
       this.send({ type: "ping", timestamp: Date.now() });
     }, 10000);
+  }
+
+  /**
+   * Kill the current connection so the reconnect path picks it up. The
+   * transport detaches its own handlers, so this synthesises the close the
+   * client would otherwise wait for.
+   */
+  private dropConnection(): void {
+    this.transport?.close();
+    this.transport = null;
+    this.connecting = false;
+    this.stopPing();
+    this.setStatus("reconnecting");
+    this.scheduleReconnect();
   }
 
   private stopPing(): void {

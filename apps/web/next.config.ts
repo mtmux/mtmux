@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   // tab — the app is unusable on mobile in dev. Dev-only surface, so turning it
   // off costs nothing and makes `pnpm dev` honest about the mobile layout.
   devIndicators: false,
-  transpilePackages: ["@repo/ui", "@repo/protocol"],
+  transpilePackages: ["@repo/ui", "@repo/protocol", "@repo/crypto"],
   serverExternalPackages: ["pino", "pino-pretty"],
   // Monaco's codicon.ttf used to need an explicit webpack `asset/resource`
   // rule. Turbopack — the default bundler since Next 16 — already emits

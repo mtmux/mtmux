@@ -47,6 +47,37 @@ export function deviceLabel(): string {
   return `${user}@${os.hostname()}`;
 }
 
+/**
+ * Hand the derived direct-path token to the running relay.
+ *
+ * `mtmux pair` is a separate process from `mtmux start`, so the key it just
+ * negotiated is not in the server's memory. This is the only channel between
+ * them, and it is loopback-only and authenticated with the machine's own token.
+ *
+ * A failure here is not fatal: the tunnel path does not need it, so the session
+ * still works — just always via the relay.
+ */
+export async function registerDirectToken(
+  port: number,
+  authToken: string,
+  directToken: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/_pair/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ token: directToken }),
+      signal: AbortSignal.timeout(3000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function localServerIsUp(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
@@ -150,6 +181,11 @@ export async function pair(opts: PairOpts): Promise<void> {
       }),
       seal: sealDescriptor,
     });
+
+    // Teach the local relay the direct-path token both sides derived, so a
+    // browser that wins the candidate race can authenticate without ever being
+    // sent the machine's 64-hex AUTH_TOKEN.
+    await registerDirectToken(opts.port, config.token, result.keys.directToken);
 
     await configStore.addPeer({
       deviceId: result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,

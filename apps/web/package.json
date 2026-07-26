@@ -14,6 +14,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@repo/config": "workspace:*",
+    "@repo/crypto": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/protocol": "workspace:*",
     "@repo/ui": "workspace:*",

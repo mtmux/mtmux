@@ -254,6 +254,9 @@ importers:
       "@repo/config":
         specifier: workspace:*
         version: link:../../packages/config
+      "@repo/crypto":
+        specifier: workspace:*
+        version: link:../../packages/crypto
       "@repo/logger":
         specifier: workspace:*
         version: link:../../packages/logger

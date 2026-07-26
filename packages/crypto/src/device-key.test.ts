@@ -8,8 +8,8 @@ import {
   encodeDeviceKey,
   decodeDeviceKey,
   CHALLENGE_BYTES,
-} from "./device-key.js";
-import { bytesToHex, randomBytes } from "./bytes.js";
+} from "./device-key";
+import { bytesToHex, randomBytes } from "./bytes";
 
 describe("device keys", () => {
   it("generates a 32-byte keypair with a stable 16-hex id", () => {

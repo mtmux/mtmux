@@ -7,7 +7,11 @@ import { config } from "./config.js";
 import { isPathAllowed } from "./file-service.js";
 import { getMimeType } from "./mime.js";
 import { timingSafeEqualToken } from "./auth.js";
-import { redeemPairingNonce } from "./pairing-local.js";
+import {
+  redeemPairingNonce,
+  registerSessionToken,
+  isValidSessionToken,
+} from "./pairing-local.js";
 
 const logger = createLogger("relay:http");
 
@@ -87,6 +91,70 @@ async function handleLocalPairing(
   return true;
 }
 
+/**
+ * Registers a session token derived by `mtmux pair` in another process.
+ *
+ * Loopback-only and authenticated with the machine's own AUTH_TOKEN, because
+ * the caller is the CLI on this host. This is what lets the browser
+ * authenticate on the *direct* path using a token both sides computed from the
+ * pairing key — so the 64-hex AUTH_TOKEN never has to be sent to the device.
+ */
+export const PAIR_SESSION_PATH = "/_pair/session";
+
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+async function handleSessionRegistration(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<boolean> {
+  if (req.method !== "POST") {
+    res.writeHead(405, { Allow: "POST" });
+    res.end("Method not allowed");
+    return true;
+  }
+
+  // Even with the token, refuse this from off-box: it mints credentials.
+  const peer = req.socket.remoteAddress ?? "";
+  if (!LOOPBACK_ADDRESSES.has(peer)) {
+    res.writeHead(403);
+    res.end("Loopback only");
+    return true;
+  }
+
+  const auth = req.headers.authorization;
+  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!bearer || !timingSafeEqualToken(bearer, config.authToken)) {
+    res.writeHead(401);
+    res.end("Unauthorized");
+    return true;
+  }
+
+  const raw = await readBody(req);
+  let body: { token?: unknown; ttlMs?: unknown } = {};
+  try {
+    body = raw ? (JSON.parse(raw) as typeof body) : {};
+  } catch {
+    body = {};
+  }
+
+  if (typeof body.token !== "string" || body.token.length < 32) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing token" }));
+    return true;
+  }
+
+  const ttlMs =
+    typeof body.ttlMs === "number" && body.ttlMs > 0 ? body.ttlMs : undefined;
+  const session = registerSessionToken(body.token, ttlMs);
+  logger.info("Session token registered for a paired device");
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify({ expiresAt: session.expiresAt }));
+  return true;
+}
+
 // Matches HTTP header-unsafe characters (C0 controls, DEL, double-quote,
 // backslash) used to sanitize the Content-Disposition ASCII filename fallback.
 // eslint-disable-next-line no-control-regex
@@ -124,6 +192,10 @@ export async function handleRelayRequest(
     return handleLocalPairing(req, res);
   }
 
+  if (req.url === PAIR_SESSION_PATH) {
+    return handleSessionRegistration(req, res);
+  }
+
   if (req.url?.startsWith("/file?") && req.method === "GET") {
     // Echo the request Origin only when allow-listed (never a blanket `*`).
     if (origin && config.corsOrigins.includes(origin)) {
@@ -146,7 +218,13 @@ export async function handleRelayRequest(
     const token = bearerToken ?? url.searchParams.get("token");
     const download = url.searchParams.get("download") === "1";
 
-    if (!token || !timingSafeEqualToken(token, config.authToken)) {
+    // Either the long-lived token or a scoped session token from pairing —
+    // otherwise a paired device could read the terminal but not open a file.
+    const tokenOk =
+      token !== null &&
+      (timingSafeEqualToken(token, config.authToken) ||
+        isValidSessionToken(token));
+    if (!tokenOk) {
       res.writeHead(401);
       res.end("Unauthorized");
       return true;

@@ -1,10 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  deriveSessionKeys,
-  confirmationTag,
-  verifyConfirmation,
-} from "./kdf.js";
-import { bytesToHex, randomBytes, utf8ToBytes } from "./bytes.js";
+import { deriveSessionKeys, confirmationTag, verifyConfirmation } from "./kdf";
+import { bytesToHex, randomBytes, utf8ToBytes } from "./bytes";
 
 const ISK = new Uint8Array(64).fill(3);
 const TRANSCRIPT = utf8ToBytes("transcript");

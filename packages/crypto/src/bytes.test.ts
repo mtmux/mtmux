@@ -10,7 +10,7 @@ import {
   hexToBytes,
   randomBytes,
   wipe,
-} from "./bytes.js";
+} from "./bytes";
 
 describe("leb128", () => {
   it("encodes small values in a single byte", () => {

@@ -11,8 +11,8 @@ import {
   iskInitiatorResponder,
   cpaceStart,
   SCALAR_BYTES,
-} from "./cpace.js";
-import { bytesToHex, hexToBytes, utf8ToBytes, randomBytes } from "./bytes.js";
+} from "./cpace";
+import { bytesToHex, hexToBytes, utf8ToBytes, randomBytes } from "./bytes";
 
 /**
  * Vectors from draft-irtf-cfrg-cpace-13, Appendix B.3 (CPACE-RISTR255-SHA512).

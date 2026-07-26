@@ -104,6 +104,26 @@ export function issueSessionToken(
   return { token, expiresAt };
 }
 
+/**
+ * Accept a session token derived elsewhere.
+ *
+ * `mtmux pair` runs in its own process, so the key it derives with the browser
+ * is not in this one's memory. After a successful pairing it posts the derived
+ * direct-path token here (over loopback, authenticated with AUTH_TOKEN) so the
+ * browser can authenticate on the direct path without the long-lived token
+ * ever being sent to it.
+ */
+export function registerSessionToken(
+  token: string,
+  ttlMs: number = SESSION_TTL_MS,
+  now: number = Date.now(),
+): SessionToken {
+  prune(sessions, now);
+  const expiresAt = now + ttlMs;
+  sessions.set(digest(token), { expiresAt });
+  return { token, expiresAt };
+}
+
 export function isValidSessionToken(
   token: string,
   now: number = Date.now(),

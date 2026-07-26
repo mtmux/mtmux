@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from "react";
 import type { DependencyList } from "react";
 import type { ClientMessage, ServerMessage } from "@repo/protocol";
 import { RelayClient } from "@/lib/ws-client";
+import type { TransportFactory } from "@/lib/transport";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { usePaneStore } from "@/stores/pane-store";
@@ -53,7 +54,16 @@ export function useRelayClient(): RelayClient | null {
   return getRelayClient();
 }
 
-export function useWebSocket(url: string, token: string) {
+/**
+ * @param transport Optional socket seam. Omitted for the direct and
+ * self-hosted paths, which use a plain WebSocket at `url`; supplied by the
+ * terminal layout when a paired session fell back to the sealed tunnel.
+ */
+export function useWebSocket(
+  url: string,
+  token: string,
+  transport?: TransportFactory,
+) {
   const clientRef = useRef<RelayClient | null>(null);
 
   useEffect(() => {
@@ -182,6 +192,7 @@ export function useWebSocket(url: string, token: string) {
     const client = new RelayClient({
       url,
       token,
+      transport,
       onMessage: handleMessage,
       onMessageDropped: (count) => {
         useAlertStore
@@ -231,7 +242,7 @@ export function useWebSocket(url: string, token: string) {
       client.disconnect();
       globalClient = null;
     };
-  }, [url, token]);
+  }, [url, token, transport]);
 
   const send = useCallback((msg: ClientMessage) => {
     clientRef.current?.send(msg);
