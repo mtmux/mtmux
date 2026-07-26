@@ -7,8 +7,85 @@ import { config } from "./config.js";
 import { isPathAllowed } from "./file-service.js";
 import { getMimeType } from "./mime.js";
 import { timingSafeEqualToken } from "./auth.js";
+import { redeemPairingNonce } from "./pairing-local.js";
 
 const logger = createLogger("relay:http");
+
+/**
+ * Redeems the one-time nonce from the startup QR for a scoped session token.
+ *
+ * POST rather than the more obvious `GET /_pair/local?n=…`: a query string ends
+ * up in access logs, shell history and `Referer` headers, and this one carries
+ * a live credential. The body does not.
+ */
+export const PAIR_LOCAL_PATH = "/_pair/local";
+
+const MAX_PAIR_BODY_BYTES = 1024;
+
+function readBody(req: http.IncomingMessage): Promise<string | null> {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_PAIR_BODY_BYTES) {
+        resolve(null);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", () => resolve(null));
+  });
+}
+
+async function handleLocalPairing(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<boolean> {
+  if (req.method !== "POST") {
+    res.writeHead(405, { Allow: "POST" });
+    res.end("Method not allowed");
+    return true;
+  }
+
+  const raw = await readBody(req);
+  let nonce: unknown;
+  try {
+    nonce = raw ? (JSON.parse(raw) as { nonce?: unknown }).nonce : undefined;
+  } catch {
+    nonce = undefined;
+  }
+
+  if (typeof nonce !== "string" || nonce.length === 0) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing nonce" }));
+    return true;
+  }
+
+  const session = redeemPairingNonce(nonce);
+  if (!session) {
+    // Deliberately vague and deliberately unlogged — no nonce material, and no
+    // signal about whether this code never existed or was already spent.
+    logger.warn("Local pairing rejected");
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({ error: "Pairing code is invalid or already used" }),
+    );
+    return true;
+  }
+
+  logger.info("Local pairing succeeded — session token issued");
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  res.end(
+    JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
+  );
+  return true;
+}
 
 // Matches HTTP header-unsafe characters (C0 controls, DEL, double-quote,
 // backslash) used to sanitize the Content-Disposition ASCII filename fallback.
@@ -41,6 +118,10 @@ export async function handleRelayRequest(
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", uptime: process.uptime() }));
     return true;
+  }
+
+  if (req.url === PAIR_LOCAL_PATH) {
+    return handleLocalPairing(req, res);
   }
 
   if (req.url?.startsWith("/file?") && req.method === "GET") {

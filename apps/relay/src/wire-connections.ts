@@ -119,7 +119,7 @@ export function wireConnections(
           authTimer = null;
         }
 
-        const authResult = authenticateMessage(msg);
+        const authResult = authenticateMessage(msg, remoteAddress);
         if (!authResult.authenticated) {
           sendJson(ws, {
             type: "auth:failure",
