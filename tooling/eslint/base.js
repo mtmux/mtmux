@@ -15,12 +15,16 @@ export default [
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "warn",
-        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
       ],
       "@typescript-eslint/no-explicit-any": "warn",
     },
   },
   {
-    ignores: ["node_modules/", "dist/", ".next/", ".turbo/"],
+    ignores: ["node_modules/", "dist/", ".next/", ".next-cli/", ".turbo/"],
   },
 ];

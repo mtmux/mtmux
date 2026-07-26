@@ -2,6 +2,7 @@
   "pages": [
     "index",
     "getting-started",
+    "pairing",
     "self-hosting",
     "claude-code-remote",
     "architecture",

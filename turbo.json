@@ -3,7 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": [".next/**", "dist/**"]
+      "outputs": [".next/**", "dist/**", ".next-cli/**"]
     },
     "dev": {
       "cache": false,
@@ -23,6 +23,7 @@
     }
   },
   "globalEnv": [
+    "NEXT_DIST_DIR",
     "NODE_ENV",
     "NEXT_PUBLIC_*",
     "RELAY_PORT",

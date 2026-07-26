@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { cp, rm, mkdir, readdir } from "node:fs/promises";
+import { cp, rm, mkdir, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
 
@@ -45,12 +45,14 @@ console.log("→ build web (standalone)");
 // instead of the same-origin /_relay path the CLI serves. Strip it before
 // building, plus pass NODE_ENV=production explicitly so the env validation
 // is happy.
+const WEB_DIST = ".next-cli";
 run("pnpm --filter @app/web build", {
   cwd: REPO,
   env: {
     ...process.env,
     NEXT_PUBLIC_RELAY_URL: "",
     NODE_ENV: "production",
+    NEXT_DIST_DIR: WEB_DIST,
   },
 });
 
@@ -91,7 +93,7 @@ await build({
 });
 
 console.log("→ copy web standalone");
-const std = path.join(REPO, "apps/web/.next/standalone");
+const std = path.join(REPO, `apps/web/${WEB_DIST}/standalone`);
 if (!existsSync(std)) {
   throw new Error(
     `Next.js standalone output missing at ${std}. Ensure apps/web/next.config.ts has output: "standalone".`,
@@ -99,9 +101,16 @@ if (!existsSync(std)) {
 }
 await cp(std, path.join(ROOT, "dist/web"), { recursive: true });
 
+// The standalone tree carries the build-time distDir name. `start` boots Next
+// with `next({ dir })` and no config file, so Next looks for the default
+// `.next` — rename it rather than teaching the runtime about a build detail.
+const shippedDist = path.join(ROOT, "dist/web/apps/web/.next");
+await rm(shippedDist, { recursive: true, force: true });
+await rename(path.join(ROOT, `dist/web/apps/web/${WEB_DIST}`), shippedDist);
+
 await cp(
-  path.join(REPO, "apps/web/.next/static"),
-  path.join(ROOT, "dist/web/apps/web/.next/static"),
+  path.join(REPO, `apps/web/${WEB_DIST}/static`),
+  path.join(shippedDist, "static"),
   { recursive: true },
 );
 await cp(

@@ -16,6 +16,14 @@ export default [
   },
   {
     // Framework-generated files — not authored, so don't lint them.
-    ignores: ["next-env.d.ts", ".next/**", ".source/**", "out/**"],
+    // `.next-cli` is the CLI build's separate Next output directory; see
+    // apps/cli/scripts/build.mjs.
+    ignores: [
+      "next-env.d.ts",
+      ".next/**",
+      ".next-cli/**",
+      ".source/**",
+      "out/**",
+    ],
   },
 ];

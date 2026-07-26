@@ -1,0 +1,106 @@
+---
+title: Pairing a device
+description: Get a phone or laptop onto your tmux — on your network or over the internet
+---
+
+There are two ways to sign a second device in. Neither involves typing a
+64-character token.
+
+## On the same network
+
+`mtmux start` binds your LAN automatically whenever there is one, prints the
+address a phone can actually reach, and shows a QR code beside it:
+
+```
+  ›  mtmux  Your tmux, in any browser.   ▄▄▄▄▄▄▄ ▄▄  ▄ ▄▄▄▄▄▄▄
+                                         █ ▄▄▄ █ ▀▄▀▄█ █ ▄▄▄ █
+  On this machine                        █ ███ █ ▀ ▄▄▄ █ ███ █
+    http://localhost:14100               █▄▄▄▄▄█ █ ▀ █ █▄▄▄▄▄█
+
+  On your network  (wlp3s0)              ▄▄▄▄  ▄ ▄▀▀▄▀▄▄▄ ▄▄
+    http://192.168.1.5:14100             █ ▄█▀▄▄▀█▄ ▄▀ ▀▄█▄▀▄█
+
+  Scan the code to sign in — no token to type.
+```
+
+Scanning it opens `/login#n=<nonce>`. The nonce is in the URL _fragment_, so it
+is never sent to a server as part of the navigation and never lands in an
+access log; the page posts it to the relay and gets back a scoped session token
+that expires after 24 hours.
+
+The nonce is single-use. Once a device has signed in, mtmux mints a fresh one
+and reprints the code for the next device, so what is on screen is always live.
+Session tokens are held only in memory, so restarting the server signs every
+paired device out.
+
+`--host 127.0.0.1` still suppresses all of this and keeps the server on
+loopback.
+
+## Over the internet
+
+When the device is not on your network — cellular, a different office, someone
+else's wifi — use a six-digit code instead. No port forwarding, no certificates.
+
+1. Open <code>https://app.mtmux.com/pair</code> on the device. It shows six
+   digits.
+2. Run `mtmux pair 492716` on the machine running mtmux.
+
+That is the whole flow. The session then runs directly over your LAN if the
+device can reach it, and falls back to a relayed tunnel if it cannot — you
+don't choose, and the change is invisible.
+
+> **Why six digits are enough.** A wrong guess is online, one-shot and loud.
+> Each code may be claimed exactly once, and a failed attempt destroys it — the
+> page says so and offers a new one. An attacker gets a single 1-in-10,000 shot
+> per code they burn, and burning one is visible to you. This is the same
+> argument Bluetooth pairing and Magic Wormhole rest on.
+
+### What the pairing service can see
+
+`api.mtmux.com` is a blind broker. It routes on the first two digits and
+forwards opaque blobs; it cannot read a keystroke, and this is structural
+rather than a promise:
+
+- **The last four digits never reach it.** They are generated in your browser
+  and used as the password for a PAKE ([CPace](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/)).
+  The broker sees only group elements. It is not sent a hash either — 10⁴ is an
+  instant offline search.
+- **Traffic is sealed end to end.** Everything over the tunnel is AES-256-GCM
+  under keys derived from the PAKE. A tampered or replayed frame closes the
+  connection rather than being forwarded.
+- **Your token stays on your machine.** The browser is never told the relay's
+  long-lived `AUTH_TOKEN`. On the direct path both sides _derive_ a session
+  token from the pairing key; on the tunnel path the browser needs no token at
+  all, because the local agent authenticates the loopback socket itself.
+- **Nothing identifying is logged.** No blob, ciphertext, slot, mailbox id, or
+  address-to-pairing mapping.
+
+The two digits it does see are a routing slot, shared by many simultaneous
+pairings at once. A claim is offered to every pairing waiting on that slot, and
+only the one whose four digits match produces a key confirmation that verifies.
+Slots therefore never run out and reveal nothing.
+
+### Keeping the tunnel open
+
+`mtmux pair` stays in the foreground and holds the tunnel. Press Ctrl+C to end
+remote access; the local and LAN paths are unaffected.
+
+## Self-hosting
+
+None of this is required. `mtmux start` never contacts `api.mtmux.com`, and a
+machine with no route to it behaves exactly as it always has. If you want the
+hosted flow on your own infrastructure, run `apps/api` and point the CLI at it:
+
+```bash
+MTMUX_API_URL=https://api.example.com mtmux pair 492716
+```
+
+See [Self-hosting](/docs/self-hosting) for the broker's configuration and the
+nginx WebSocket block it needs.
+
+## Revoking a device
+
+Session tokens die with the server process, so restarting mtmux revokes every
+device it has paired. Rotating the auth token (`mtmux token rotate`)
+deliberately does _not_ — rotating a token should not un-pair every device you
+own.
