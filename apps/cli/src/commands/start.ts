@@ -8,13 +8,15 @@ import { primaryLanAddress, type LanAddress } from "../lan.js";
 import { checkTmux, checkNode } from "../preflight.js";
 import { serve, type RelayRuntime } from "../serve.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// The whole CLI is bundled into dist/bin.js, so this module's own directory IS
+// dist/ at runtime — not dist/commands/, which is where tsc used to put it.
+// The published layout puts the web standalone server at
+// dist/web/apps/web/server.js and the relay bundle at dist/relay/runtime.js.
+// See apps/cli/scripts/build.mjs.
+const DIST_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-// In the published package layout (dist/), the bundled web standalone server
-// is at dist/web/apps/web/server.js, and the relay runtime is bundled into a
-// single file at dist/relay/runtime.js. See apps/cli/scripts/build.mjs.
-const WEB_DIR = path.resolve(__dirname, "../web/apps/web");
-const RELAY_RUNTIME = path.resolve(__dirname, "../relay/runtime.js");
+const WEB_DIR = path.resolve(DIST_DIR, "web/apps/web");
+const RELAY_RUNTIME = path.resolve(DIST_DIR, "relay/runtime.js");
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 const WILDCARD = new Set(["0.0.0.0", "::"]);

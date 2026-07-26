@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { start } from "./commands/start.js";
+import { pair } from "./commands/pair.js";
 import { tokenPrint, tokenRotate, tokenSet } from "./commands/token.js";
 import { version } from "./commands/version.js";
 
@@ -40,6 +41,21 @@ program
       open: opts.open,
       allowedPaths: opts.allowedPaths,
     }),
+  );
+
+program
+  .command("pair")
+  .argument("[code]", "the six digits shown on the other device")
+  .description("Pair a device over the internet — no port forwarding")
+  .option(
+    "-p, --port <number>",
+    "port mtmux is serving on",
+    (v) => parseInt(v, 10),
+    14100,
+  )
+  .option("--api <url>", "pairing service base URL")
+  .action((code: string | undefined, opts: { port: number; api?: string }) =>
+    pair({ code, port: opts.port, api: opts.api }),
   );
 
 const token = program.command("token").description("Manage the auth token");

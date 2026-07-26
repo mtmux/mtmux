@@ -29,14 +29,7 @@ await build({
   // Externalize all real npm deps; the CLI's package.json declares them so
   // npm/pnpm install resolves them at the consumer site. Workspace
   // packages (@repo/*) are bundled inline.
-  external: [
-    "node-pty",
-    "ws",
-    "pino",
-    "pino-pretty",
-    "chokidar",
-    "zod",
-  ],
+  external: ["node-pty", "ws", "pino", "pino-pretty", "chokidar", "zod"],
   banner: {
     // Recreate require for ESM bundles that pull in CJS deps via shims.
     js: "import { createRequire as _ccrCreateRequire } from 'module'; const require = _ccrCreateRequire(import.meta.url);",
@@ -61,8 +54,41 @@ run("pnpm --filter @app/web build", {
   },
 });
 
-console.log("→ compile cli sources");
-run("tsc", { cwd: ROOT });
+console.log("→ typecheck cli sources");
+run("tsc --noEmit", { cwd: ROOT });
+
+console.log("→ bundle cli (esbuild)");
+// esbuild rather than tsc, because the CLI's own sources now import workspace
+// packages (@repo/crypto, @repo/protocol) that are published as raw TypeScript
+// and would not resolve from the installed package. Same rule as the relay
+// bundle above: @repo/* inlined, real npm deps left external and declared in
+// package.json. `import(RELAY_RUNTIME)` is a computed specifier, so esbuild
+// leaves it as a runtime dynamic import.
+await build({
+  entryPoints: [path.join(ROOT, "src/bin.ts")],
+  outfile: path.join(ROOT, "dist/bin.js"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  external: [
+    "next",
+    "node-pty",
+    "ws",
+    "pino",
+    "pino-pretty",
+    "chokidar",
+    "zod",
+    "commander",
+    "kleur",
+    "open",
+    "qrcode-terminal",
+  ],
+  banner: {
+    js: "import { createRequire as _mtmuxCreateRequire } from 'module'; const require = _mtmuxCreateRequire(import.meta.url);",
+  },
+  logLevel: "info",
+});
 
 console.log("→ copy web standalone");
 const std = path.join(REPO, "apps/web/.next/standalone");
@@ -88,10 +114,10 @@ console.log("→ prune build-only deps from dist/web/node_modules");
 // Next standalone copies its full build graph; trim what's not needed at runtime.
 // Each entry is a prefix matched against `.pnpm/<dirname>` entries.
 const PNPM_PRUNE_PREFIXES = [
-  "typescript@",         // ~8.8 MB compiler, not needed at runtime
-  "caniuse-lite@",       // ~2.5 MB build-time data
-  "@swc+",               // build-time transpiler
-  "postcss@",            // build-time
+  "typescript@", // ~8.8 MB compiler, not needed at runtime
+  "caniuse-lite@", // ~2.5 MB build-time data
+  "@swc+", // build-time transpiler
+  "postcss@", // build-time
   "source-map-support@", // dev-only stack mapping
 ];
 const pnpmDir = path.join(ROOT, "dist/web/node_modules/.pnpm");

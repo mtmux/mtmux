@@ -49,6 +49,8 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
+    "@repo/crypto": "workspace:*",
+    "@repo/protocol": "workspace:*",
     "chokidar": "^4",
     "commander": "^12.1.0",
     "kleur": "^4.1.5",
