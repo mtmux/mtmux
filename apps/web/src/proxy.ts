@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-export function middleware(_request: NextRequest) {
-  // Token is stored client-side in localStorage, which isn't available in middleware.
-  // Auth guard is handled on the client side via the layout component.
-  // Middleware is used for security headers.
+// Next.js 16 renamed the `middleware` file convention and named export to
+// `proxy`. Behaviour here is unchanged: this only sets security headers. The
+// auth guard stays client-side because the credential lives in localStorage /
+// IndexedDB, which a server-side proxy can't read.
+export function proxy(_request: NextRequest) {
   const response = NextResponse.next();
 
   // Derive relay HTTP origin for CSP (allows <img>, <video>, <audio>, <iframe> to load files).
@@ -27,5 +28,7 @@ export function middleware(_request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon-|manifest.json|sw.js).*)"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|icon-|manifest.json|sw.js).*)",
+  ],
 };
