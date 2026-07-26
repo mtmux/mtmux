@@ -45,6 +45,70 @@ function fetch(path) {
   });
 }
 
+function request(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : Buffer.from(body);
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port: PORT,
+        path,
+        method,
+        timeout: 3000,
+        headers: payload
+          ? {
+              "Content-Type": "application/json",
+              "Content-Length": payload.length,
+            }
+          : {},
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/** Open a socket, send one auth frame, resolve with the server's reply. */
+function tryAuth(token) {
+  return new Promise((resolve, reject) => {
+    import("ws").then(({ default: WS }) => {
+      const ws = new WS(`ws://127.0.0.1:${PORT}/_relay`, {
+        headers: {
+          Origin: `http://127.0.0.1:${PORT}`,
+          "User-Agent": "Mozilla/5.0 SmokeTest",
+        },
+      });
+      const t = setTimeout(() => {
+        ws.close();
+        reject(new Error("no auth reply within 4s"));
+      }, 4000);
+      ws.on("open", () => ws.send(JSON.stringify({ type: "auth", token })));
+      ws.on("message", (d) => {
+        clearTimeout(t);
+        const msg = JSON.parse(d.toString());
+        ws.close();
+        resolve(msg);
+      });
+      ws.on("error", (e) => {
+        clearTimeout(t);
+        reject(e);
+      });
+    }, reject);
+  });
+}
+
 function probeUpgrade(path) {
   return new Promise((resolve, reject) => {
     const req = http.request({
@@ -185,6 +249,44 @@ await check("WS auth survives a prior Next request", async () => {
       reject(e);
     });
   });
+});
+
+await check("/_pair/local rejects an unknown nonce", async () => {
+  const r = await request(
+    "POST",
+    "/_pair/local",
+    JSON.stringify({ nonce: "definitely-not-a-real-nonce" }),
+  );
+  if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`);
+  return r.status;
+});
+
+await check("/_pair/local rejects GET", async () => {
+  const r = await request("GET", "/_pair/local");
+  if (r.status !== 405) throw new Error(`expected 405, got ${r.status}`);
+  return r.status;
+});
+
+await check("/_pair/local rejects a malformed body", async () => {
+  const r = await request("POST", "/_pair/local", "{ not json");
+  if (r.status !== 400) throw new Error(`expected 400, got ${r.status}`);
+  return r.status;
+});
+
+// Runs last: it deliberately locks 127.0.0.1 out, so anything needing a
+// successful auth must already have happened.
+await check("failed auth locks the address out after five tries", async () => {
+  for (let i = 0; i < 5; i++) {
+    const reply = await tryAuth(`wrong-token-${i}`);
+    if (reply.type !== "auth:failure")
+      throw new Error(`attempt ${i}: expected auth:failure, got ${reply.type}`);
+  }
+  const sixth = await tryAuth("wrong-token-5");
+  if (sixth.type !== "auth:failure")
+    throw new Error(`expected auth:failure, got ${sixth.type}`);
+  if (!/Too many failed attempts/.test(sixth.reason ?? ""))
+    throw new Error(`expected a backoff message, got: ${sixth.reason}`);
+  return sixth.reason;
 });
 
 console.log("→ shutting down");

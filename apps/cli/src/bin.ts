@@ -23,7 +23,12 @@ program
   .command("start")
   .description("Start the mtmux server")
   .option("-p, --port <number>", "port", (v) => parseInt(v, 10), 14100)
-  .option("-h, --host <address>", "bind address", "127.0.0.1")
+  // No default: `start` picks 0.0.0.0 when there is a real LAN to serve and
+  // 127.0.0.1 otherwise. An explicit --host always wins.
+  .option(
+    "-h, --host <address>",
+    "bind address (default: 0.0.0.0 on a LAN, else 127.0.0.1)",
+  )
   .option("-t, --token <value>", "override the auth token for this run")
   .option("--allowed-paths <paths>", "comma-separated path allow-list")
   .option("--no-open", "don't open the browser")

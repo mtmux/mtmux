@@ -28,6 +28,10 @@ export type RelayRuntime = {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ) => Promise<boolean>;
+  /** Arms tokenless local pairing and returns the nonce for the QR. */
+  issuePairingNonce: (ttlMs?: number) => { nonce: string; expiresAt: number };
+  /** Fires when a device redeems the nonce, so the CLI can reprint a code. */
+  onPairingRedeemed: (listener: () => void) => () => void;
 };
 
 export type ServeOptions = {

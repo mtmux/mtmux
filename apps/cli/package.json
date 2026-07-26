@@ -43,31 +43,35 @@
     "token": "node dist/bin.js token",
     "help": "node dist/bin.js --help",
     "smoke": "node scripts/smoke.mjs",
-    "test": "pnpm build && pnpm smoke",
+    "test": "vitest run && pnpm build && pnpm smoke",
     "pack:dryrun": "npm pack --dry-run",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "pnpm build",
+    "test:unit": "vitest run"
   },
   "dependencies": {
-    "node-pty": "^1.1.0",
-    "ws": "^8.18.0",
+    "chokidar": "^4",
     "commander": "^12.1.0",
     "kleur": "^4.1.5",
-    "open": "^10.1.0",
     "next": "^16.2.12",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "node-pty": "^1.1.0",
+    "open": "^10.1.0",
     "pino": "^9",
     "pino-pretty": "^13",
-    "chokidar": "^4",
+    "qrcode-terminal": "^0.12.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "ws": "^8.18.0",
     "zod": "^3"
   },
   "devDependencies": {
     "@repo/tsconfig": "workspace:*",
     "@types/node": "^22.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.5.0",
     "esbuild": "^0.27.0",
     "tsx": "^4",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^2"
   },
   "publishConfig": {
     "access": "public"
