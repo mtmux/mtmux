@@ -20,6 +20,19 @@ export type PairedSession = {
   descriptor: SealedDescriptor;
   /** Which candidate won the race last time, so we can try it first. */
   preferredCandidate?: string;
+  /**
+   * The derived relay token, kept beside the descriptor.
+   *
+   * `/file` requests are plain HTTP — an `<a download>` navigation cannot carry
+   * an Authorization header, and `fetch` callers are synchronous — so the token
+   * has to be readable without awaiting IndexedDB. It lives here rather than in
+   * localStorage so it dies with the tab, and note what is *not* here: the
+   * pairing keys themselves stay in IndexedDB, which is the property that
+   * matters. This is a 24-hour scoped session token, the same class of
+   * credential as the self-hosted path's `ccremote-token`, not the machine's
+   * long-lived AUTH_TOKEN — which never reaches the browser at all.
+   */
+  directToken?: string;
   pairedAt: number;
 };
 

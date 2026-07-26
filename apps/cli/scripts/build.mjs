@@ -45,12 +45,20 @@ console.log("→ build web (standalone)");
 // instead of the same-origin /_relay path the CLI serves. Strip it before
 // building, plus pass NODE_ENV=production explicitly so the env validation
 // is happy.
+//
+// NEXT_PUBLIC_API_URL is the mirror image: it must be *present*, because the
+// bundled /pair page reads it to reach the broker and to build the tunnel URL.
+// Left unset, hosted pairing is dead in the shipped CLI — the page renders "not
+// configured" and no tunnel URL can be formed. It is overridable so a
+// self-hoster can point the bundled client at their own broker.
 const WEB_DIST = ".next-cli";
 run("pnpm --filter @app/web build", {
   cwd: REPO,
   env: {
     ...process.env,
     NEXT_PUBLIC_RELAY_URL: "",
+    NEXT_PUBLIC_API_URL:
+      process.env.MTMUX_BUILD_API_URL || "https://api.mtmux.com",
     NODE_ENV: "production",
     NEXT_DIST_DIR: WEB_DIST,
   },

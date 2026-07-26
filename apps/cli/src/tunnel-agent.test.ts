@@ -5,12 +5,51 @@ import {
   hexToBytes,
   bytesToHex,
   randomBytes,
+  deriveSessionKeys,
+  FrameSealer,
+  FrameOpener,
+  bytesToBase64Url,
+  base64UrlToBytes,
+  utf8ToBytes,
+  type SessionKeys,
 } from "@repo/crypto";
 import {
   createTunnelAgent,
   type AgentSocket,
   type LocalSocket,
 } from "./tunnel-agent.js";
+
+/** A distinct pairing's key schedule. */
+function sessionKeys(): SessionKeys {
+  return deriveSessionKeys(randomBytes(32), randomBytes(32));
+}
+
+/**
+ * The browser's half of the seal, so tests exercise the real codec rather than
+ * a stand-in. The browser seals on c2s and opens s2c; the agent is the mirror.
+ */
+function browserEnd(keys: SessionKeys) {
+  const sealer = new FrameSealer(keys.c2s, "c2s");
+  const opener = new FrameOpener(keys.s2c, "s2c");
+  return {
+    seal: async (line: string) =>
+      bytesToBase64Url(await sealer.seal(utf8ToBytes(line))),
+    open: async (data: string) =>
+      new TextDecoder().decode(await opener.open(base64UrlToBytes(data))),
+  };
+}
+
+/**
+ * Let the agent's per-stream promise chain drain.
+ *
+ * Seal and open are WebCrypto calls, so every frame crosses at least one
+ * microtask boundary before it reaches the far socket.
+ */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
 
 /** A socket whose two ends the test drives by hand. */
 function fakeSocket() {
@@ -148,24 +187,35 @@ describe("stream plumbing", () => {
     expect(h.locals).toHaveLength(1);
   });
 
-  it("copies frames from the browser into the local relay", () => {
+  it("unseals browser frames into plaintext relay lines", async () => {
     const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
     h.agent.start();
     register(h);
     h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
     const local = h.locals[0]!;
     local.open();
 
+    const line = JSON.stringify({ type: "auth", token: "abc" });
     h.brokers[0]!.deliver({
       type: "stream:frame",
       streamId: "str-1",
-      data: "c2VhbGVk",
+      data: await browser.seal(line),
     });
-    expect(local.sent).toContain("c2VhbGVk");
+    await flush();
+
+    // The relay speaks JSON, not ciphertext. Forwarding the sealed bytes
+    // verbatim — the original bug — left the relay unable to parse a thing.
+    expect(local.sent).toContain(line);
   });
 
-  it("holds frames that arrive before the local socket is open", () => {
+  it("holds frames that arrive before the local socket is open", async () => {
     const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
     h.agent.start();
     register(h);
     h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
@@ -175,24 +225,214 @@ describe("stream plumbing", () => {
     h.brokers[0]!.deliver({
       type: "stream:frame",
       streamId: "str-1",
-      data: "ZWFybHk",
+      data: await browser.seal("early"),
     });
-    expect(local.sent).not.toContain("ZWFybHk");
+    await flush();
+    expect(local.sent).toHaveLength(0);
 
     local.open();
-    expect(local.sent).toContain("ZWFybHk");
+    expect(local.sent).toContain("early");
   });
 
-  it("copies relay output back to the broker under the same stream id", () => {
+  it("seals relay output back to the browser under the same stream id", async () => {
     const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
     h.agent.start();
     register(h);
     h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
     h.locals[0]!.open();
-    h.locals[0]!.deliver("terminal output");
+
+    // The sealer is only known once a frame has identified the pairing, so the
+    // browser has to speak first — as it does in reality.
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browser.seal("hello"),
+    });
+    await flush();
+
+    h.locals[0]!.deliverRaw("terminal output");
+    await flush();
 
     const frames = h.brokers[0]!.ofType("stream:frame");
+    expect(frames).toHaveLength(1);
     expect(frames[0]).toMatchObject({ streamId: "str-1" });
+    expect(await browser.open(frames[0]!.data as string)).toBe(
+      "terminal output",
+    );
+  });
+
+  it("holds relay output produced before the browser identified itself", async () => {
+    const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
+    h.agent.start();
+    register(h);
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+
+    // The relay answers the agent's own `auth` immediately, before any browser
+    // frame has arrived. Dropping it would lose the handshake.
+    h.locals[0]!.deliverRaw('{"type":"auth:success"}');
+    await flush();
+    expect(h.brokers[0]!.ofType("stream:frame")).toHaveLength(0);
+
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browser.seal("hi"),
+    });
+    await flush();
+
+    const frames = h.brokers[0]!.ofType("stream:frame");
+    expect(frames).toHaveLength(1);
+    expect(await browser.open(frames[0]!.data as string)).toBe(
+      '{"type":"auth:success"}',
+    );
+  });
+
+  it("picks the matching pairing when several are on one tunnel", async () => {
+    const h = harness();
+    const alice = sessionKeys();
+    const bob = sessionKeys();
+    h.agent.addSessionKeys(alice);
+    h.agent.addSessionKeys(bob);
+    h.agent.start();
+    register(h);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-a" });
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-b" });
+    h.locals[0]!.open();
+    h.locals[1]!.open();
+
+    // Bob is second in the keyring, so his stream only resolves if trial
+    // decryption really walks the ring rather than assuming the first entry.
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-b",
+      data: await browserEnd(bob).seal("from-bob"),
+    });
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-a",
+      data: await browserEnd(alice).seal("from-alice"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toContain("from-alice");
+    expect(h.locals[1]!.sent).toContain("from-bob");
+  });
+
+  it("refuses a stream no known pairing can open", async () => {
+    const h = harness();
+    h.agent.addSessionKeys(sessionKeys());
+    h.agent.start();
+    register(h);
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+
+    // A caller who guessed the tunnel id but holds no pairing key. This is the
+    // check that makes a leaked tunnel id worthless on its own.
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(sessionKeys()).seal("let me in"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toHaveLength(0);
+    expect(h.locals[0]!.closed).toBe(true);
+    expect(h.brokers[0]!.ofType("stream:close")[0]).toMatchObject({
+      streamId: "str-1",
+    });
+  });
+
+  it("kills a stream whose frame fails authentication mid-session", async () => {
+    const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
+    h.agent.start();
+    register(h);
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browser.seal("legit"),
+    });
+    await flush();
+    expect(h.locals[0]!.sent).toContain("legit");
+
+    // Flip a byte of the ciphertext. GCM's tag must reject it.
+    const tampered = base64UrlToBytes(await browser.seal("evil"));
+    tampered[tampered.length - 1] ^= 0xff;
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: bytesToBase64Url(tampered),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toHaveLength(1);
+    expect(h.locals[0]!.closed).toBe(true);
+  });
+
+  it("rejects a replayed frame", async () => {
+    const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
+    h.agent.start();
+    register(h);
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+
+    const frame = await browser.seal("replay me");
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: frame,
+    });
+    await flush();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: frame,
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toEqual(["replay me"]);
+    expect(h.locals[0]!.closed).toBe(true);
+  });
+
+  it("preserves relay line order across many frames", async () => {
+    const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
+    h.agent.start();
+    register(h);
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+
+    // Sealing is async, so without a per-stream chain these would race and the
+    // relay would see terminal input out of order.
+    const lines = Array.from({ length: 25 }, (_, i) => `line-${i}`);
+    for (const line of lines) {
+      h.brokers[0]!.deliver({
+        type: "stream:frame",
+        streamId: "str-1",
+        data: await browser.seal(line),
+      });
+    }
+    await flush();
+
+    expect(h.locals[0]!.sent).toEqual(lines);
   });
 
   it("tells the broker when the local relay hangs up", () => {

@@ -70,11 +70,17 @@ export default function PairPage() {
       // then hand off to the terminal.
       setState({ phase: "connecting" });
       void (async () => {
-        const { winner } = await raceCandidates(update.descriptor.candidates);
+        // The probe authenticates with the token both ends derived, so a
+        // candidate only wins if it really is the machine we just paired with.
+        const { winner } = await raceCandidates(
+          update.descriptor.candidates,
+          update.keys.directToken,
+        );
         await saveSessionKeys(serverIdFor(update.descriptor), update.keys);
         saveDescriptor({
           descriptor: update.descriptor,
           preferredCandidate: winner ?? undefined,
+          directToken: update.keys.directToken,
           pairedAt: Date.now(),
         });
         toast.success(

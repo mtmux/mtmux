@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import {
   X,
-  Download,
   Copy,
   Check,
   File,

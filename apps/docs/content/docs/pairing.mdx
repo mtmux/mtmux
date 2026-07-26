@@ -85,6 +85,31 @@ Slots therefore never run out and reveal nothing.
 `mtmux pair` stays in the foreground and holds the tunnel. Press Ctrl+C to end
 remote access; the local and LAN paths are unaffected.
 
+### Forcing the tunnel
+
+By default `mtmux pair` seals a short list of directly reachable addresses into
+the descriptor so the browser can try the fast path first. `--tunnel-only`
+sends none:
+
+```bash
+mtmux pair 492716 --tunnel-only
+```
+
+Use it if you would rather the paired device never learn your LAN addresses at
+all. The session then always goes through the relay, which costs some latency.
+
+### What the file browser can do over the tunnel
+
+Terminal I/O, session management, browsing directories and reading or editing
+text files all work identically on both paths — they are protocol messages on
+the same sealed socket.
+
+Two things need the direct path: previewing binary media (images, video, audio)
+and downloading a file. Both are plain HTTP `GET /file` requests, and a tunnelled
+session has no HTTP route to the relay — only sealed WebSocket frames. Over the
+tunnel the UI says so instead of failing obscurely. On the direct path both work,
+authenticated with the same derived token as the socket.
+
 ## Self-hosting
 
 None of this is required. `mtmux start` never contacts `api.mtmux.com`, and a
@@ -95,8 +120,13 @@ hosted flow on your own infrastructure, run `apps/api` and point the CLI at it:
 MTMUX_API_URL=https://api.example.com mtmux pair 492716
 ```
 
-See [Self-hosting](/docs/self-hosting) for the broker's configuration and the
-nginx WebSocket block it needs.
+The broker needs a reverse proxy that upgrades WebSockets and a generous read
+timeout, since an idle tunnel holds its socket open. See
+[Self-hosting](/docs/self-hosting) for its configuration.
+
+The bundled web client reads its broker address from `NEXT_PUBLIC_API_URL`,
+baked in when the CLI is built. To ship a CLI pointed at your own broker, set
+`MTMUX_BUILD_API_URL` for the build.
 
 ## Revoking a device
 

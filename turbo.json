@@ -24,6 +24,7 @@
   },
   "globalEnv": [
     "NEXT_DIST_DIR",
+    "MTMUX_BUILD_API_URL",
     "NODE_ENV",
     "NEXT_PUBLIC_*",
     "RELAY_PORT",

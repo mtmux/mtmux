@@ -20,6 +20,17 @@ export type PairOpts = {
   code?: string;
   port: number;
   api?: string;
+  /**
+   * Advertise no direct addresses, so the session can only ride the tunnel.
+   *
+   * Two uses. It keeps the machine's LAN topology out of the descriptor for
+   * anyone who would rather the browser never learn it — the candidates are
+   * sealed, but not sending them at all is stronger. And it makes the tunnel
+   * path deterministically testable, which is otherwise awkward: whenever a
+   * candidate happens to be reachable the direct path silently wins and the
+   * tunnel goes unexercised.
+   */
+  tunnelOnly?: boolean;
 };
 
 /**
@@ -127,7 +138,7 @@ export async function pair(opts: PairOpts): Promise<void> {
   }
 
   const { config, key } = await configStore.ensureDeviceKey();
-  const publicIp = await discoverPublicIp(base);
+  const publicIp = opts.tunnelOnly ? null : await discoverPublicIp(base);
 
   // The tunnel has to be registered before the descriptor can name it, so the
   // agent starts first and pairing waits for its id.
@@ -173,7 +184,7 @@ export async function pair(opts: PairOpts): Promise<void> {
       code: opts.code,
       transport: httpTransport(base),
       buildDescriptor: (): SealedDescriptor => ({
-        candidates: buildCandidates(opts.port, publicIp),
+        candidates: opts.tunnelOnly ? [] : buildCandidates(opts.port, publicIp),
         tunnelId,
         deviceId: key.deviceId,
         publicKey: Buffer.from(key.publicKey).toString("hex"),
@@ -181,6 +192,12 @@ export async function pair(opts: PairOpts): Promise<void> {
       }),
       seal: sealDescriptor,
     });
+
+    // The agent is the other end of the browser's seal, so it needs this
+    // pairing's key schedule before the browser opens a stream. Registering it
+    // here rather than passing it in at construction is what lets one agent
+    // serve several paired browsers over the same tunnel.
+    agent.addSessionKeys(result.keys);
 
     // Teach the local relay the direct-path token both sides derived, so a
     // browser that wins the candidate race can authenticate without ever being

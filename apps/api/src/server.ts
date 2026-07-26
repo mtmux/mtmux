@@ -195,11 +195,14 @@ export async function startApiServer(
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      // Attached first, and before the `handle` check: a rejected route is
+      // closed by `attach`, and an 'error' on that closing socket with no
+      // listener would be an unhandled event that takes the broker down.
+      ws.on("error", (err) => logger.warn({ err }, "Socket error"));
       const handle = attach(broker, route, toSocket(ws));
       if (!handle) return;
       ws.on("message", (raw) => handle.message(raw.toString()));
       ws.on("close", () => handle.close());
-      ws.on("error", (err) => logger.warn({ err }, "Socket error"));
     });
   });
 

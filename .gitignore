@@ -44,3 +44,6 @@ logs/
 # Misc
 *.tsbuildinfo
 *.pem
+
+# playwright-cli session artifacts
+.playwright-cli/

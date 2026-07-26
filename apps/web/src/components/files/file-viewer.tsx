@@ -16,7 +16,7 @@ import { cn } from "@repo/ui/lib/utils";
 import { Button } from "@repo/ui/components/ui/button";
 import { Badge } from "@repo/ui/components/ui/badge";
 import { useFileStore } from "@/stores/file-store";
-import { getFileDownloadUrl } from "@/lib/file-url";
+import { tryFileDownloadUrl } from "@/lib/file-url";
 import { useFileObjectUrl } from "@/hooks/use-file-object-url";
 import {
   getFileViewMode,
@@ -36,18 +36,50 @@ const CATEGORY_ICONS: Record<string, typeof FileQuestion> = {
   binary: FileQuestion,
 };
 
+/**
+ * A download link, or an explanation of why there isn't one.
+ *
+ * A tunnelled session has no HTTP route to the relay, so `/file` cannot be
+ * fetched at all. Saying so beats rendering a link that silently 404s against
+ * the web app's own origin.
+ */
+function DownloadLink({
+  path,
+  fileName,
+  children,
+}: {
+  path: string;
+  fileName: string;
+  children: React.ReactNode;
+}) {
+  const href = tryFileDownloadUrl(path);
+  if (!href) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Downloads need a direct connection to the machine — this session is
+        going through the relay.
+      </p>
+    );
+  }
+  return (
+    <a href={href} download={fileName}>
+      {children}
+    </a>
+  );
+}
+
 function MediaError({ path, message }: { path: string; message: string }) {
   const fileName = path.split("/").pop() ?? "";
   return (
     <div className="flex flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
       <FileQuestion className="h-12 w-12 opacity-40" />
       <p className="text-sm">{message}</p>
-      <a href={getFileDownloadUrl(path)} download={fileName}>
+      <DownloadLink path={path} fileName={fileName}>
         <Button variant="secondary" size="sm">
           <Download className="mr-2 h-4 w-4" />
           Download Instead
         </Button>
-      </a>
+      </DownloadLink>
     </div>
   );
 }
@@ -227,12 +259,12 @@ function BinaryContent({ path, size }: { path: string; size?: number }) {
         {category}
       </Badge>
       {size != null && <p className="text-xs">{formatFileSize(size)}</p>}
-      <a href={getFileDownloadUrl(path)} download={fileName}>
+      <DownloadLink path={path} fileName={fileName}>
         <Button variant="default" size="lg" className="mt-4">
           <Download className="mr-2 h-4 w-4" />
           Download
         </Button>
-      </a>
+      </DownloadLink>
       <p className="mt-2 text-xs">
         This file type can&apos;t be previewed in the browser
       </p>
@@ -287,7 +319,7 @@ export function FileViewer() {
         <Badge variant="secondary" className="text-[10px]">
           {VIEW_MODE_LABELS[viewMode]}
         </Badge>
-        <a href={getFileDownloadUrl(editorFile)} download={fileName}>
+        <DownloadLink path={editorFile} fileName={fileName}>
           <Button
             variant="ghost"
             size="icon"
@@ -296,7 +328,7 @@ export function FileViewer() {
           >
             <Download className="h-4 w-4" />
           </Button>
-        </a>
+        </DownloadLink>
         <Button
           variant="ghost"
           size="icon"

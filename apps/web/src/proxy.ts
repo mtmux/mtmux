@@ -16,12 +16,20 @@ export function proxy(_request: NextRequest) {
     ? ` ${relayWsUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:")}`
     : "";
 
+  // The pairing broker is a genuine cross-origin fetch target: /pair calls
+  // /v1/pair/new and /v1/discover on it. Without this the page cannot reach the
+  // broker at all and hosted pairing dies with a CSP violation — so it is added
+  // explicitly rather than by loosening connect-src to all of https:.
+  // Unset for self-hosters, who never contact a broker.
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  const apiOrigin = apiUrl ? ` ${apiUrl.replace(/\/+$/, "")}` : "";
+
   response.headers.set("X-Frame-Options", "DENY");
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; font-src 'self' data:; img-src 'self' data: blob:${relayOrigin}; media-src 'self'${relayOrigin}; frame-src 'self'${relayOrigin};`,
+    `default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:${apiOrigin}; font-src 'self' data:; img-src 'self' data: blob:${relayOrigin}; media-src 'self'${relayOrigin}; frame-src 'self'${relayOrigin};`,
   );
 
   return response;

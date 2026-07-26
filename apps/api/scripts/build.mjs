@@ -1,0 +1,84 @@
+import { execSync, spawn } from "node:child_process";
+import { rm } from "node:fs/promises";
+import path from "node:path";
+
+const ROOT = path.resolve(import.meta.dirname, "..");
+
+function run(cmd) {
+  console.log(`$ ${cmd}`);
+  execSync(cmd, { stdio: "inherit", cwd: ROOT });
+}
+
+/**
+ * Boot the bundle and make one real request.
+ *
+ * A typecheck cannot catch what broke here before: a dependency that resolves
+ * at build time but not at runtime, or a workspace import Node cannot follow.
+ * Both produce a dist that fails on its first line, and both are invisible
+ * until someone runs it. So the build runs it.
+ */
+async function bootCheck(outfile) {
+  const port = 24999;
+  const child = spawn(process.execPath, [outfile], {
+    cwd: ROOT,
+    env: { ...process.env, API_PORT: String(port), API_HOST: "127.0.0.1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (d) => (output += d));
+  child.stderr.on("data", (d) => (output += d));
+
+  try {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (child.exitCode !== null) {
+        throw new Error(`exited with ${child.exitCode}:\n${output}`);
+      }
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        if (res.ok) {
+          const body = await res.json();
+          if (body.status !== "ok")
+            throw new Error(`bad health: ${body.status}`);
+          return;
+        }
+      } catch {
+        // Not listening yet.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`never answered /health:\n${output}`);
+  } finally {
+    child.kill("SIGKILL");
+  }
+}
+
+await rm(path.join(ROOT, "dist"), { recursive: true, force: true });
+
+console.log("→ typecheck");
+run("tsc --noEmit");
+
+console.log("→ bundle (esbuild)");
+// esbuild rather than a bare `tsc` emit. @repo/protocol and @repo/crypto are
+// published as raw TypeScript with extensionless relative imports, which Node
+// cannot resolve at runtime — a plain tsc build produces a dist that crashes on
+// `node dist/index.js`. Bundling inlines the workspace packages and leaves the
+// real npm deps external, exactly as apps/cli does.
+const { build } = await import("esbuild");
+await build({
+  entryPoints: [path.join(ROOT, "src/index.ts")],
+  outfile: path.join(ROOT, "dist/index.js"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  external: ["ws", "pino", "pino-pretty", "zod"],
+  banner: {
+    js: "import { createRequire as _mtmuxCreateRequire } from 'module'; const require = _mtmuxCreateRequire(import.meta.url);",
+  },
+  logLevel: "info",
+});
+
+console.log("→ boot check");
+await bootCheck(path.join(ROOT, "dist/index.js"));
+
+console.log("✓ build complete");

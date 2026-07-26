@@ -54,8 +54,21 @@ program
     14100,
   )
   .option("--api <url>", "pairing service base URL")
-  .action((code: string | undefined, opts: { port: number; api?: string }) =>
-    pair({ code, port: opts.port, api: opts.api }),
+  .option(
+    "--tunnel-only",
+    "never advertise a direct address; always relay through the tunnel",
+  )
+  .action(
+    (
+      code: string | undefined,
+      opts: { port: number; api?: string; tunnelOnly?: boolean },
+    ) =>
+      pair({
+        code,
+        port: opts.port,
+        api: opts.api,
+        tunnelOnly: opts.tunnelOnly,
+      }),
   );
 
 const token = program.command("token").description("Manage the auth token");

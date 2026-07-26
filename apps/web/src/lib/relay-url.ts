@@ -59,10 +59,19 @@ export function isPairedSession(): boolean {
   return loadDescriptor() !== null;
 }
 
-/** HTTP base for `/file?...` requests (same-origin in single-port mode). */
+/**
+ * HTTP base for `/file?...` requests (same-origin in single-port mode).
+ *
+ * Returns "" when there is no HTTP route to the relay at all. That happens for
+ * a tunnelled session: the relay is only reachable as sealed frames over the
+ * broker's WebSocket, and this page's own origin is the web app, which has no
+ * `/file` route. Falling through to `window.location.origin` there — as this
+ * used to — turned every file request into a mystery 404 against Next.js.
+ * Callers must treat "" as "not available on this connection".
+ */
 export function resolveRelayHttpBase(): string {
   const session = loadDescriptor();
-  if (session?.preferredCandidate) return session.preferredCandidate;
+  if (session) return session.preferredCandidate ?? "";
 
   if (env.NEXT_PUBLIC_RELAY_URL) {
     return env.NEXT_PUBLIC_RELAY_URL.replace(/^ws:/, "http:").replace(
