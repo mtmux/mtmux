@@ -6,6 +6,7 @@
     "prepare": "husky",
     "dev": "pnpm --filter mtmux run dev",
     "dev:split": "NEXT_PUBLIC_RELAY_URL=ws://localhost:14300 turbo dev --filter=@app/web --filter=@app/relay",
+    "dev:pairing": "node scripts/dev-pairing.mjs",
     "dev:docs": "pnpm --filter @app/docs run dev",
     "build": "turbo build",
     "lint": "turbo lint",
