@@ -106,6 +106,11 @@ module.exports = {
       env: {
         ...commonEnv,
         PORT: 24100,
+        // Next's standalone server binds 0.0.0.0 unless told otherwise, which
+        // put the app on the box's public address at :24100 — reachable
+        // directly, in plaintext, bypassing Cloudflare's TLS and everything
+        // in front of it. nginx is the only thing that should reach this.
+        HOSTNAME: "127.0.0.1",
         // Mirrors what `pnpm build:hosted` baked in. Next inlines NEXT_PUBLIC_*
         // at build time, so these do not change the client bundle — they are
         // here so a stray value in .env cannot make the running process
