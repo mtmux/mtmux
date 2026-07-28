@@ -11,6 +11,7 @@
     "build": "turbo build",
     "build:hosted": "NEXT_PUBLIC_RELAY_URL= NEXT_PUBLIC_API_URL=${API_ORIGIN:-https://api.mtmux.com} turbo build --filter=@app/web --filter=@app/api",
     "prepare:standalone": "node scripts/prepare-standalone.mjs apps/web",
+    "deploy:hosted": "node scripts/deploy-hosted.mjs",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",

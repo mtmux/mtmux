@@ -86,12 +86,6 @@ importers:
 
   apps/cli:
     dependencies:
-      "@repo/crypto":
-        specifier: workspace:*
-        version: link:../../packages/crypto
-      "@repo/protocol":
-        specifier: workspace:*
-        version: link:../../packages/protocol
       chokidar:
         specifier: ^4
         version: 4.0.3
@@ -132,6 +126,12 @@ importers:
         specifier: ^3
         version: 3.25.76
     devDependencies:
+      "@repo/crypto":
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      "@repo/protocol":
+        specifier: workspace:*
+        version: link:../../packages/protocol
       "@repo/tsconfig":
         specifier: workspace:*
         version: link:../../tooling/typescript

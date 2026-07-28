@@ -47,3 +47,6 @@ logs/
 
 # playwright-cli session artifacts
 .playwright-cli/
+
+# npm pack output
+*.tgz
