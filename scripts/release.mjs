@@ -17,6 +17,6 @@ pkg.version = next;
 await writeFile(cliPkg, JSON.stringify(pkg, null, 2) + "\n");
 
 execSync(`git add ${cliPkg}`, { stdio: "inherit" });
-execSync(`git commit -m "release(cli): v${next}"`, { stdio: "inherit" });
+execSync(`git commit -m "chore(cli): release v${next}"`, { stdio: "inherit" });
 execSync(`git tag v${next}`, { stdio: "inherit" });
 console.log(`tagged v${next}. push with: git push --follow-tags`);
