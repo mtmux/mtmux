@@ -7,19 +7,35 @@ import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { triggerHaptic } from "@repo/ui/components/haptic-button";
 import { getRelayClient } from "@/hooks/use-websocket";
+import { getTerminalHandle } from "@/components/terminal/terminal-handle";
+import { LAST_SESSION_KEY, writeStored } from "@/lib/storage-keys";
 
 interface SwipeSessionSwitcherProps {
   children: React.ReactNode;
   className?: string;
 }
 
-export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitcherProps) {
+export function SwipeSessionSwitcher({
+  children,
+  className,
+}: SwipeSessionSwitcherProps) {
   const { sessions, activeSessionId, setActiveSession } = useSessionStore();
   const { panes, activePaneId } = usePaneStore();
   const { gestures, hapticEnabled } = useSettingsStore();
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const [swipeX, setSwipeX] = useState(0);
+
+  /**
+   * A drag that is extending a selection belongs to xterm, not to us.
+   *
+   * The obvious guard — ignore anything starting on `.xterm-screen` — is wrong,
+   * because that element fills the whole pane, so it disables the gesture
+   * everywhere it is useful. Keying on whether there is actually a selection
+   * lets the swipe work on the terminal body while still leaving text selection
+   * alone the moment one exists.
+   */
+  const selecting = () => Boolean(getTerminalHandle()?.getSelection());
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0];
@@ -32,6 +48,10 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0];
     if (!touch) return;
+    if (selecting()) {
+      setSwipeX(0);
+      return;
+    }
     const dx = touch.clientX - touchStartX.current;
     setSwipeX(dx);
   }, []);
@@ -39,6 +59,7 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent) => {
       setSwipeX(0);
+      if (selecting()) return;
       const changedTouch = e.changedTouches[0];
       if (!changedTouch) return;
       const dx = changedTouch.clientX - touchStartX.current;
@@ -85,7 +106,9 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
       if (!gestures.swipeToSwitchSessions) return;
       if (sessions.length < 2) return;
 
-      const currentIndex = sessions.findIndex((s) => s.name === activeSessionId);
+      const currentIndex = sessions.findIndex(
+        (s) => s.name === activeSessionId,
+      );
       if (currentIndex === -1) return;
 
       let nextIndex: number;
@@ -96,16 +119,33 @@ export function SwipeSessionSwitcher({ children, className }: SwipeSessionSwitch
       }
 
       setActiveSession(sessions[nextIndex]!.name);
-      localStorage.setItem("ccremote-last-session", sessions[nextIndex]!.name);
+      writeStored(LAST_SESSION_KEY, sessions[nextIndex]!.name);
       if (hapticEnabled) triggerHaptic(15);
     },
-    [sessions, activeSessionId, setActiveSession, panes, activePaneId, gestures.swipeToSwitchSessions, gestures.swipeToSwitchPanes, hapticEnabled],
+    [
+      sessions,
+      activeSessionId,
+      setActiveSession,
+      panes,
+      activePaneId,
+      gestures.swipeToSwitchSessions,
+      gestures.swipeToSwitchPanes,
+      hapticEnabled,
+    ],
   );
 
   return (
     <div
-      className={cn("relative touch-pan-y transition-opacity duration-75", className)}
-      style={{ opacity: Math.abs(swipeX) > 50 ? Math.max(0.85, 1 - (Math.abs(swipeX) - 50) / 500) : 1 }}
+      className={cn(
+        "relative touch-pan-y transition-opacity duration-75",
+        className,
+      )}
+      style={{
+        opacity:
+          Math.abs(swipeX) > 50
+            ? Math.max(0.85, 1 - (Math.abs(swipeX) - 50) / 500)
+            : 1,
+      }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}

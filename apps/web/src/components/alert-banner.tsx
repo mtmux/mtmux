@@ -4,10 +4,12 @@ import { X } from "lucide-react";
 import { cn } from "@repo/ui/lib/utils";
 import { useAlertStore } from "@/stores/alert-store";
 
+// A `/15` wash is nearly the page background, so the text has to be the *solid*
+// status color — its `-foreground` is the pairing for a solid fill, not a wash.
 const typeStyles: Record<string, string> = {
-  info: "bg-info/15 text-info-foreground",
-  success: "bg-success/15 text-success-foreground",
-  warning: "bg-warning/15 text-warning-foreground",
+  info: "bg-info/15 text-info",
+  success: "bg-success/15 text-success",
+  warning: "bg-warning/15 text-warning",
   error: "bg-destructive/15 text-destructive",
 };
 
@@ -29,7 +31,9 @@ export function AlertBanner() {
         typeStyles[latest.type],
       )}
     >
-      <span className="truncate max-w-[200px] sm:max-w-[300px]">{latest.message}</span>
+      <span className="truncate max-w-[200px] sm:max-w-[300px]">
+        {latest.message}
+      </span>
       {extraCount > 0 && (
         <span className="shrink-0 rounded-full bg-foreground/10 px-1.5 text-[10px]">
           +{extraCount}

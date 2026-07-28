@@ -18,14 +18,26 @@ const tabs: { id: MobileTab; label: string; icon: typeof Terminal }[] = [
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
-export function MobileNav({ activeTab, onTabChange, className }: MobileNavProps) {
+export function MobileNav({
+  activeTab,
+  onTabChange,
+  className,
+}: MobileNavProps) {
+  // No safe-area padding here — AppShell already insets the whole frame, and
+  // doubling it stole ~34px of screen on notched devices.
   return (
-    <nav className={cn("flex items-center justify-around border-t pb-[env(safe-area-inset-bottom)] landscape:py-0.5", className)}>
+    <nav
+      className={cn(
+        "flex items-center justify-around border-t landscape:py-0.5",
+        className,
+      )}
+    >
       {tabs.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           className={cn(
-            "flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px] transition-colors landscape:flex-row landscape:gap-1.5 landscape:py-1 landscape:text-[10px]",
+            "flex min-h-11 flex-1 flex-col items-center justify-center gap-1 py-2.5 text-[11px] transition-colors landscape:flex-row landscape:gap-1.5 landscape:py-1 landscape:text-[10px]",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
             activeTab === id
               ? "text-primary"
               : "text-muted-foreground active:text-foreground",

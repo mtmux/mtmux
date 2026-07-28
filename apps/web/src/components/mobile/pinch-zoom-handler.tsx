@@ -31,6 +31,10 @@ export function PinchZoomHandler({
     if (e.touches.length !== 2) return;
     if (!useSettingsStore.getState().gestures.pinchToZoom) return;
 
+    // Claim the gesture: without this the browser also pinch-zooms the page
+    // (the viewport allows user scaling), so one pinch did two things.
+    e.preventDefault();
+
     const dx = e.touches[0]!.clientX - e.touches[1]!.clientX;
     const dy = e.touches[0]!.clientY - e.touches[1]!.clientY;
     initialDistance.current = Math.sqrt(dx * dx + dy * dy);
@@ -39,6 +43,8 @@ export function PinchZoomHandler({
 
   const handleTouchMove = useCallback((e: TouchEvent) => {
     if (e.touches.length !== 2 || initialDistance.current === null) return;
+
+    e.preventDefault();
 
     const dx = e.touches[0]!.clientX - e.touches[1]!.clientX;
     const dy = e.touches[0]!.clientY - e.touches[1]!.clientY;
@@ -72,8 +78,10 @@ export function PinchZoomHandler({
     const el = containerRef.current;
     if (!el) return;
 
-    el.addEventListener("touchstart", handleTouchStart, { passive: true });
-    el.addEventListener("touchmove", handleTouchMove, { passive: true });
+    // Non-passive: the two-finger case calls preventDefault. Single-finger
+    // touches fall through untouched, so scrolling stays on the fast path.
+    el.addEventListener("touchstart", handleTouchStart, { passive: false });
+    el.addEventListener("touchmove", handleTouchMove, { passive: false });
     el.addEventListener("touchend", handleTouchEnd);
 
     return () => {

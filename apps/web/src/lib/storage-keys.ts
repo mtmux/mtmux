@@ -1,0 +1,64 @@
+/**
+ * localStorage keys, and the one-time migration off the old product name.
+ *
+ * This app shipped as `ccremote`, then `tmuxremote`, before settling on
+ * `mtmux`. The auth token key came along for the ride, so renaming it without
+ * care would sign out every existing install — the token is the only thing
+ * standing between a returning user and a login screen they cannot satisfy,
+ * because the token lives on a machine they may not be sitting at.
+ *
+ * So the rename is done with a copy-forward: read the new key, fall back to the
+ * old one, and promote it on first touch. After one visit the legacy key is
+ * gone and this file is the only place that remembers it existed.
+ *
+ * Zustand's persisted stores (`ccremote-terminal`, `ccremote-commands`, …) are
+ * deliberately *not* renamed. Their names are invisible, and changing one makes
+ * `persist` look in a key that does not exist, silently resetting somebody's
+ * font size and command history to defaults. A cosmetic rename is not worth
+ * that; they can move whenever those stores next take a schema version.
+ */
+
+export const TOKEN_KEY = "mtmux-token";
+export const LAST_SESSION_KEY = "mtmux-last-session";
+
+const LEGACY = {
+  [TOKEN_KEY]: "ccremote-token",
+  [LAST_SESSION_KEY]: "ccremote-last-session",
+} as const;
+
+/**
+ * Read a key, adopting the legacy value if that is all there is.
+ *
+ * Safe to call during render: it touches localStorage only in the browser and
+ * returns null everywhere else.
+ */
+export function readStored(key: string): string | null {
+  if (typeof window === "undefined") return null;
+
+  const current = localStorage.getItem(key);
+  if (current !== null) return current;
+
+  const legacyKey = LEGACY[key as keyof typeof LEGACY];
+  if (!legacyKey) return null;
+
+  const legacy = localStorage.getItem(legacyKey);
+  if (legacy === null) return null;
+
+  // Promote once, then forget the old name.
+  localStorage.setItem(key, legacy);
+  localStorage.removeItem(legacyKey);
+  return legacy;
+}
+
+export function writeStored(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(key, value);
+}
+
+/** Clears both spellings, so a sign-out cannot leave a legacy key behind. */
+export function clearStored(key: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(key);
+  const legacyKey = LEGACY[key as keyof typeof LEGACY];
+  if (legacyKey) localStorage.removeItem(legacyKey);
+}

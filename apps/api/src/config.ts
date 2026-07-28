@@ -30,6 +30,8 @@ const ConfigSchema = z.object({
     .positive()
     .default(1024 ** 3),
   tunnelMaxMinutes: z.coerce.number().int().positive().default(720),
+  /** Concurrent streams per tunnel — a per-machine DoS bound, not a feature. */
+  tunnelMaxStreams: z.coerce.number().int().positive().default(16),
 
   /** Phase 3 — reverse DNS and per-device certificates. Off unless set. */
   cloudflareApiToken: z.string().default(""),
@@ -53,6 +55,7 @@ export const config = ConfigSchema.parse({
   mailboxesPerMinute: process.env.API_MAILBOXES_PER_MINUTE,
   tunnelMaxBytes: process.env.API_TUNNEL_MAX_BYTES,
   tunnelMaxMinutes: process.env.API_TUNNEL_MAX_MINUTES,
+  tunnelMaxStreams: process.env.API_TUNNEL_MAX_STREAMS,
   cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
   cloudflareZoneId: process.env.CLOUDFLARE_ZONE_ID,
   dnsZone: process.env.DNS_ZONE,

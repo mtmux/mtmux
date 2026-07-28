@@ -12,9 +12,17 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dodopayments/better-auth": "^1.6.4",
+    "@dodopayments/core": "^0.3.13",
+    "@repo/config": "workspace:*",
     "@repo/crypto": "workspace:*",
+    "@repo/db": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/protocol": "workspace:*",
+    "better-auth": "1.6.25",
+    "better-sqlite3": "^12.11.1",
+    "dodopayments": "^2.43.0",
+    "drizzle-orm": "^0.45.2",
     "pino": "^9",
     "pino-pretty": "^13",
     "ws": "^8",

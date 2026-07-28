@@ -11,6 +11,7 @@ import { usePaneStore } from "@/stores/pane-store";
 import { useFileStore } from "@/stores/file-store";
 import { useAlertStore } from "@/stores/alert-store";
 import { useUiStore } from "@/stores/ui-store";
+import { TOKEN_KEY, clearStored } from "@/lib/storage-keys";
 
 let globalClient: RelayClient | null = null;
 
@@ -87,7 +88,7 @@ export function useWebSocket(
           useAlertStore
             .getState()
             .push("error", msg.reason || "Authentication failed");
-          localStorage.removeItem("ccremote-token");
+          clearStored(TOKEN_KEY);
           window.location.href = "/login";
           break;
         case "server:info":

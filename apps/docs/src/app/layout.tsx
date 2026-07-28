@@ -6,55 +6,55 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://ccremote.dev"),
+  metadataBase: new URL("https://docs.mtmux.com"),
   title: {
-    default: "ccremote — Your Claude. Your terminal. Anywhere.",
-    template: "%s · ccremote",
+    default: "mtmux docs — tmux in your browser",
+    template: "%s · mtmux docs",
   },
   description:
-    "Self-hosted browser terminal for Claude Code. Connect to tmux from any device — phone, tablet, laptop. One npm install away.",
-  applicationName: "ccremote",
-  authors: [{ name: "Nicholas Griffin" }],
+    "Documentation for mtmux, the npm CLI that serves your tmux sessions to any browser. Install, pair a phone, understand the sealed tunnel, and self-host the whole thing.",
+  applicationName: "mtmux",
   keywords: [
-    "Claude Code",
-    "Claude Code remote",
+    "mtmux",
     "tmux web client",
     "browser terminal",
     "self-hosted terminal",
     "remote terminal mobile",
+    "tmux from phone",
     "WebSocket tmux",
     "xterm.js",
-    "Anthropic Claude",
+    "Claude Code remote",
     "developer tools",
   ],
   openGraph: {
     type: "website",
-    url: "https://ccremote.dev",
-    siteName: "ccremote",
-    title: "ccremote — Your Claude. Your terminal. Anywhere.",
-    description: "Self-hosted browser terminal for Claude Code. One npm install away.",
+    url: "https://docs.mtmux.com",
+    siteName: "mtmux docs",
+    title: "mtmux docs — tmux in your browser",
+    description:
+      "Install the mtmux CLI, pair a device, and understand the sealed tunnel.",
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: "ccremote",
-    description: "Your Claude. Your terminal. Anywhere.",
-    creator: "@nicholasgriffin",
+    title: "mtmux docs",
+    description: "tmux in your browser. One command, any device.",
   },
   robots: { index: true, follow: true },
-  alternates: { canonical: "https://ccremote.dev" },
+  alternates: { canonical: "https://docs.mtmux.com" },
 };
 
 const jsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "ccremote",
-  description: "Self-hosted browser terminal for Claude Code.",
+  name: "mtmux",
+  description:
+    "tmux in your browser. One command serves your terminal to any device.",
   applicationCategory: "DeveloperApplication",
-  operatingSystem: "Linux, macOS, Windows",
+  operatingSystem: "Linux, macOS",
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-  url: "https://ccremote.dev",
-  author: { "@type": "Person", name: "Nicholas Griffin" },
+  url: "https://mtmux.com",
+  codeRepository: "https://github.com/GagnDeep/tmuxremote",
   license: "https://opensource.org/licenses/MIT",
 };
 

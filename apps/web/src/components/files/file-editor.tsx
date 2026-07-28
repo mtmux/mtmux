@@ -213,16 +213,14 @@ export function FileEditor() {
 
   return (
     <>
-      <div className="fixed inset-0 z-[60] flex flex-col bg-background">
+      {/* `fixed` escapes AppShell's frame, so this panel carries its own insets. */}
+      <div className="fixed inset-0 z-[var(--z-panel)] flex flex-col bg-background pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]">
         {/* Toolbar */}
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <span className="flex-1 truncate text-sm font-medium">
             {fileName}
             {isModified && (
-              <span
-                className="ml-1 text-warning-foreground"
-                title="Unsaved changes"
-              >
+              <span className="ml-1 text-warning" title="Unsaved changes">
                 ●
               </span>
             )}
@@ -297,7 +295,7 @@ export function FileEditor() {
         {/* External change banner */}
         {externalChange && (
           <div className="flex items-center gap-2 border-b bg-warning/10 px-3 py-1.5 text-xs">
-            <AlertTriangle className="h-3.5 w-3.5 text-warning-foreground" />
+            <AlertTriangle className="h-3.5 w-3.5 text-warning" />
             <span>File changed on disk.</span>
             <Button
               variant="outline"

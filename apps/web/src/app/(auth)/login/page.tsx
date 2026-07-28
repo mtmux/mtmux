@@ -17,6 +17,13 @@ import { toast } from "sonner";
 import { RelayClient } from "@/lib/ws-client";
 import { resolveRelayWsUrl } from "@/lib/relay-url";
 import { redeemLocalPairingNonce } from "@/lib/local-pairing";
+import { hydrateDescriptor } from "@/lib/session-store";
+import {
+  TOKEN_KEY,
+  clearStored,
+  readStored,
+  writeStored,
+} from "@/lib/storage-keys";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -31,13 +38,13 @@ export default function LoginPage() {
       setIsLoading(true);
 
       // Store token first
-      localStorage.setItem("ccremote-token", trimmedToken);
+      writeStored(TOKEN_KEY, trimmedToken);
 
       // Validate by attempting a WebSocket connection
       const timeoutId = setTimeout(() => {
         clientRef.current?.disconnect();
         clientRef.current = null;
-        localStorage.removeItem("ccremote-token");
+        clearStored(TOKEN_KEY);
         setIsLoading(false);
         toast.error(
           "Connection timed out. Check the relay server and try again.",
@@ -60,7 +67,7 @@ export default function LoginPage() {
             clearTimeout(timeoutId);
             clientRef.current = null;
             client.disconnect();
-            localStorage.removeItem("ccremote-token");
+            clearStored(TOKEN_KEY);
             setIsLoading(false);
             toast.error(msg.reason || "Authentication failed");
           }
@@ -69,7 +76,7 @@ export default function LoginPage() {
           if (status === "disconnected" && clientRef.current) {
             clearTimeout(timeoutId);
             clientRef.current = null;
-            localStorage.removeItem("ccremote-token");
+            clearStored(TOKEN_KEY);
             setIsLoading(false);
             toast.error("Failed to connect to relay server");
           }
@@ -103,11 +110,24 @@ export default function LoginPage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const hash = window.location.hash;
-    if (!hash) return;
     const params = new URLSearchParams(hash.replace(/^#/, ""));
     const hashToken = params.get("token")?.trim();
     const pairingNonce = params.get("n")?.trim();
-    if (!hashToken && !pairingNonce) return;
+
+    if (!hashToken && !pairingNonce) {
+      // No credential in the URL, but a previous hosted pairing may still be
+      // on this device: the keys and the connection descriptor both live in
+      // IndexedDB and outlive the tab. The terminal reads the descriptor
+      // synchronously and sent us here because its sessionStorage mirror was
+      // empty, so refilling it is the whole of "restore my session".
+      if (readStored(TOKEN_KEY)) return;
+      setIsLoading(true);
+      void hydrateDescriptor().then((session) => {
+        setIsLoading(false);
+        if (session) router.replace("/");
+      });
+      return;
+    }
 
     // Remove the fragment from the URL before doing anything else.
     window.history.replaceState(
@@ -138,7 +158,7 @@ export default function LoginPage() {
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
             <Terminal className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-xl">ccremote</CardTitle>
+          <CardTitle className="text-xl">mtmux</CardTitle>
           <CardDescription>
             Enter your authentication token to connect
           </CardDescription>

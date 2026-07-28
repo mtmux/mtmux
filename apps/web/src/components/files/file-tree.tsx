@@ -47,7 +47,11 @@ import type { FileEntry } from "@repo/protocol";
 import { useFileStore } from "@/stores/file-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useUiStore } from "@/stores/ui-store";
-import { getRelayClient, useRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
+import {
+  getRelayClient,
+  useRelayClient,
+  useRelaySubscription,
+} from "@/hooks/use-websocket";
 
 function getFileIcon(entry: FileEntry) {
   if (entry.type === "directory") return Folder;
@@ -96,7 +100,12 @@ interface FileTreeProps {
   onNavigate?: (path: string) => void;
 }
 
-export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }: FileTreeProps) {
+export function FileTree({
+  onFileSelect,
+  className,
+  breadcrumbPath,
+  onNavigate,
+}: FileTreeProps) {
   const {
     currentPath,
     entries,
@@ -114,9 +123,20 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
   } = useFileStore();
   const relayClient = useRelayClient();
   const [filter, setFilter] = useState("");
-  const [inlineInput, setInlineInput] = useState<{ type: "file" | "folder" | "rename"; value: string; path?: string } | null>(null);
+  const [inlineInput, setInlineInput] = useState<{
+    type: "file" | "folder" | "rename";
+    value: string;
+    path?: string;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    entry: FileEntry;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(
+    null,
+  );
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inlineInputRef = useRef<HTMLInputElement>(null);
@@ -206,7 +226,12 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           }
           const base64 = btoa(binary);
 
-          client.send({ type: "file:upload", path: filePath, content: base64, final });
+          client.send({
+            type: "file:upload",
+            path: filePath,
+            content: base64,
+            final,
+          });
 
           if (!final) {
             setTimeout(sendChunk, 0);
@@ -267,12 +292,25 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
 
     setIsOperating(true);
     if (inlineInput.type === "file") {
-      client.send({ type: "file:create", path: currentPath + "/" + inlineInput.value.trim() });
+      client.send({
+        type: "file:create",
+        path: currentPath + "/" + inlineInput.value.trim(),
+      });
     } else if (inlineInput.type === "folder") {
-      client.send({ type: "file:mkdir", path: currentPath + "/" + inlineInput.value.trim() });
+      client.send({
+        type: "file:mkdir",
+        path: currentPath + "/" + inlineInput.value.trim(),
+      });
     } else if (inlineInput.type === "rename" && inlineInput.path) {
-      const dir = inlineInput.path.substring(0, inlineInput.path.lastIndexOf("/"));
-      client.send({ type: "file:rename", oldPath: inlineInput.path, newPath: dir + "/" + inlineInput.value.trim() });
+      const dir = inlineInput.path.substring(
+        0,
+        inlineInput.path.lastIndexOf("/"),
+      );
+      client.send({
+        type: "file:rename",
+        oldPath: inlineInput.path,
+        newPath: dir + "/" + inlineInput.value.trim(),
+      });
     }
 
     setInlineInput(null);
@@ -291,10 +329,36 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     setInlineInput({ type: "rename", value: entry.name, path: entry.path });
   }, []);
 
-  const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
-    e.preventDefault();
-    setContextMenu({ entry, x: e.clientX, y: e.clientY });
-  }, []);
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, entry: FileEntry) => {
+      e.preventDefault();
+      setMenuPos(null);
+      setContextMenu({ entry, x: e.clientX, y: e.clientY });
+    },
+    [],
+  );
+
+  // A tap near the right or bottom edge put the menu off a 375px screen. Clamp
+  // once the node exists so the real menu size is known — a ref callback runs
+  // in the commit phase, i.e. before paint and never on the server.
+  const clampContextMenu = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el || !contextMenu) return;
+      const { width, height } = el.getBoundingClientRect();
+      const margin = 8;
+      setMenuPos({
+        left: Math.max(
+          margin,
+          Math.min(contextMenu.x, window.innerWidth - width - margin),
+        ),
+        top: Math.max(
+          margin,
+          Math.min(contextMenu.y, window.innerHeight - height - margin),
+        ),
+      });
+    },
+    [contextMenu],
+  );
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -307,29 +371,32 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
     };
   }, [contextMenu]);
 
-  const handleCdInTerminal = useCallback(
-    (path: string) => {
-      if (!useSessionStore.getState().activeSessionId) {
-        useAlertStore.getState().push("error", "No active session");
-        return;
-      }
-      const client = getRelayClient();
-      if (!client) return;
-      client.send({ type: "command:send", command: `cd ${path}` });
-      useUiStore.getState().setMobileTab("terminal");
-      useAlertStore.getState().push("success", "Navigated to " + path.split("/").pop());
-    },
-    [],
-  );
+  const handleCdInTerminal = useCallback((path: string) => {
+    if (!useSessionStore.getState().activeSessionId) {
+      useAlertStore.getState().push("error", "No active session");
+      return;
+    }
+    const client = getRelayClient();
+    if (!client) return;
+    client.send({ type: "command:send", command: `cd ${path}` });
+    useUiStore.getState().setMobileTab("terminal");
+    useAlertStore
+      .getState()
+      .push("success", "Navigated to " + path.split("/").pop());
+  }, []);
 
   const sortedEntries = [...entries]
-    .filter((e) => !filter || e.name.toLowerCase().includes(filter.toLowerCase()))
+    .filter(
+      (e) => !filter || e.name.toLowerCase().includes(filter.toLowerCase()),
+    )
     .sort((a, b) => {
       if (a.type === "directory" && b.type !== "directory") return -1;
       if (a.type !== "directory" && b.type === "directory") return 1;
       switch (sortBy) {
         case "modified":
-          return new Date(b.modified).getTime() - new Date(a.modified).getTime();
+          return (
+            new Date(b.modified).getTime() - new Date(a.modified).getTime()
+          );
         case "size":
           return b.size - a.size;
         default:
@@ -351,23 +418,34 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
       <div className="flex items-center gap-1 px-2 py-1.5 border-b">
         {breadcrumbPath !== undefined && onNavigate && (
           <div className="flex items-center gap-0.5 shrink-0 overflow-x-auto scrollbar-none mr-1">
-            <button className="shrink-0 rounded p-0.5 hover:bg-accent" onClick={() => onNavigate("/")} aria-label="Go to root">
+            <button
+              className="shrink-0 rounded p-0.5 hover:bg-accent"
+              onClick={() => onNavigate("/")}
+              aria-label="Go to root"
+            >
               <Home className="h-3.5 w-3.5" />
             </button>
-            {breadcrumbPath.split("/").filter(Boolean).map((part, i, arr) => (
-              <div key={i} className="flex items-center gap-0.5 shrink-0">
-                <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                <button
-                  className={cn(
-                    "rounded px-1 py-0.5 hover:bg-accent text-xs",
-                    i === arr.length - 1 ? "font-medium" : "text-muted-foreground",
-                  )}
-                  onClick={() => onNavigate("/" + arr.slice(0, i + 1).join("/"))}
-                >
-                  {part}
-                </button>
-              </div>
-            ))}
+            {breadcrumbPath
+              .split("/")
+              .filter(Boolean)
+              .map((part, i, arr) => (
+                <div key={i} className="flex items-center gap-0.5 shrink-0">
+                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <button
+                    className={cn(
+                      "rounded px-1 py-0.5 hover:bg-accent text-xs",
+                      i === arr.length - 1
+                        ? "font-medium"
+                        : "text-muted-foreground",
+                    )}
+                    onClick={() =>
+                      onNavigate("/" + arr.slice(0, i + 1).join("/"))
+                    }
+                  >
+                    {part}
+                  </button>
+                </div>
+              ))}
           </div>
         )}
         <Input
@@ -381,13 +459,24 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           size="icon"
           className="h-7 w-7 shrink-0"
           onClick={() => setViewMode(viewMode === "list" ? "grid" : "list")}
-          aria-label={viewMode === "list" ? "Switch to grid view" : "Switch to list view"}
+          aria-label={
+            viewMode === "list" ? "Switch to grid view" : "Switch to list view"
+          }
         >
-          {viewMode === "list" ? <Grid3x3 className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
+          {viewMode === "list" ? (
+            <Grid3x3 className="h-3.5 w-3.5" />
+          ) : (
+            <List className="h-3.5 w-3.5" />
+          )}
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="More actions">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              aria-label="More actions"
+            >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
@@ -452,30 +541,47 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
                 <Input
                   ref={inlineInputRef}
                   value={inlineInput.value}
-                  onChange={(e) => setInlineInput({ ...inlineInput, value: e.target.value })}
+                  onChange={(e) =>
+                    setInlineInput({ ...inlineInput, value: e.target.value })
+                  }
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleInlineSubmit();
                     if (e.key === "Escape") setInlineInput(null);
                   }}
                   onBlur={handleInlineSubmit}
-                  placeholder={inlineInput.type === "folder" ? "Folder name..." : "File name..."}
+                  placeholder={
+                    inlineInput.type === "folder"
+                      ? "Folder name..."
+                      : "File name..."
+                  }
                   className="h-6 text-xs"
                 />
               </div>
             )}
             {sortedEntries.map((entry) => {
               const Icon = getFileIcon(entry);
-              const isRenaming = inlineInput?.type === "rename" && inlineInput.path === entry.path;
+              const isRenaming =
+                inlineInput?.type === "rename" &&
+                inlineInput.path === entry.path;
 
               return (
-                <div key={entry.path} className="group flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent/50 transition-colors" onContextMenu={(e) => handleContextMenu(e, entry)}>
+                <div
+                  key={entry.path}
+                  className="group flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent/50 transition-colors"
+                  onContextMenu={(e) => handleContextMenu(e, entry)}
+                >
                   {isRenaming ? (
                     <>
                       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <Input
                         ref={inlineInputRef}
                         value={inlineInput!.value}
-                        onChange={(e) => setInlineInput({ ...inlineInput!, value: e.target.value })}
+                        onChange={(e) =>
+                          setInlineInput({
+                            ...inlineInput!,
+                            value: e.target.value,
+                          })
+                        }
                         onKeyDown={(e) => {
                           if (e.key === "Enter") handleInlineSubmit();
                           if (e.key === "Escape") setInlineInput(null);
@@ -491,7 +597,12 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
                         onClick={() => handleEntryClick(entry)}
                       >
                         <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <span className="flex-1 truncate text-left" title={entry.name}>{entry.name}</span>
+                        <span
+                          className="flex-1 truncate text-left"
+                          title={entry.name}
+                        >
+                          {entry.name}
+                        </span>
                         <span className="text-xs text-muted-foreground shrink-0">
                           {entry.type === "file" ? formatSize(entry.size) : ""}
                         </span>
@@ -509,13 +620,17 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           {entry.type === "file" && (
-                            <DropdownMenuItem onClick={() => openEditor(entry.path)}>
+                            <DropdownMenuItem
+                              onClick={() => openEditor(entry.path)}
+                            >
                               <ExternalLink className="mr-2 h-3.5 w-3.5" />
                               Open in Editor
                             </DropdownMenuItem>
                           )}
                           {entry.type === "directory" && (
-                            <DropdownMenuItem onClick={() => handleCdInTerminal(entry.path)}>
+                            <DropdownMenuItem
+                              onClick={() => handleCdInTerminal(entry.path)}
+                            >
                               <Terminal className="mr-2 h-3.5 w-3.5" />
                               cd in Terminal
                             </DropdownMenuItem>
@@ -550,7 +665,9 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
                   onClick={() => handleEntryClick(entry)}
                 >
                   <Icon className="h-8 w-8 text-muted-foreground" />
-                  <span className="text-[10px] truncate w-full text-center">{entry.name}</span>
+                  <span className="text-[10px] truncate w-full text-center">
+                    {entry.name}
+                  </span>
                 </button>
               );
             })}
@@ -567,13 +684,20 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
       {/* Context menu */}
       {contextMenu && (
         <div
-          className="fixed z-50 min-w-[160px] rounded-md border bg-popover p-1 shadow-md"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
+          ref={clampContextMenu}
+          className="fixed z-[var(--z-popover)] min-w-[160px] rounded-md border bg-popover p-1 shadow-md"
+          style={{
+            top: menuPos?.top ?? contextMenu.y,
+            left: menuPos?.left ?? contextMenu.x,
+          }}
         >
           {contextMenu.entry.type === "file" && (
             <button
               className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-              onClick={() => { openEditor(contextMenu.entry.path); setContextMenu(null); }}
+              onClick={() => {
+                openEditor(contextMenu.entry.path);
+                setContextMenu(null);
+              }}
             >
               <ExternalLink className="h-3.5 w-3.5" />
               Open in Editor
@@ -582,7 +706,10 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           {contextMenu.entry.type === "directory" && (
             <button
               className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-              onClick={() => { handleCdInTerminal(contextMenu.entry.path); setContextMenu(null); }}
+              onClick={() => {
+                handleCdInTerminal(contextMenu.entry.path);
+                setContextMenu(null);
+              }}
             >
               <Terminal className="h-3.5 w-3.5" />
               cd in Terminal
@@ -590,14 +717,20 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
           )}
           <button
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-            onClick={() => { handleRename(contextMenu.entry); setContextMenu(null); }}
+            onClick={() => {
+              handleRename(contextMenu.entry);
+              setContextMenu(null);
+            }}
           >
             <Pencil className="h-3.5 w-3.5" />
             Rename
           </button>
           <button
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-accent"
-            onClick={() => { setDeleteTarget(contextMenu.entry); setContextMenu(null); }}
+            onClick={() => {
+              setDeleteTarget(contextMenu.entry);
+              setContextMenu(null);
+            }}
           >
             <Trash2 className="h-3.5 w-3.5" />
             Delete
@@ -606,13 +739,19 @@ export function FileTree({ onFileSelect, className, breadcrumbPath, onNavigate }
       )}
 
       {/* Delete confirmation */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deleteTarget?.name}?</AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone.{" "}
-              {deleteTarget?.type === "directory" && "All contents will be deleted."}
+              {deleteTarget?.type === "directory" &&
+                "All contents will be deleted."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

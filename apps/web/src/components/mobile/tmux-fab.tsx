@@ -23,22 +23,55 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@repo/ui/components/ui/sheet";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/ui/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@repo/ui/components/ui/dialog";
 import { Button } from "@repo/ui/components/ui/button";
+import { Input } from "@repo/ui/components/ui/input";
 import { cn } from "@repo/ui/lib/utils";
 import { useSessionStore } from "@/stores/session-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useUiStore } from "@/stores/ui-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useConnectionStore } from "@/stores/connection-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
 type FabTab = "panes" | "windows" | "advanced";
+
+/** A destructive action parked until the user confirms it. */
+interface PendingConfirm {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  run: () => void;
+}
 
 export function TmuxFab() {
   const { activeSessionId } = useSessionStore();
   const { zoomedPaneId } = usePaneStore();
   const { fabOpen, setFabOpen, setResizeModeActive } = useUiStore();
+  const connected = useConnectionStore((s) => s.status === "connected");
   const [activeTab, setActiveTab] = useState<FabTab>("panes");
   const [longPressOpen, setLongPressOpen] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(
+    null,
+  );
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleFabTouchStart = useCallback(() => {
@@ -71,6 +104,19 @@ export function TmuxFab() {
       usePaneStore.getState().setPendingAutoZoom(true);
     }
     setFabOpen(false);
+  };
+
+  const handleRenameSubmit = () => {
+    const name = renameValue.trim();
+    const { activeWindowId } = usePaneStore.getState();
+    if (name && activeWindowId) {
+      getRelayClient()?.send({
+        type: "window:rename",
+        id: activeWindowId,
+        name,
+      });
+    }
+    setRenameOpen(false);
   };
 
   const paneActions = [
@@ -106,7 +152,11 @@ export function TmuxFab() {
       action: () => {
         const { activePaneId } = usePaneStore.getState();
         if (activePaneId) {
-          getRelayClient()?.send({ type: "pane:swap", id: activePaneId, direction: "D" });
+          getRelayClient()?.send({
+            type: "pane:swap",
+            id: activePaneId,
+            direction: "D",
+          });
         }
         setFabOpen(false);
       },
@@ -117,10 +167,16 @@ export function TmuxFab() {
       variant: "destructive" as const,
       action: () => {
         const { activePaneId, panes } = usePaneStore.getState();
-        if (activePaneId && panes.length > 1) {
-          getRelayClient()?.send({ type: "pane:kill", id: activePaneId });
-        }
         setFabOpen(false);
+        if (!activePaneId || panes.length < 2) return;
+        setPendingConfirm({
+          title: "Kill this pane?",
+          description:
+            "The pane and every process running in it are terminated. This cannot be undone.",
+          confirmLabel: "Kill Pane",
+          run: () =>
+            getRelayClient()?.send({ type: "pane:kill", id: activePaneId }),
+        });
       },
     },
   ];
@@ -139,25 +195,31 @@ export function TmuxFab() {
       label: "Kill Window",
       variant: "destructive" as const,
       action: () => {
-        const { activeWindowId } = usePaneStore.getState();
-        if (activeWindowId) {
-          getRelayClient()?.send({ type: "window:kill", id: activeWindowId });
-        }
+        const { activeWindowId, windows } = usePaneStore.getState();
         setFabOpen(false);
+        if (!activeWindowId) return;
+        const name = windows.find((w) => w.id === activeWindowId)?.name;
+        setPendingConfirm({
+          title: name ? `Kill window "${name}"?` : "Kill this window?",
+          description:
+            "The window, all of its panes and every process in them are terminated. This cannot be undone.",
+          confirmLabel: "Kill Window",
+          run: () =>
+            getRelayClient()?.send({ type: "window:kill", id: activeWindowId }),
+        });
       },
     },
     {
       icon: PenLine,
       label: "Rename Win",
       action: () => {
-        const { activeWindowId } = usePaneStore.getState();
-        if (activeWindowId) {
-          const name = prompt("Window name:");
-          if (name) {
-            getRelayClient()?.send({ type: "window:rename", id: activeWindowId, name });
-          }
-        }
+        const { activeWindowId, windows } = usePaneStore.getState();
         setFabOpen(false);
+        if (!activeWindowId) return;
+        setRenameValue(
+          windows.find((w) => w.id === activeWindowId)?.name ?? "",
+        );
+        setRenameOpen(true);
       },
     },
     {
@@ -212,28 +274,25 @@ export function TmuxFab() {
   ];
 
   const currentActions =
-    activeTab === "panes" ? paneActions :
-    activeTab === "windows" ? windowActions :
-    advancedActions;
+    activeTab === "panes"
+      ? paneActions
+      : activeTab === "windows"
+        ? windowActions
+        : advancedActions;
 
   return (
     <>
-      {/* FAB button with long-press quick split.
-          Anchored to the *visual* viewport (--vv-* set by VisualViewportSync)
-          so pinch-zoom doesn't push it offscreen horizontally / vertically. */}
-      <div
-        className="fixed z-40"
-        style={{
-          right: "calc(1rem + (100vw - var(--vv-width, 100vw)) - var(--vv-offset-left, 0px))",
-          bottom: "calc(5rem + max(0px, 100vh - var(--vv-height, 100vh) - var(--vv-offset-top, 0px)))",
-        }}
-      >
+      {/* FAB with long-press quick split. Positioned inside the terminal pane
+          rather than the viewport so it can never reach — or swallow taps meant
+          for — the footer chrome below it. */}
+      <div className="absolute bottom-3 right-3 z-[var(--z-fab)]">
         {longPressOpen && (
           <div className="absolute bottom-14 right-0 flex gap-1 rounded-lg border bg-background p-1 shadow-lg">
             <Button
               variant="outline"
               size="sm"
               className="gap-1 text-xs"
+              disabled={!connected}
               onClick={() => {
                 handleSplit("h");
                 setLongPressOpen(false);
@@ -246,6 +305,7 @@ export function TmuxFab() {
               variant="outline"
               size="sm"
               className="gap-1 text-xs"
+              disabled={!connected}
               onClick={() => {
                 handleSplit("v");
                 setLongPressOpen(false);
@@ -259,10 +319,13 @@ export function TmuxFab() {
         <button
           className={cn(
             "flex h-11 w-11 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform active:scale-95",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            "disabled:opacity-50",
             fabOpen && "rotate-45",
           )}
           onClick={handleFabClick}
           aria-label="Tmux actions"
+          disabled={!connected}
           onTouchStart={handleFabTouchStart}
           onTouchEnd={handleFabTouchEnd}
           onTouchCancel={handleFabTouchEnd}
@@ -273,7 +336,7 @@ export function TmuxFab() {
 
       {/* Action sheet with tabs */}
       <Sheet open={fabOpen} onOpenChange={setFabOpen}>
-        <SheetContent side="bottom" className="pb-8">
+        <SheetContent side="bottom">
           <SheetHeader className="pb-2">
             <SheetTitle className="text-sm">Tmux Actions</SheetTitle>
           </SheetHeader>
@@ -285,6 +348,7 @@ export function TmuxFab() {
                 key={tab.id}
                 className={cn(
                   "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   activeTab === tab.id
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-accent",
@@ -300,8 +364,13 @@ export function TmuxFab() {
             {currentActions.map((item) => (
               <Button
                 key={item.label}
-                variant={"variant" in item ? (item.variant as "destructive") : "outline"}
+                variant={
+                  "variant" in item
+                    ? (item.variant as "destructive")
+                    : "outline"
+                }
                 className="flex h-auto items-center gap-2 px-3 py-2.5 text-xs justify-start"
+                disabled={!connected}
                 onClick={item.action}
               >
                 <item.icon className="h-4 w-4" />
@@ -311,6 +380,62 @@ export function TmuxFab() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Kill pane / kill window sit next to harmless actions, so they confirm
+          first — same contract as killing a session from the session list. */}
+      <AlertDialog
+        open={pendingConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingConfirm?.title}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingConfirm?.description}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => pendingConfirm?.run()}
+            >
+              {pendingConfirm?.confirmLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base">Rename window</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleRenameSubmit();
+            }}
+            placeholder="Window name"
+            aria-label="Window name"
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleRenameSubmit}
+              disabled={!connected || !renameValue.trim()}
+            >
+              Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

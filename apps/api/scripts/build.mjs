@@ -71,7 +71,34 @@ await build({
   platform: "node",
   format: "esm",
   target: "node22",
-  external: ["ws", "pino", "pino-pretty", "zod"],
+  external: [
+    "ws",
+    "pino",
+    "pino-pretty",
+    "zod",
+    // These stay external for a reason sharper than bundle size.
+    //
+    // `zod` above is external, so every bundled import of it collapses onto
+    // *this* package's copy — zod 3, because @repo/protocol's schemas are
+    // written against it. better-auth needs zod 4 (it calls `.meta()`, which
+    // does not exist in 3), and pnpm gives it its own nested copy. Inlining
+    // better-auth therefore rewrote its zod 4 import to the flattened zod 3
+    // and the bundle died on its first line with
+    // `z.coerce.boolean(...).meta is not a function`.
+    //
+    // Leaving them external lets Node resolve each package's own dependency
+    // tree, which is the only thing that gets two major versions of one
+    // library right. `better-sqlite3` additionally has a native binding that
+    // cannot be bundled at all.
+    "better-auth",
+    "better-auth/*",
+    "@better-auth/*",
+    "better-sqlite3",
+    "drizzle-orm",
+    "drizzle-orm/*",
+    "dodopayments",
+    "@dodopayments/*",
+  ],
   banner: {
     js: "import { createRequire as _mtmuxCreateRequire } from 'module'; const require = _mtmuxCreateRequire(import.meta.url);",
   },

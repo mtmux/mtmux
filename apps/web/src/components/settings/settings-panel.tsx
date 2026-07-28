@@ -11,6 +11,10 @@ import { terminalThemes } from "@repo/ui/terminal-themes";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { useSettingsStore } from "@/stores/settings-store";
 
+/** Raw buttons here need the same focus ring the shared Button component has. */
+const focusRing =
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 interface SettingsPanelProps {
   className?: string;
 }
@@ -40,7 +44,8 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
               <Label className="text-xs">Font Size</Label>
               <div className="flex items-center gap-2">
                 <button
-                  className="h-7 w-7 rounded border text-sm"
+                  className={cn("h-11 w-11 rounded border text-sm", focusRing)}
+                  aria-label="Decrease font size"
                   onClick={() =>
                     terminal.setFontSize(Math.max(8, terminal.fontSize - 1))
                   }
@@ -51,7 +56,8 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                   {terminal.fontSize}
                 </span>
                 <button
-                  className="h-7 w-7 rounded border text-sm"
+                  className={cn("h-11 w-11 rounded border text-sm", focusRing)}
+                  aria-label="Increase font size"
                   onClick={() =>
                     terminal.setFontSize(Math.min(24, terminal.fontSize + 1))
                   }
@@ -67,7 +73,8 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                   <button
                     key={style}
                     className={cn(
-                      "rounded-md border px-3 py-1 text-xs capitalize transition-colors",
+                      "min-h-11 rounded-md border px-3 py-1 text-xs capitalize transition-colors",
+                      focusRing,
                       terminal.cursorStyle === style
                         ? "border-primary bg-primary/10"
                         : "hover:bg-accent",
@@ -145,6 +152,7 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                 key={key}
                 className={cn(
                   "rounded-lg border p-2 transition-colors text-left",
+                  focusRing,
                   terminal.themeName === key
                     ? "border-primary ring-1 ring-primary"
                     : "hover:border-foreground/30",
@@ -177,7 +185,8 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
               <button
                 key={key.id}
                 className={cn(
-                  "rounded-md border px-2 py-1 text-xs transition-colors",
+                  "min-h-11 rounded-md border px-2.5 py-1 text-xs transition-colors",
+                  focusRing,
                   key.visible ? "border-primary bg-primary/10" : "opacity-50",
                 )}
                 onClick={() => settings.toggleToolbarKey(key.id)}

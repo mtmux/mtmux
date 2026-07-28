@@ -1,0 +1,189 @@
+---
+title: "Codex CLI notifications: the notify hook and its blind spot"
+description: "Codex CLI's notify hook fires when a turn completes but stays silent on approval prompts — the real config, and a wrapper script that covers the gap."
+date: "2026-06-16"
+author: "nadia-okonkwo"
+category: "agents"
+tags: ["codex cli", "notifications", "hooks", "agents"]
+keywords:
+  - "codex cli notification"
+  - "codex notify hook"
+  - "openai codex notification"
+  - "codex cli waiting for approval"
+featured: false
+draft: false
+---
+
+Codex CLI has a `notify` setting in `config.toml` that runs a program of your choice every time
+the agent finishes a turn, passing it a JSON blob with the result. That covers "Codex is done."
+It does not cover "Codex is sitting at an approval prompt" — the notify hook only fires on turn
+completion, not on the interactive y/n that appears when a command needs your approval. That gap
+is the actual pain point, and the fix is a small polling wrapper, shown below.
+
+## The notify hook
+
+Add a `notify` array to `~/.codex/config.toml` pointing at any executable. Codex CLI invokes it
+with a single JSON-encoded argument describing the event:
+
+```toml title="~/.codex/config.toml"
+notify = ["/usr/local/bin/codex-notify.sh"]
+```
+
+```bash title="/usr/local/bin/codex-notify.sh"
+#!/usr/bin/env bash
+# Codex CLI calls this with one argument: a JSON blob for the event.
+payload="$1"
+message=$(echo "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("last-assistant-message","turn complete"))')
+
+# macOS
+osascript -e "display notification \"$message\" with title \"Codex CLI\""
+# Linux — comment out the line above and use this instead
+# notify-send "Codex CLI" "$message"
+```
+
+```bash
+chmod +x /usr/local/bin/codex-notify.sh
+```
+
+That gets you a desktop banner the moment a turn finishes — a task completed, a question
+answered, an error surfaced back to you. For a foreground run where you're watching the terminal
+anyway, it's redundant. For anything you've alt-tabbed away from, it's the whole value of the
+feature.
+
+<TerminalDemo title="testing the hook">
+  $ codex "list the files in this repo" # ... turn completes ... # desktop
+  banner: "Codex CLI — Listed 14 files across src/ and tests/"
+</TerminalDemo>
+
+## Where it goes quiet
+
+Codex CLI's default approval mode asks before running a command or touching a file outside the
+sandbox. That prompt is a foreground interaction — it blocks on your terminal, waiting for
+`y`/`n`/`a` — and it is not a turn completion. The `notify` hook does not fire for it. Kick off a
+run, walk away, and if Codex hits something it wants permission for, the terminal sits there
+indefinitely and nothing tells you. You'll notice when you come back and find no progress, not
+when it actually happened.
+
+This is a real gap relative to Claude Code, whose `Notification` hook fires specifically for
+permission prompts — see [Claude Code notifications](/blog/claude-code-notifications) for that
+side of the comparison. Codex CLI's hook system, as of this writing, has one event, not two.
+
+<CompareTable
+  columns={[
+    "Signal",
+    "Fires on completion?",
+    "Fires on approval prompt?",
+    "Setup",
+  ]}
+  rows={[
+    ["notify hook (native)", "yes", "no", "one line in config.toml"],
+    [
+      "terminal bell fallback",
+      "no",
+      "sometimes, if the prompt writes \\a",
+      "none — depends on the TUI",
+    ],
+    [
+      "polling wrapper (below)",
+      "yes, via the hook",
+      "yes",
+      "a background loop + dedupe file",
+    ],
+  ]}
+/>
+
+## A wrapper that covers the approval gap
+
+Since Codex CLI doesn't emit an event for "waiting on you," the only reliable option outside the
+tool itself is to watch the pane's actual output for the prompt text and notify when it appears.
+This is the same technique worth keeping in your pocket for any CLI that doesn't expose a hook at
+all — poll, match, dedupe, notify.
+
+```bash title="~/bin/codex-watch"
+#!/usr/bin/env bash
+# Run this in a second pane pointed at the same tmux session as codex.
+# It polls the pane's visible output for an approval prompt and notifies once.
+target="${1:-codex:1.0}"
+seen=""
+
+while true; do
+  snapshot=$(tmux capture-pane -p -t "$target" | tail -5)
+  if echo "$snapshot" | grep -qE '\[y/n/a\]|approve\?' && [ "$snapshot" != "$seen" ]; then
+    osascript -e 'display notification "Codex is waiting for approval" with title "Codex CLI"'
+    seen="$snapshot"
+  fi
+  sleep 5
+done
+```
+
+The `seen` check is the part people skip and regret — without it, a prompt sitting on screen for
+three minutes fires a notification every five seconds. Dedupe on the last-seen snapshot, or on a
+timestamp file with a cooldown, and it fires once per event instead of once per poll.
+
+<Callout type="note" title="This is a workaround, not a fix">
+  A polling loop is grep against a moving target — it breaks the moment the
+  prompt's wording changes in a Codex CLI release. It's the right amount of
+  engineering for a personal setup; it is not something you want three people on
+  a team independently maintaining.
+</Callout>
+
+## Where this stops being worth maintaining
+
+The polling script works for one tool, on one machine, until Codex CLI's UI text changes. If
+you're only running Codex, that's a fair trade for a few minutes of setup. If you're also running
+Claude Code, aider, or Gemini CLI, you're now maintaining a different regex per tool, on top of a
+different native-hook config per tool where one exists. At that point it's worth asking what the
+notification was actually for: nine times out of ten it is "should I go look," and the cheaper fix
+is making looking free. mtmux serves the tmux session Codex is already running in straight to a
+browser on any device — [the case for that with agents](/agents) — so a check costs a tab instead
+of a laptop. Whether that beats maintaining a regex depends on how many tools and machines you're
+actually watching — covered in more depth in
+[stop babysitting coding agents](/blog/stop-babysitting-coding-agents).
+
+## Why the gap isn't a bug
+
+It's tempting to file the missing approval event as an oversight, but the shape of the problem
+makes it a genuinely awkward one to solve inside the tool. An approval prompt isn't an event Codex
+CLI emits and moves past — it's a blocking read on stdin, and the process is, from the outside,
+indistinguishable from one that's still thinking. Any fix has to either poll the terminal state
+(what the wrapper above does) or have the approval-prompt code path itself call out to a notifier,
+which means every place in the codebase that can block on you needs to remember to fire the same
+hook. That's a larger change than adding a config field, which is presumably why `notify` shipped
+scoped to turn completion first.
+
+## Putting both together
+
+The two are not mutually exclusive. Keep the native `notify` hook for turn completions — it's
+one line and it's exact — and add the polling wrapper only for the approval gap, scoped to
+whatever prompt text your Codex CLI version actually uses. Test both with a throwaway session
+before trusting either on a run you plan to walk away from.
+
+<FAQ>
+  <FAQItem q="Does Codex CLI have a native notification for approval prompts?">
+    Not as of this writing. The `notify` hook fires when a turn completes, not
+    when the CLI is waiting on an approval prompt — that's the gap this post's
+    wrapper script covers.
+  </FAQItem>
+  <FAQItem q="What does Codex CLI pass to the notify program?">
+    A single JSON-encoded argument describing the event, including fields like
+    the last assistant message. Parse it with `python3 -c 'import json,sys;
+    ...'` or `jq` inside your notify script.
+  </FAQItem>
+  <FAQItem q="Can I use notify-send instead of osascript?">
+    Yes — `notify-send "title" "message"` is the Linux equivalent, and it's what
+    the sample script above uses when you swap the commented line in.
+  </FAQItem>
+  <FAQItem q="Why does my polling script fire the same notification repeatedly?">
+    You're not deduping. Compare the current pane snapshot (or a hash of it)
+    against the last one you already notified for, and skip if unchanged —
+    otherwise a five-second poll fires a notification every five seconds for as
+    long as the prompt sits on screen.
+  </FAQItem>
+  <FAQItem q="Is there a way to get Codex CLI notifications on my phone?">
+    Not natively — the notify hook only runs a local program, so reaching a
+    phone means having that program call out to a push service such as ntfy or
+    Pushover. Getting the *session* onto the phone is a separate problem: that's
+    what mtmux does, serving the live pane to a browser with no SSH client on
+    the device.
+  </FAQItem>
+</FAQ>

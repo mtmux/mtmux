@@ -257,7 +257,9 @@ export function SessionCard({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 shrink-0 text-muted-foreground"
+                  // 24px glyph, 44px hit area — the card row is too tight for a
+                  // button that large, so the target grows via a pseudo-element.
+                  className="relative h-6 w-6 shrink-0 text-muted-foreground before:absolute before:-inset-2.5"
                   onClick={(e) => e.stopPropagation()}
                   aria-label="Session actions"
                 >

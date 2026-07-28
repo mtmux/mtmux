@@ -1,10 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { renderBannerLines, qrLines } from "./banner.js";
+import { renderBannerLines, qrLines, type PairingInvite } from "./banner.js";
 
 const TOKEN = "a".repeat(64);
 
+const INVITE: PairingInvite = {
+  code: "482913",
+  url: "https://app.mtmux.com/j#482913",
+  host: "app.mtmux.com",
+};
+
 function render(overrides: Partial<Parameters<typeof renderBannerLines>[0]>) {
   return renderBannerLines({
+    version: "0.4.0",
     localUrl: "http://localhost:14100",
     token: TOKEN,
     columns: 120,
@@ -12,16 +19,17 @@ function render(overrides: Partial<Parameters<typeof renderBannerLines>[0]>) {
   });
 }
 
+const QR_GLYPHS = /[█▀▄]/;
+
 describe("renderBannerLines", () => {
   it("always shows the loopback URL", () => {
     const out = render({}).join("\n");
-    expect(out).toContain("On this machine");
+    expect(out).toContain("Local");
     expect(out).toContain("http://localhost:14100");
   });
 
-  it("omits the network section when there is no LAN URL", () => {
-    const out = render({ lanUrl: null }).join("\n");
-    expect(out).not.toContain("On your network");
+  it("omits the network row when there is no LAN URL", () => {
+    expect(render({ lanUrl: null }).join("\n")).not.toContain("Network");
   });
 
   it("prints the real LAN URL and its interface — never '0.0.0.0'", () => {
@@ -29,44 +37,76 @@ describe("renderBannerLines", () => {
       lanUrl: "http://192.168.1.5:14100",
       lanInterface: "wlp3s0",
     }).join("\n");
-    expect(out).toContain("On your network");
+    expect(out).toContain("Network");
     expect(out).toContain("http://192.168.1.5:14100");
     expect(out).toContain("(wlp3s0)");
     expect(out).not.toContain("0.0.0.0");
   });
 
-  it("prints the token so the manual flow still works", () => {
-    expect(render({}).join("\n")).toContain(TOKEN);
+  describe("with a hosted invite", () => {
+    it("shows the code grouped, the host, and a QR", () => {
+      const out = render({ invite: INVITE }).join("\n");
+      expect(out).toContain("48 29 13");
+      expect(out).toContain("app.mtmux.com");
+      expect(out).toMatch(QR_GLYPHS);
+    });
+
+    it("still shows the code when the QR is suppressed", () => {
+      const out = render({ invite: INVITE, showQr: false });
+      expect(out.join("\n")).toContain("48 29 13");
+      expect(out.join("\n")).not.toMatch(QR_GLYPHS);
+    });
+
+    // The token is a fallback for the case where nothing can be scanned or
+    // typed. An invite is exactly that case being covered, so printing a
+    // 64-character secret alongside it is noise a shoulder-surfer can use.
+    it("does not print the token", () => {
+      expect(render({ invite: INVITE }).join("\n")).not.toContain(TOKEN);
+    });
+
+    it("says it is waiting for a device", () => {
+      expect(render({ invite: INVITE }).join("\n")).toContain("Waiting");
+    });
   });
 
-  it("mentions scanning only when a QR is present", () => {
-    expect(render({}).join("\n")).not.toContain("Scan the code");
-    expect(
-      render({ qrPayload: "http://192.168.1.5:14100/login#n=abc" }).join("\n"),
-    ).toContain("Scan the code");
+  describe("local mode", () => {
+    const lanQrPayload = "http://192.168.1.5:14100/login#n=" + "a".repeat(32);
+
+    it("encodes the LAN sign-in URL instead of an invite", () => {
+      const out = render({
+        lanUrl: "http://192.168.1.5:14100",
+        lanQrPayload,
+      }).join("\n");
+      expect(out).toContain("Scan to sign in");
+      expect(out).toMatch(QR_GLYPHS);
+      expect(out).not.toContain(TOKEN);
+    });
+
+    it("falls back to the token when there is nothing to scan", () => {
+      expect(render({}).join("\n")).toContain(TOKEN);
+      expect(render({ lanQrPayload, showQr: false }).join("\n")).toContain(
+        TOKEN,
+      );
+    });
+  });
+
+  it("surfaces a degradation note", () => {
+    const out = render({ note: "Tunnel unavailable. Serving locally." });
+    expect(out.join("\n")).toContain("Tunnel unavailable");
   });
 
   it("places the QR beside the text on a wide terminal", () => {
-    const out = render({
-      lanUrl: "http://192.168.1.5:14100",
-      qrPayload: "http://192.168.1.5:14100/login#n=" + "a".repeat(32),
-      columns: 120,
-    });
-    // The heading row carries QR blocks to its right rather than sitting alone.
-    const heading = out.find((l) => l.includes("›  mtmux"))!;
-    expect(heading).toMatch(/[█▀▄]/);
+    const out = render({ invite: INVITE, columns: 120 });
+    const aside = out.find((l) => l.includes("Scan to open"))!;
+    expect(aside).toMatch(QR_GLYPHS);
   });
 
-  it("stacks the QR below the text when the terminal is narrow", () => {
-    const out = render({
-      lanUrl: "http://192.168.1.5:14100",
-      qrPayload: "http://192.168.1.5:14100/login#n=" + "a".repeat(32),
-      columns: 40,
-    });
-    const heading = out.find((l) => l.includes("›  mtmux"))!;
-    expect(heading).not.toMatch(/[█▀▄]/);
-    // …but the QR is still rendered, just further down.
-    expect(out.some((l) => /[█▀▄]/.test(l))).toBe(true);
+  it("stacks the QR above the text when the terminal is narrow", () => {
+    const out = render({ invite: INVITE, columns: 40 });
+    const aside = out.find((l) => l.includes("Scan to open"))!;
+    expect(aside).not.toMatch(QR_GLYPHS);
+    // …but the QR is still rendered, just on its own rows.
+    expect(out.some((l) => QR_GLYPHS.test(l))).toBe(true);
   });
 
   it("never lets a line exceed the terminal width", () => {
@@ -74,11 +114,13 @@ describe("renderBannerLines", () => {
     const out = render({
       lanUrl: "http://192.168.1.5:14100",
       lanInterface: "wlp3s0",
-      qrPayload: "http://192.168.1.5:14100/login#n=" + "a".repeat(32),
+      invite: INVITE,
       columns,
     });
     for (const line of out) {
-      expect([...line].length).toBeLessThanOrEqual(columns);
+      expect([...line.replace(/\[[0-9;]*m/g, "")].length).toBeLessThanOrEqual(
+        columns,
+      );
     }
   });
 });

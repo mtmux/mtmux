@@ -1,82 +1,192 @@
 ---
 title: Troubleshooting
-description: Common issues and solutions.
+description: Symptoms, causes and fixes.
 ---
 
-## Connection Issues
+## Start here
 
-### "Connection timed out" on login
+```bash
+mtmux doctor
+```
 
-- Verify the relay server is running (`pnpm --filter @app/relay dev`)
-- Check that `NEXT_PUBLIC_RELAY_URL` points to the correct address
-- Ensure no firewall is blocking port 14300
-- If using Docker, verify port mapping
+Six checks in dependency order, so the first failure is the cause rather than a
+symptom. See [`mtmux doctor`](/docs/doctor). If it is clean, the problem is
+between the browser and the machine — keep reading.
+
+## Starting up
+
+### "tmux not found in PATH"
+
+`mtmux` refuses to start without tmux. `brew install tmux` on macOS,
+`sudo apt install tmux` on Linux.
+
+### "Node 22+ required"
+
+Upgrade Node. The CLI uses WebCrypto from Node core for sealed frames.
+
+### The port is already in use
+
+```bash
+mtmux status     # is it your own mtmux?
+mtmux stop       # stop it
+mtmux start -p 9000
+```
+
+`mtmux doctor` distinguishes "held by this mtmux" from "held by something else"
+— the first is not a problem.
+
+### It bound loopback and I wanted the LAN
+
+`mtmux` binds `0.0.0.0` only when it finds a usable private IPv4 address on a
+non-virtual interface. If your only address is on a Docker bridge, a VM
+host-only network or a VPN overlay (Tailscale, ZeroTier, WireGuard), that is
+excluded on purpose — advertising it as "your network" would be misleading — and
+it falls back to `127.0.0.1`.
+
+Force it:
+
+```bash
+mtmux start --host 0.0.0.0
+```
+
+## Connecting
+
+### The phone cannot reach the Network address
+
+- Confirm both devices are on the same network and not on a guest SSID with
+  client isolation.
+- Check the host firewall allows inbound on the port.
+- The address in the banner is the one to use — `localhost` is meaningless on
+  another device.
 
 ### "Authentication failed"
 
-- Check that the token entered matches `AUTH_TOKEN` in the relay's environment
-- Tokens are case-sensitive
+- The token is case-sensitive and must match exactly.
+- A `--local` LAN sign-in dies when the server restarts, because those tokens
+  live only in relay memory. Scan the new code. Devices paired with a six-digit
+  code are re-admitted automatically and are not affected.
+- After 5 failed attempts from one address, further attempts are refused for 30
+  seconds, doubling up to 15 minutes — _including correct ones_. Wait it out.
 
-### Connection keeps reconnecting
+### The socket connects and immediately closes
 
-- Check the relay server logs for errors
-- Verify the WebSocket connection isn't being terminated by a proxy
-- If behind a reverse proxy, ensure WebSocket upgrade headers are forwarded and `proxy_read_timeout` is set high
+- Nothing was sent within 5 seconds. The **first** message on the socket must be
+  `auth`.
+- Or you hit the connection cap: 100 total, 10 per address, closed with code 1013.
 
-## Terminal Issues
+### It keeps reconnecting
 
-### Terminal is blank after attaching
+- Behind a reverse proxy, confirm `Upgrade` and `Connection` headers are
+  forwarded and `proxy_read_timeout` is generous — 3600s or more.
+- `IDLE_TIMEOUT_MINUTES` closes idle connections after 30 minutes by default.
+  Set it to `0` to disable.
+- Check the origin: with a non-empty `CORS_ORIGINS`, an origin not on the list
+  is rejected at the upgrade with a 403.
 
-- The session may have no output yet — try typing a command
-- Check that tmux is running on the host (`tmux list-sessions`)
-- Verify the relay server can access tmux (same user, correct socket path)
+## Pairing
 
-### Terminal doesn't resize properly
+### "Pairing code is invalid or already used"
 
-- Try refreshing the page
-- The Fit addon auto-resizes on container changes, but some edge cases may require a manual refresh
+LAN nonces are single-use and only one is live at a time. Once a device signs
+in, mtmux prints a fresh code — use that one, not a screenshot.
 
-### Special keys don't work
+### The six-digit code failed
 
-- **macOS**: Option key is mapped as Meta by default
-- Mobile: Use the keyboard toolbar for Tab, Esc, Ctrl, and arrow keys
+A wrong guess destroys the code by design, and the page offers a new one. Get
+fresh digits and try again. Codes also expire.
 
-## Session Issues
+### `mtmux pair` says nothing is serving
 
-### "Session not found" error
+`mtmux pair` needs a server already running on that port. Start one first, or
+pass the right `-p`.
 
-- The session may have exited or been killed externally
-- Refresh the session list to get the current state
-- Check `tmux list-sessions` on the host
+### The tunnel is unavailable
 
-### Can't create sessions
+`mtmux start` prints a dim note under the addresses when it could not reach the
+broker, and carries on serving locally. Check with `mtmux doctor` — the broker
+check is a warning, never a failure, because local mode is fully functional
+without it.
 
-- Verify tmux is installed: `tmux -V`
-- Check the relay server logs for errors
-- Ensure the default shell exists (`TMUX_DEFAULT_SHELL`)
+### Downloads and image previews do not work
 
-## File Browser Issues
+Expected on a **tunnelled** session. Those are plain HTTP `GET /file` requests
+and a tunnel carries only sealed WebSocket frames. Get onto the same network as
+the machine, or pair without `--tunnel-only` so the direct path can win.
 
-### "Access denied" on file operations
+## Terminal
 
-- The path is outside `ALLOWED_PATHS` in the relay configuration
-- Update `ALLOWED_PATHS` to include the directories you need access to
+### Blank after attaching
 
-### Files not updating
+- The session may simply have produced no output yet. Type something.
+- Confirm tmux is running as the same user: `tmux list-sessions`.
+- A tmux socket owned by another user is the classic cause on a shared box. Set
+  `TMUX_SOCKET` or run mtmux as that user.
 
-- File watching uses chokidar with `depth: 0` (current directory only)
-- Navigate away and back to refresh
+### Only part of each line renders
+
+Turn off **GPU Rendering** in Settings and reload. The WebGL renderer mis-scales
+cells by `devicePixelRatio` on some HiDPI screens.
+
+### It does not resize properly
+
+The client refits on container, window, orientation and visual-viewport changes.
+If it is stuck, reload the page.
+
+### Special keys
+
+- macOS: Option is mapped as Meta.
+- Mobile: use the keyboard toolbar. Ctrl and Alt are sticky — tap, then press a
+  letter.
+
+## Sessions and files
+
+### "Session not found"
+
+It exited or was killed elsewhere. Refresh the list.
+
+### Cannot create a session
+
+Check `tmux -V` and that `TMUX_DEFAULT_SHELL` points at a shell that exists.
+
+### "Access denied" on a file
+
+The path is outside `ALLOWED_PATHS`. In CLI mode, widen it:
+
+```bash
+mtmux start --allowed-paths /home/me,/var/log
+```
+
+Note that symlinks are resolved before the check, so a link out of an allowed
+directory is still denied.
+
+### A file opened read-only
+
+It is over 100 KB — reads truncate above that — or the relay reports it as not
+writable.
+
+### An upload or a save failed
+
+Caps are 10 MB for an upload, 1 MB for a save. Neither is configurable.
+
+### Changes in a subdirectory do not appear
+
+Watching runs at `depth: 0`. Navigate into the directory.
 
 ## Performance
 
-### Terminal feels slow
+### It feels slow
 
-- WebGL rendering is used by default; if it fails, canvas rendering is used as a fallback
-- Reduce `scrollback` in settings to use less memory
-- Close unused sessions
+- Leave GPU rendering on unless it renders incorrectly.
+- Reduce scrollback in Settings.
+- Close sessions you are not using.
 
 ### High latency
 
-- Check the latency indicator in the toolbar
-- Latency is measured via ping/pong every 10 seconds
-- Consider deploying the relay server closer to the user
+- The toolbar shows round-trip latency, measured by ping/pong every 10 seconds.
+- A tunnelled session goes browser → broker → your machine. Getting onto the
+  same network lets the direct path win and removes that hop.
+
+## Getting help
+
+Include the output of `mtmux doctor` and `mtmux version` in any report:
+[github.com/GagnDeep/tmuxremote/issues](https://github.com/GagnDeep/tmuxremote/issues).

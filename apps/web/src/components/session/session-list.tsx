@@ -9,6 +9,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 import { SessionCard } from "./session-card";
+import { LAST_SESSION_KEY, writeStored } from "@/lib/storage-keys";
 
 interface SessionListProps {
   onCreateClick: () => void;
@@ -25,7 +26,10 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const touchStartY = useRef(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // The pull must only arm at the top of the list. Radix scrolls its *viewport*,
+  // not the ScrollArea root — reading scrollTop off the root always gave 0, so
+  // the pull fired from anywhere in the list.
+  const listRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(() => {
     getRelayClient()?.send({ type: "session:list" });
@@ -35,7 +39,7 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
     (name: string) => {
       setActiveSession(name);
       if (typeof window !== "undefined") {
-        localStorage.setItem("ccremote-last-session", name);
+        writeStored(LAST_SESSION_KEY, name);
       }
       useUiStore.getState().setMobileTab("terminal");
     },
@@ -50,14 +54,19 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
     touchStartY.current = e.touches[0]!.clientY;
   }, []);
 
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    const el = scrollRef.current;
-    if (!el || el.scrollTop > 0 || isRefreshing) return;
-    const dy = e.touches[0]!.clientY - touchStartY.current;
-    if (dy > 0) {
-      setPullDistance(Math.min(dy * 0.5, 80));
-    }
-  }, [isRefreshing]);
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      const viewport = listRef.current?.closest<HTMLElement>(
+        "[data-radix-scroll-area-viewport]",
+      );
+      if (!viewport || viewport.scrollTop > 0 || isRefreshing) return;
+      const dy = e.touches[0]!.clientY - touchStartY.current;
+      if (dy > 0) {
+        setPullDistance(Math.min(dy * 0.5, 80));
+      }
+    },
+    [isRefreshing],
+  );
 
   const handleTouchEnd = useCallback(() => {
     if (pullDistance >= 60) {
@@ -74,27 +83,45 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
 
   return (
     <div className={cn("flex flex-col overflow-hidden", className)}>
-      <div className="flex items-center justify-between px-3 py-2.5 border-b shrink-0">
+      <div className="flex items-center justify-between px-3 py-1 border-b shrink-0">
         <h2 className="text-sm font-semibold">Sessions</h2>
         <div className="flex gap-1">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={refresh}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-11 w-11"
+            aria-label="Refresh sessions"
+            onClick={refresh}
+          >
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onCreateClick}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-11 w-11"
+            aria-label="Create session"
+            onClick={onCreateClick}
+          >
             <Plus className="h-3.5 w-3.5" />
           </Button>
         </div>
       </div>
-      <ScrollArea className="h-0 flex-1" ref={scrollRef}>
+      <ScrollArea className="h-0 flex-1">
         {(pullDistance > 0 || isRefreshing) && (
           <div
             className="flex items-center justify-center transition-all"
             style={{ height: isRefreshing ? 40 : pullDistance }}
           >
-            <Loader2 className={cn("h-5 w-5 text-muted-foreground", isRefreshing && "animate-spin")} />
+            <Loader2
+              className={cn(
+                "h-5 w-5 text-muted-foreground",
+                isRefreshing && "animate-spin",
+              )}
+            />
           </div>
         )}
         <div
+          ref={listRef}
           className="space-y-1.5 px-3 pb-2"
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}

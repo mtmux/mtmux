@@ -1,0 +1,108 @@
+/**
+ * Single source of truth for site-wide constants.
+ *
+ * Anything that appears in more than one place — the domain, the install
+ * command, the version badge, nav structure — lives here so it is changed once.
+ */
+
+/**
+ * The published CLI version, inlined at build time from `apps/cli/package.json`
+ * by `next.config.ts`. Never edit it here — bump `apps/cli/package.json` and the
+ * badge follows. The literal fallback only exists so a stray `tsc`/editor run
+ * outside a Next build still typechecks.
+ */
+const version = process.env.NEXT_PUBLIC_MTMUX_VERSION ?? "0.0.0";
+
+/** The one place the repository lives. Every GitHub URL below is derived from it. */
+const repo = "https://github.com/GagnDeep/tmuxremote";
+
+export const siteConfig = {
+  name: "mtmux",
+  /** Used in JSON-LD and OG tags. Not appended to page titles: titles are keyword-first. */
+  legalName: "mtmux",
+  domain: "mtmux.com",
+  url: "https://mtmux.com",
+  version,
+  install: "npm i -g mtmux",
+  repo,
+  email: "hey@mtmux.com",
+  securityEmail: "security@mtmux.com",
+  privacyEmail: "privacy@mtmux.com",
+  requirements: "Node 22+ · tmux · macOS · Linux · WSL",
+  /** The hosted web client and dashboard. */
+  appHost: "app.mtmux.com",
+  /** The pairing broker. Self-hostable — see MTMUX_API_URL. */
+  apiHost: "api.mtmux.com",
+  social: {
+    github: repo,
+    discussions: `${repo}/discussions`,
+    releases: `${repo}/releases`,
+  },
+} as const;
+
+/** Route keys are locale-independent; hrefs are resolved through next-intl navigation. */
+export const navigation = [
+  { key: "features", href: "/features" },
+  { key: "agents", href: "/agents" },
+  { key: "docs", href: "/docs" },
+  { key: "blog", href: "/blog" },
+  { key: "compare", href: "/compare" },
+  { key: "pricing", href: "/pricing" },
+] as const;
+
+export const footerNavigation = {
+  product: [
+    { key: "features", href: "/features" },
+    { key: "agents", href: "/agents" },
+    { key: "useCases", href: "/use-cases" },
+    { key: "pricing", href: "/pricing" },
+    { key: "changelog", href: "/changelog" },
+  ],
+  resources: [
+    { key: "docs", href: "/docs" },
+    { key: "blog", href: "/blog" },
+    { key: "faq", href: "/faq" },
+    { key: "security", href: "/security" },
+  ],
+  compare: [
+    { key: "compareAll", href: "/compare" },
+    { key: "vsTmate", href: "/compare#tmate" },
+    { key: "vsTtyd", href: "/compare#ttyd" },
+    { key: "vsSsh", href: "/compare#ssh-apps" },
+    { key: "vsVscode", href: "/compare#vscode" },
+  ],
+  company: [
+    { key: "privacy", href: "/privacy" },
+    { key: "terms", href: "/terms" },
+    { key: "github", href: siteConfig.social.github, external: true },
+    { key: "contact", href: `mailto:${siteConfig.email}`, external: true },
+  ],
+} as const;
+
+/** Every route that should appear in the sitemap, with its crawl hints. */
+export const staticRoutes = [
+  { href: "/", changeFrequency: "weekly", priority: 1 },
+  { href: "/features", changeFrequency: "monthly", priority: 0.9 },
+  { href: "/agents", changeFrequency: "monthly", priority: 0.9 },
+  { href: "/docs", changeFrequency: "weekly", priority: 0.9 },
+  { href: "/blog", changeFrequency: "daily", priority: 0.9 },
+  { href: "/compare", changeFrequency: "monthly", priority: 0.8 },
+  { href: "/pricing", changeFrequency: "monthly", priority: 0.8 },
+  { href: "/use-cases", changeFrequency: "monthly", priority: 0.7 },
+  { href: "/security", changeFrequency: "monthly", priority: 0.7 },
+  { href: "/faq", changeFrequency: "monthly", priority: 0.7 },
+  { href: "/changelog", changeFrequency: "weekly", priority: 0.6 },
+  { href: "/privacy", changeFrequency: "yearly", priority: 0.3 },
+  { href: "/terms", changeFrequency: "yearly", priority: 0.3 },
+] as const satisfies ReadonlyArray<{
+  href: string;
+  changeFrequency:
+    | "always"
+    | "hourly"
+    | "daily"
+    | "weekly"
+    | "monthly"
+    | "yearly"
+    | "never";
+  priority: number;
+}>;

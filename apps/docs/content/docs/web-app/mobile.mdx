@@ -1,38 +1,100 @@
 ---
-title: Mobile Experience
-description: Using tmuxremote on mobile devices.
+title: Mobile
+description: Using mtmux from a phone — toolbar, gestures, and the tmux sheet.
 ---
 
-## Tab Navigation
+Getting a phone onto your terminal is the point of mtmux, so the mobile client
+is not a shrunk desktop layout.
 
-On mobile (screens under 768px), the app switches from a sidebar layout to a tab-based interface:
+Start with [How pairing works](/docs/pairing) to get the device on.
 
-- **Terminal** — The terminal view with swipe-based session switching
-- **Sessions** — Full session list with create/attach/kill
-- **Files** — File browser with breadcrumb navigation
-- **Settings** — Terminal and gesture settings
+## Navigation
 
-## Keyboard Toolbar
+Below 768px the sidebar layout becomes a bottom tab bar:
 
-A customizable toolbar appears above the mobile keyboard with frequently-used keys:
+- **Terminal** — the terminal, with swipe switching
+- **Sessions** — the full session list
+- **Files** — the file browser
+- **Settings** — terminal and gesture settings
 
-- **Tab**, **Esc**, **Ctrl**, **Alt**
-- Arrow keys (Up, Down, Left, Right)
-- Special characters: `|`, `-`, `~`, `/`
+The Android back button maps to those tabs, so back does what you expect instead
+of leaving the app.
 
-Enable or disable individual keys in Settings.
+## The keyboard toolbar
+
+A bar above the on-screen keyboard. Fixed buttons:
+
+`^C` `^D` `^Z` · Paste · Copy · Search · Command palette · Split horizontally ·
+Split vertically · Copy mode · font `−` `+`
+
+Then the configurable keys, each of which can be hidden in Settings:
+
+`Tab` `Esc` `Ctrl` `Alt` `↑` `↓` `←` `→` `|` `-` `~` `/`
+
+**Ctrl and Alt are sticky.** Tap Ctrl, then a letter, and it sends the control
+sequence — no chording on a touch screen. Buttons that need the relay are
+disabled while disconnected.
+
+## The command bar
+
+An auto-resizing text area for typing a whole command instead of fighting
+autocorrect a character at a time. `Enter` sends it, `Shift+Enter` inserts a
+newline. It carries its own `^C`, `↑` and `Tab` buttons.
+
+## The tmux sheet
+
+The floating action button opens a bottom sheet with three tabs:
+
+| Tab          | Actions                                                   |
+| ------------ | --------------------------------------------------------- |
+| **Panes**    | Split horizontally / vertically, zoom, resize, swap, kill |
+| **Windows**  | Create, rename, kill, tiled layout, rotate layout         |
+| **Advanced** | Copy mode, send the tmux prefix, detach                   |
+
+Long-pressing the FAB is a shortcut to split.
+
+**Resize mode** replaces the sheet with a D-pad overlay: each press moves the
+boundary five cells and repeats while held.
 
 ## Gestures
 
-Configure touch gestures in Settings:
+Configurable in Settings:
 
-| Gesture           | Action          | Default |
-| ----------------- | --------------- | ------- |
-| Swipe left/right  | Switch sessions | Enabled |
-| Double-tap        | Copy selection  | Enabled |
-| Long-press        | Context menu    | Enabled |
-| Two-finger scroll | Scroll terminal | Enabled |
+| Gesture          | Action                                                                |
+| ---------------- | --------------------------------------------------------------------- |
+| Swipe left/right | Switch pane if the window has more than one, otherwise switch session |
+| Pinch            | Change font size                                                      |
 
-## Haptic Feedback
+Swipes that begin on the terminal screen itself are ignored so text selection
+still works.
 
-Toggle haptic feedback (vibration on key press) in Settings. This uses the Vibration API on supported devices.
+Settings also lists switches for double-tap-to-copy, long-press context menu and
+two-finger scroll. Those are stored but do not currently gate any behaviour.
+
+## Haptics
+
+Vibration on key press, via the Vibration API where the device supports it.
+Toggle in Settings.
+
+## Virtual keyboard handling
+
+The page declares `interactiveWidget: "resizes-content"`, and the client mirrors
+`visualViewport` into CSS variables so the layout follows the keyboard rather
+than being covered by it. The terminal refits on every viewport change.
+
+## Auto-zoom panes
+
+Optional, mobile only: zoom the active pane automatically on attach and after a
+split. A split pane on a phone screen is usually too narrow to read.
+
+## Installing it
+
+The client is a PWA and can be added to an iOS or Android home screen, where it
+runs without browser chrome.
+
+## Two things to know
+
+- **Logout lives on the desktop `/settings` page header**, not in the settings
+  panel, so the mobile Settings tab has no logout button.
+- **Snippets cannot currently be created** from the UI. The command palette will
+  show a snippets group, but it stays empty.

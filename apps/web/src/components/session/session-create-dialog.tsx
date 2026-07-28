@@ -13,13 +13,17 @@ import { Label } from "@repo/ui/components/ui/label";
 import { Button } from "@repo/ui/components/ui/button";
 import { getRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
 import { useSessionStore } from "@/stores/session-store";
+import { LAST_SESSION_KEY, writeStored } from "@/lib/storage-keys";
 
 interface SessionCreateDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogProps) {
+export function SessionCreateDialog({
+  open,
+  onOpenChange,
+}: SessionCreateDialogProps) {
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState("");
   const [command, setCommand] = useState("");
@@ -40,7 +44,7 @@ export function SessionCreateDialog({ open, onOpenChange }: SessionCreateDialogP
         setIsCreating(false);
         setActiveSession(msg.session.name);
         if (typeof window !== "undefined") {
-          localStorage.setItem("ccremote-last-session", msg.session.name);
+          writeStored(LAST_SESSION_KEY, msg.session.name);
         }
       }
     },

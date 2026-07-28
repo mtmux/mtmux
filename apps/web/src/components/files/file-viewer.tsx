@@ -310,7 +310,8 @@ export function FileViewer() {
   const viewMode = getFileViewMode(editorFile);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-background">
+    // `fixed` escapes AppShell's frame, so this panel carries its own insets.
+    <div className="fixed inset-0 z-[var(--z-panel)] flex flex-col bg-background pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium">

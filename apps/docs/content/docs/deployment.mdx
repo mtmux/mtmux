@@ -1,212 +1,234 @@
 ---
 title: Deployment
-description: Deploy tmuxremote with the CLI, Docker, PM2, or a reverse proxy.
+description: The PM2 topology the hosted service actually runs, plus Docker and reverse-proxy wiring.
 ---
 
-## Two deployment models
+## Pick a topology first
 
-There are two distinct topologies. Picking the wrong reverse-proxy wiring for
-your model is the most common misconfiguration, so choose one and don't mix them:
+Choosing the wrong reverse-proxy wiring for your model is the most common
+misconfiguration here, so pick one and do not mix them.
 
-- **CLI, single-port (recommended for a single machine)** — `tmuxremote start`.
-  One Node process serves the web UI and the relay WebSocket on **one port**,
-  with the WS exposed **same-origin at `/_relay`**. There is no separate relay
-  port and you do **not** set `NEXT_PUBLIC_RELAY_URL`. Reverse-proxy setup is
-  just: proxy everything to that one port with WebSocket upgrade headers. See
-  [Getting Started](/docs/getting-started).
-- **Split web + relay (this page)** — the web app and relay run as **separate
-  services on separate ports** (web `14100`, relay `14300`). The browser reaches
-  the relay via `NEXT_PUBLIC_RELAY_URL`, and the reverse proxy routes a
-  dedicated **`/ws`** location to the relay. Use this for Docker/PM2 and
-  multi-tenant deployments.
+|                         | CLI, single port         | Split web + relay        |
+| ----------------------- | ------------------------ | ------------------------ |
+| Command                 | `mtmux`                  | Docker / PM2             |
+| Processes               | 1                        | 2+                       |
+| WebSocket               | same-origin at `/_relay` | separate service         |
+| `NEXT_PUBLIC_RELAY_URL` | **unset**                | required                 |
+| Proxy                   | everything to one port   | `/ws` → relay, `/` → web |
 
 In short: `/_relay` with no `NEXT_PUBLIC_RELAY_URL` is CLI mode; `/ws` plus
-`NEXT_PUBLIC_RELAY_URL` is the split model.
+`NEXT_PUBLIC_RELAY_URL` is the split model. For a single machine, use the CLI —
+see [Getting started](/docs/getting-started).
 
-## Quickstart with `pnpm start:prod`
+## The hosted deployment
 
-The fastest way to run tmuxremote's split model in production on a single host is the bundled
-PM2 script. It builds, starts, and supervises all three apps on the
-production port range (web `24100`, docs `24102`, relay `24300`) — distinct
-from the dev range (`14xxx`) so dev and prod can coexist on the same host.
+`ecosystem.config.cjs` is the real thing this repository deploys, and it is
+worth reading rather than paraphrasing. It defines **five** PM2 apps.
 
-```bash
-cp .env.example .env
-# fill in AUTH_TOKEN, CORS_ORIGINS, NEXT_PUBLIC_RELAY_URL
+| App           | Script                                         | Port  | Mode    | Instances |
+| ------------- | ---------------------------------------------- | ----- | ------- | --------- |
+| `mtmux-api`   | `apps/api/dist/index.js`                       | 24400 | fork    | 1         |
+| `mtmux-relay` | `apps/relay/dist/index.js`                     | 24300 | fork    | 1         |
+| `mtmux-app`   | `apps/web/.next/standalone/apps/web/server.js` | 24100 | cluster | 2         |
+| `mtmux-docs`  | `next start --port 24102` in `apps/docs`       | 24102 | fork    | 1         |
+| `mtmux-web`   | `next start --port 41317` in `apps/site`       | 41317 | cluster | 2         |
 
-pnpm install
-pnpm start:prod      # build + pm2 start
-pnpm logs:prod       # tail logs
-pnpm restart:prod    # zero-downtime reload
-pnpm stop:prod       # stop all apps
-```
+Everything runs plain HTTP on loopback; TLS terminates at the edge and nginx
+proxies to these ports. `app.mtmux.com` fronts `mtmux-app`, `api.mtmux.com`
+fronts `mtmux-api`, `mtmux.com` fronts `mtmux-web`.
 
-`pnpm start:prod` runs `pnpm build && pm2 start ecosystem.config.cjs`.
-PM2 ships as a devDependency, so no global install is needed. The relay
-refuses to boot in `NODE_ENV=production` if `AUTH_TOKEN` is empty / default,
-or if `CORS_ORIGINS` contains a `localhost` origin — see
-[Production Environment](#production-environment) below.
+Four details in that file are load-bearing:
 
-## Production Environment
+- **`mtmux-api` is fork mode with one instance.** The broker holds mailboxes,
+  claims and live tunnel sockets in memory. A second worker would route a
+  browser to a process that has never heard of its pairing.
+- **`mtmux-app` runs `server.js`, not `next start`.** `apps/web` builds with
+  `output: "standalone"` because the CLI needs it, and Next refuses to serve
+  that tree via `next start` — it warns and then serves anyway, which is exactly
+  the kind of half-working that survives a smoke test and fails in a browser.
+- **`instances: 2`, not `"max"`.** The box has 32 cores but shares them with
+  around twenty other services, and Next's workload here is light: terminal
+  traffic rides the relay and the tunnel, not this process.
+- **`API_CORS_ORIGINS` is set explicitly.** The broker refuses to boot in
+  production if its CORS list still contains localhost.
 
-Set these environment variables for production:
+`mtmux-app`'s env repeats `NEXT_PUBLIC_RELAY_URL` and `NEXT_PUBLIC_API_URL`
+even though Next inlined them at build time. They are there so a stray value in
+`.env` cannot make the running process disagree with the bundle it is serving.
 
-```bash
-# === Relay ===
-AUTH_TOKEN=your-secure-token-here       # openssl rand -hex 32
-RELAY_HOST=0.0.0.0
-RELAY_PORT=24300                        # dev: 14300 — prod: 24300
-ALLOWED_PATHS=/home/deploy
-CORS_ORIGINS=https://terminal.example.com
-TMUX_DEFAULT_SHELL=/bin/bash
+## Deploying the hosted stack
 
-# === Web ===
-NEXT_PUBLIC_RELAY_URL=wss://terminal.example.com/ws
-WEB_PORT=24100                          # dev: 14100 — prod: 24100
-
-# === Docs ===
-DOCS_PORT=24102                         # dev: 14102 — prod: 24102
-```
-
-The relay server **exits on boot** if `NODE_ENV=production` and either
-`AUTH_TOKEN` is empty / still the default sentinel
-`change-me-in-production`, or any entry in `CORS_ORIGINS` starts with
-`http://localhost`. See `.env.example` in the repo for the full
-template with inline comments.
-
-## Docker
-
-Three services (`relay`, `web`, `docs`) are defined in
-`docker-compose.prod.yml`:
+Three commands, and the order matters because each failure looks like something
+else.
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
+pnpm deploy:hosted
 ```
 
-With the bundled nginx reverse proxy:
+That runs, in order:
 
 ```bash
-docker compose -f docker-compose.prod.yml --profile nginx up -d
+pnpm build:hosted        # build with the API origin baked in
+# verify the origin is actually in the client bundle
+pnpm prepare:standalone  # copy .next/static and public/ into the standalone tree
+pm2 reload mtmux-api mtmux-app --update-env
 ```
 
-The `--profile nginx` switch adds an `nginx:1.27-alpine` sidecar that
-fronts web/relay/docs on ports 80 and 443.
+### Why each step exists
 
-### docker-compose.prod.yml (excerpt)
+- **`pnpm build:hosted`.** A plain `pnpm build` bakes no `NEXT_PUBLIC_API_URL`
+  into `apps/web` — Next inlines those at build time — so the pair page renders
+  "not configured" and the CSP blocks the broker. It also picks up
+  `NEXT_PUBLIC_RELAY_URL` from `.env`, pointing every visitor at
+  `ws://localhost:14300` on their _own_ machine. So the build must carry
+  explicit env:
 
-```yaml
-services:
-  relay:
-    build: { context: ., dockerfile: docker/Dockerfile.relay }
-    ports: ["${RELAY_PORT:-14300}:14300"]
-    env_file: .env
-    volumes: ["/tmp/tmux-1000:/tmp/tmux-1000"]
-    healthcheck:
-      test: ["CMD", "node", "-e", "…/health"]
-    networks: [ccremote]
+  ```bash
+  NEXT_PUBLIC_RELAY_URL= NEXT_PUBLIC_API_URL=${API_ORIGIN:-https://api.mtmux.com} \
+    turbo build --filter=@app/web --filter=@app/api
+  ```
 
-  web:
-    build: { context: ., dockerfile: docker/Dockerfile.web }
-    ports: ["${WEB_PORT:-14100}:14100"]
-    depends_on: { relay: { condition: service_healthy } }
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14100"]
+- **The bundle check.** Between build and staging, `deploy-hosted.mjs` greps
+  `apps/web/.next/static/chunks` for the API origin and **refuses to deploy** if
+  it is absent. That guard is the point: every one of these failures produces a
+  page that loads and looks fine until someone tries to pair.
 
-  docs:
-    build: { context: ., dockerfile: docker/Dockerfile.docs }
-    ports: ["${DOCS_PORT:-14102}:14102"]
+- **`pnpm prepare:standalone`.** `output: "standalone"` writes a self-contained
+  server tree but deliberately omits `.next/static` and `public/`. Without them
+  the server boots and answers, and every page loads without its JavaScript or
+  assets.
 
-  nginx:
-    profiles: ["nginx"]
-    image: nginx:1.27-alpine
-    ports: ["80:80", "443:443"]
-    volumes:
-      - ./nginx/docker/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/docker/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/letsencrypt:/etc/letsencrypt:ro
-```
+- **The reload.** Rebuilding changes chunk hashes, so a process that is not
+  reloaded serves a tree that no longer matches what it hands out.
 
-## PM2
+Verify with `curl -s https://api.mtmux.com/health`.
 
-Use PM2 for process management without Docker:
+## Generic PM2
 
 ```bash
 pnpm build
 pm2 start ecosystem.config.cjs
 ```
 
-`ecosystem.config.cjs` defines three apps — `relay` (fork, 1 instance),
-`web` (cluster, all cores), `docs` (fork, 1 instance) — each with log
-files under `logs/`, `max_memory_restart` limits, and graceful shutdown
-timeouts.
-
-```js
-// ecosystem.config.cjs (excerpt)
-module.exports = {
-  apps: [
-    {
-      name: "relay",
-      script: "apps/relay/dist/index.js",
-      exec_mode: "fork",
-      max_memory_restart: "512M",
-      wait_ready: true,
-      kill_timeout: 10000,
-      out_file: "./logs/relay-out.log",
-      error_file: "./logs/relay-err.log",
-      env_file: ".env",
-    },
-    {
-      name: "web",
-      script: "node_modules/.bin/next",
-      args: "start --port 14100",
-      cwd: "./apps/web",
-      exec_mode: "cluster",
-      instances: "max",
-      max_memory_restart: "1G",
-      out_file: "./logs/web-out.log",
-      error_file: "./logs/web-err.log",
-      env_file: ".env",
-    },
-    {
-      name: "docs",
-      script: "node_modules/.bin/next",
-      args: "start --port 14102",
-      cwd: "./apps/docs",
-      exec_mode: "fork",
-      max_memory_restart: "512M",
-      out_file: "./logs/docs-out.log",
-      error_file: "./logs/docs-err.log",
-      env_file: ".env",
-    },
-  ],
-};
-```
-
-Reload gracefully on deploy:
+Wrapper scripts:
 
 ```bash
-pnpm build && pm2 reload all
+pnpm start:prod      # pnpm build && pm2 start ecosystem.config.cjs
+pnpm logs:prod       # pm2 logs
+pnpm restart:prod    # pm2 reload ecosystem.config.cjs
+pnpm stop:prod       # pm2 stop ecosystem.config.cjs
 ```
 
-## Reverse Proxy
+PM2 ships as a devDependency, so no global install is needed. Logs go to
+`logs/<app>-out.log` and `logs/<app>-err.log`.
 
-Two ready-to-use nginx configs ship in the repo under `nginx/`:
+Cluster mode is what makes `pm2 reload` zero-downtime: PM2 brings up a
+replacement worker, waits for it to listen, then retires the old one. Only
+`mtmux-app` and `mtmux-web` are in cluster mode, for the reason above.
 
-- `nginx/ccremote.conf.example` — for nginx installed on the host
-- `nginx/docker/default.conf` — for the bundled docker sidecar
+## Production environment
 
-### nginx (standalone host)
+```bash
+# === Relay ===
+AUTH_TOKEN=…                            # openssl rand -hex 32
+RELAY_HOST=0.0.0.0
+RELAY_PORT=24300
+ALLOWED_PATHS=/home/deploy
+CORS_ORIGINS=https://terminal.example.com
 
-Single-domain config with WebSocket upgrade, `/docs` subpath routing,
-security headers, and HTTP → HTTPS redirect:
+# === Web ===
+NEXT_PUBLIC_RELAY_URL=wss://terminal.example.com/ws
+NEXT_PUBLIC_API_URL=https://api.example.com
+
+# === Broker ===
+API_PORT=24400
+API_HOST=127.0.0.1
+API_CORS_ORIGINS=https://app.example.com
+```
+
+Two startup guards will stop a bad deploy dead:
+
+- The **relay** exits if `AUTH_TOKEN` is empty or the default sentinel
+  `change-me-in-production` while bound to a non-loopback address, and if
+  `NODE_ENV=production` with a `localhost` origin in `CORS_ORIGINS`.
+- The **broker** exits if `NODE_ENV=production` with a `localhost` origin in
+  `API_CORS_ORIGINS`.
+
+Both are deliberate. See [Configuration](/docs/configuration).
+
+## Docker
+
+`docker-compose.prod.yml` defines `relay`, `web` and `docs`:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+With the bundled nginx sidecar:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile nginx up -d
+```
+
+The `--profile nginx` switch adds an `nginx:1.27-alpine` container fronting the
+three services on ports 80 and 443. Its configs live at `nginx/docker/nginx.conf`
+and `nginx/docker/default.conf`.
+
+The relay container needs the host's tmux socket. The compose file mounts
+`/tmp/tmux-1000` — adjust it to match your user:
+
+```bash
+ls /tmp/tmux-$(id -u)/
+```
+
+TLS is bring-your-own-cert. Issue on the host and let the
+`./nginx/letsencrypt:/etc/letsencrypt:ro` bind mount expose them:
+
+```bash
+sudo certbot certonly --standalone -d your-domain.com
+```
+
+There is deliberately no automatic certbot companion — the host's system cron is
+simpler to reason about and debug.
+
+## Reverse proxy
+
+### CLI, single port
+
+Proxy everything to one port with WebSocket upgrade headers. Do **not** add a
+separate `/ws` location.
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:14100;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_read_timeout 3600s;
+}
+```
+
+Caddy:
+
+```text
+mtmux.example.com {
+  reverse_proxy 127.0.0.1:14100
+}
+```
+
+### Split model
+
+Two ready-to-use configs ship in the repo: `nginx/ccremote.conf.example` for
+nginx on the host, and `nginx/docker/default.conf` for the sidecar.
 
 ```nginx
 server {
     listen 443 ssl;
-    server_name ccremote.example.com;
+    server_name terminal.example.com;
 
-    ssl_certificate /etc/letsencrypt/live/ccremote.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/ccremote.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/terminal.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/terminal.example.com/privkey.pem;
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -222,10 +244,6 @@ server {
         proxy_read_timeout 3600s;
     }
 
-    location /docs {
-        proxy_pass http://127.0.0.1:14102;
-    }
-
     location / {
         proxy_pass http://127.0.0.1:14100;
         proxy_set_header Host $host;
@@ -233,9 +251,24 @@ server {
 }
 ```
 
-### Key points
+### Proxying the broker
 
-- The relay requires WebSocket upgrade (`Upgrade` / `Connection` headers).
-- Set `proxy_read_timeout 3600s` (or longer) for long-lived sockets.
-- Use `wss://` in `NEXT_PUBLIC_RELAY_URL` when TLS is terminated.
-- Set `CORS_ORIGINS` to your production web origin.
+The broker needs the same WebSocket upgrade treatment and a **generous read
+timeout**, since an idle tunnel holds its socket open for as long as its quota
+allows — up to 12 hours by default.
+
+It also needs `X-Forwarded-For` to be correct. Behind a proxy the socket peer is
+always loopback, and without the header every rate limit would share a single
+bucket. The broker reads only the left-most entry, and only the address.
+
+## Ports
+
+|                | Dev   | Hosted |
+| -------------- | ----- | ------ |
+| Web client     | 14100 | 24100  |
+| Docs           | 14102 | 24102  |
+| Relay          | 14300 | 24300  |
+| Broker         | 14400 | 24400  |
+| Marketing site | —     | 41317  |
+
+Distinct ranges so dev and production can coexist on one host.

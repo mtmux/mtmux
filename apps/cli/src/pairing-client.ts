@@ -2,76 +2,87 @@ import WebSocket from "ws";
 import {
   cpaceStart,
   deriveSessionKeys,
-  confirmationTag,
-  verifyConfirmation,
   transcriptIr,
   bytesToHex,
   hexToBytes,
   randomBytes,
   utf8ToBytes,
-  bytesToBase64Url,
+  generateSecret,
   parseCode,
   type SessionKeys,
 } from "@repo/crypto";
 import {
-  tryDeserializePairingServerMessage,
-  type PairPeerShareMessage,
+  PairClaimResponse,
+  PairNewResponse,
   type SealedDescriptor,
 } from "@repo/protocol";
+import {
+  AD_CLI,
+  AD_PEER_MAX,
+  PairingError,
+  describeFailure,
+  runExchange,
+  type Derived,
+  type Exchange,
+  type PairingResult,
+  type PairingSocket,
+} from "./pairing-exchange.js";
 
 /**
- * The CLI half of hosted pairing.
+ * The CLI half of hosted pairing, in both directions.
  *
- * The user reads six digits off their phone and types them here. The first two
- * are the broker's routing slot; the last four are the PAKE password and never
- * leave this process. Because a slot is shared by many simultaneous pairings,
- * a claim is fanned out and several browsers may answer — this module runs a
- * CPace exchange against each and keeps the one whose key confirmation
- * verifies. All the others get closed, which destroys their mailboxes.
+ * `pairWithCode` is the original: the user reads six digits off their phone and
+ * types them here. `hostPairing` is the mirror image, which is what `mtmux
+ * start` prints as a code and a QR — the CLI parks the mailbox and a browser
+ * claims it, so nothing has to be typed on the machine at all.
+ *
+ * In both, the first two digits are the broker's routing slot and the last four
+ * are the PAKE password. Whichever side generates the secret, it never leaves
+ * that process — not to the broker, not hashed, not in a log line. 10⁶ is an
+ * instant offline search, so a broker that learned the whole code could run the
+ * PAKE against both ends at once and hand an attacker a shell.
+ *
+ * The exchange itself — fan-out across candidate peers, key confirmation,
+ * sealing the descriptor — lives in `pairing-exchange.ts` and is shared, so the
+ * two directions cannot drift apart.
  */
 
-const AD_CLI = "cli";
-const AD_BROWSER_EXPECTED_MAX = 256;
+export type {
+  PairingResult,
+  PairingSocket,
+  Attempt,
+} from "./pairing-exchange.js";
+export { PairingError } from "./pairing-exchange.js";
 
-export type PairingResult = {
-  keys: SessionKeys;
-  /** The browser's device identity, to persist for signed reconnects. */
-  peerDeviceId: string | null;
-  peerLabel: string;
-};
-
-export type PairingTransport = {
+/** Claiming a code someone else is showing. */
+export type ClaimTransport = {
   postClaim(body: unknown): Promise<{ claimId: string; offered: number }>;
   openClaimSocket(claimId: string): Promise<PairingSocket>;
 };
 
-export type PairingSocket = {
-  send(message: unknown): void;
-  onMessage(cb: (raw: string) => void): void;
-  onClose(cb: () => void): void;
-  close(): void;
+/** Showing a code and waiting for someone to claim it. */
+export type MailboxTransport = {
+  postMailbox(): Promise<{
+    mailboxId: string;
+    slot: string;
+    expiresAt: number;
+  }>;
+  openMailboxSocket(mailboxId: string): Promise<PairingSocket>;
 };
 
-export class PairingError extends Error {
-  constructor(
-    message: string,
-    readonly hint?: string,
-  ) {
-    super(message);
-    this.name = "PairingError";
-  }
-}
+/** Both halves. `httpTransport` implements all of it. */
+export type PairingTransport = ClaimTransport & MailboxTransport;
 
-/** One in-flight CPace exchange with a single candidate mailbox. */
-type Attempt = {
-  peer: string;
-  keys: SessionKeys;
-  peerAd: string;
-};
+/** How long a claimed pairing may sit half-finished before we give up. */
+const CLAIM_TIMEOUT_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Claiming: `mtmux pair <code>`
+// ---------------------------------------------------------------------------
 
 export type PairOptions = {
   code: string;
-  transport: PairingTransport;
+  transport: ClaimTransport;
   /** Built once the key is known, so the CLI can seal it for this peer. */
   buildDescriptor: () => SealedDescriptor;
   /** Seals the descriptor under the session key. */
@@ -92,6 +103,8 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
   }
   const { slot, secret } = parsed;
 
+  // The claimant picks the CPace session id, and is the initiator: the
+  // transcript is ordered initiator-first, so our share leads it.
   const sid = randomBytes(16);
   const channelId = utf8ToBytes(slot);
   const cpace = cpaceStart(utf8ToBytes(secret), channelId, sid);
@@ -111,91 +124,19 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
   }
 
   const socket = await opts.transport.openClaimSocket(claimId);
-  const attempts = new Map<string, Attempt>();
 
-  return await new Promise<PairingResult>((resolve, reject) => {
-    let settled = false;
-    /** Mailboxes still plausibly ours, so we know when every one has failed. */
-    let outstanding = offered;
-
-    const timer = setTimeout(() => {
-      finish(
-        new PairingError(
-          "Pairing timed out.",
-          "Check that the page is still open, then try a fresh code.",
-        ),
-      );
-    }, opts.timeoutMs ?? 30_000);
-
-    function finish(err: Error | null, result?: PairingResult) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.close();
-      if (err) reject(err);
-      else resolve(result!);
-    }
-
-    function giveUpOn(peer: string, reason: string) {
-      attempts.delete(peer);
-      socket.send({ type: "pair:close", peer, reason });
-      outstanding -= 1;
-      if (outstanding <= 0) {
-        finish(
-          new PairingError(
-            "That code did not match.",
-            "Each code is good for one attempt. Reload the page for a new one.",
-          ),
-        );
-      }
-    }
-
-    socket.onClose(() => {
-      finish(
-        new PairingError(
-          "Lost the connection to the pairing service.",
-          "Check your network and try again.",
-        ),
-      );
-    });
-
-    socket.onMessage((raw) => {
-      const parsedMsg = tryDeserializePairingServerMessage(raw);
-      if (!parsedMsg.ok) return;
-      const msg = parsedMsg.message;
-
-      if (msg.type === "pair:failed") {
-        if (msg.peer && attempts.has(msg.peer)) {
-          attempts.delete(msg.peer);
-          outstanding -= 1;
-          if (outstanding <= 0) {
-            finish(
-              new PairingError(
-                "That code did not match.",
-                "Each code is good for one attempt. Reload the page for a new one.",
-              ),
-            );
-          }
-          return;
-        }
-        finish(new PairingError(describeFailure(msg.reason)));
-        return;
-      }
-
-      if (msg.type === "pair:peer-share") {
-        handlePeerShare(msg);
-        return;
-      }
-
-      if (msg.type === "pair:peer-confirm") {
-        void handlePeerConfirm(msg.peer, msg.tag);
-      }
-    });
-
-    function handlePeerShare(msg: PairPeerShareMessage) {
-      if (msg.ad.length > AD_BROWSER_EXPECTED_MAX) {
-        giveUpOn(msg.peer, "oversized associated data");
-        return;
+  const hint =
+    "Each code is good for one attempt. Reload the page for a new one.";
+  return runExchange({
+    socket,
+    side: "claim",
+    outstanding: offered,
+    buildDescriptor: opts.buildDescriptor,
+    seal: opts.seal,
+    timeoutMs: opts.timeoutMs ?? CLAIM_TIMEOUT_MS,
+    derive: (msg) => {
+      if (msg.ad.length > AD_PEER_MAX) {
+        return { reject: "oversized associated data" };
       }
       let isk: Uint8Array;
       try {
@@ -206,85 +147,226 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
         });
       } catch {
         // A share that is not a valid group element, or is the identity.
-        giveUpOn(msg.peer, "invalid share");
-        return;
+        return { reject: "invalid share" };
       }
-
-      const keys = deriveSessionKeys(
-        isk,
-        transcriptIr(
-          cpace.share,
-          utf8ToBytes(AD_CLI),
-          hexToBytes(msg.share),
-          utf8ToBytes(msg.ad),
-        ),
-      );
-      attempts.set(msg.peer, { peer: msg.peer, keys, peerAd: msg.ad });
-    }
-
-    async function handlePeerConfirm(peer: string, tag: string) {
-      const attempt = attempts.get(peer);
-      if (!attempt) return;
-
-      // This is the moment of truth. A wrong four-digit guess produces a
-      // different key, so the tag will not verify — and closing this peer
-      // destroys the mailbox, which is what caps an attacker at one attempt.
-      if (
-        !verifyConfirmation(attempt.keys.confirm, "browser", hexToBytes(tag))
-      ) {
-        giveUpOn(peer, "confirmation failed");
-        return;
-      }
-
-      socket.send({
-        type: "pair:confirm",
-        peer,
-        tag: bytesToHex(confirmationTag(attempt.keys.confirm, "cli")),
-      });
-
-      try {
-        const descriptor = opts.buildDescriptor();
-        const sealed = await opts.seal(attempt.keys, descriptor);
-        socket.send({
-          type: "pair:establish",
-          peer,
-          sealedDescriptor: bytesToBase64Url(sealed),
-        });
-        finish(null, {
-          keys: attempt.keys,
-          peerDeviceId: null,
-          peerLabel: attempt.peerAd || "browser",
-        });
-      } catch (err) {
-        finish(
-          new PairingError(
-            `Could not complete pairing: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+      return {
+        attempt: {
+          peer: msg.peer,
+          ownShare: cpace.share,
+          peerAd: msg.ad,
+          keys: deriveSessionKeys(
+            isk,
+            transcriptIr(
+              cpace.share,
+              utf8ToBytes(AD_CLI),
+              hexToBytes(msg.share),
+              utf8ToBytes(msg.ad),
+            ),
           ),
-        );
-      }
-    }
-  });
+        },
+      };
+    },
+    errors: {
+      noMatch: () => new PairingError("That code did not match.", hint),
+      timedOut: () =>
+        new PairingError(
+          "Pairing timed out.",
+          "Check that the page is still open, then try a fresh code.",
+        ),
+      lost: () =>
+        new PairingError(
+          "Lost the connection to the pairing service.",
+          "Check your network and try again.",
+        ),
+      failed: (reason) => new PairingError(describeFailure(reason), hint),
+    },
+  }).result;
 }
 
-function describeFailure(reason: string): string {
-  switch (reason) {
-    case "expired":
-      return "That code has expired. Reload the page for a new one.";
-    case "already-claimed":
-      return "That code has already been used.";
-    case "rate-limited":
-      return "Too many attempts. Wait a minute and try again.";
-    case "peer-gone":
-      return "The page stopped waiting for this code.";
-    default:
-      return "Pairing failed.";
+// ---------------------------------------------------------------------------
+// Hosting: the code `mtmux start` prints
+// ---------------------------------------------------------------------------
+
+export type HostedPairing = {
+  /** The six digits to display, and to encode in the QR. */
+  code: string;
+  slot: string;
+  expiresAt: number;
+  /** Resolves when a browser completes the handshake. */
+  paired: Promise<PairingResult>;
+  cancel(): void;
+};
+
+export type HostOptions = {
+  /** Where the broker lives. Ignored when `transport` is supplied. */
+  apiBase?: string;
+  /** Injected by tests, and by anything that is not talking to a real broker. */
+  transport?: MailboxTransport;
+  /** Built once the key is known, so the CLI can seal it for this peer. */
+  buildDescriptor: () => SealedDescriptor;
+  seal: (
+    keys: SessionKeys,
+    descriptor: SealedDescriptor,
+  ) => Promise<Uint8Array>;
+  /**
+   * Overrides the deadline, which otherwise tracks the mailbox's own expiry.
+   * A hosted code is dead the moment the broker forgets its mailbox, so
+   * matching that is almost always what you want.
+   */
+  timeoutMs?: number;
+};
+
+/**
+ * Park a mailbox and wait for a browser to claim it.
+ *
+ * Re-arming is deliberately just calling this again with the same options:
+ * nothing is carried between codes. Every call generates a fresh four-digit
+ * secret, opens a fresh mailbox on a fresh slot, and takes a fresh socket, so a
+ * spent code shares no state with its replacement — which is what makes "one
+ * guess burns the code" survive re-arming.
+ *
+ *     let hosted = await hostPairing(opts);
+ *     render(hosted.code);
+ *     hosted.paired.then(onPaired).catch(async () => {
+ *       hosted = await hostPairing(opts);   // same options, new code
+ *       render(hosted.code);
+ *     });
+ */
+export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
+  // Generated here and only here. It is never transmitted, hashed or logged —
+  // the broker mints the slot, and that is all it is ever told.
+  const secret = generateSecret();
+
+  if (!opts.transport && !opts.apiBase) {
+    throw new PairingError("hostPairing needs an apiBase or a transport.");
   }
+  const transport = opts.transport ?? httpTransport(opts.apiBase!);
+  const { mailboxId, slot, expiresAt } = await transport.postMailbox();
+  const socket = await transport.openMailboxSocket(mailboxId);
+  const channelId = utf8ToBytes(slot);
+
+  const hint = "Each code is good for one attempt — a new one is on its way.";
+  const exchange: Exchange = runExchange({
+    socket,
+    side: "mailbox",
+    // A mailbox accepts exactly one claim in its lifetime, so there is exactly
+    // one peer to rule out before the code is spent and the caller re-arms.
+    outstanding: 1,
+    buildDescriptor: opts.buildDescriptor,
+    seal: opts.seal,
+    // The mailbox stops existing at `expiresAt`, so a deadline past it would
+    // only mean waiting on a socket the broker has already given up on.
+    timeoutMs: opts.timeoutMs ?? Math.max(0, expiresAt - Date.now()),
+    derive: (msg): Derived => {
+      if (msg.ad.length > AD_PEER_MAX) {
+        return { reject: "oversized associated data" };
+      }
+      // The claimant chose the session id, so the CPace run can only start now
+      // — one per peer, unlike the claiming direction where our share is fixed
+      // before the first peer is known.
+      const cpace = cpaceStart(
+        utf8ToBytes(secret),
+        channelId,
+        hexToBytes(msg.sid),
+      );
+      const peerShare = hexToBytes(msg.share);
+      let isk: Uint8Array;
+      try {
+        isk = cpace.finish(peerShare, {
+          own: utf8ToBytes(AD_CLI),
+          peer: utf8ToBytes(msg.ad),
+          isInitiator: false,
+        });
+      } catch {
+        return { reject: "invalid share" };
+      }
+      return {
+        attempt: {
+          peer: msg.peer,
+          ownShare: cpace.share,
+          peerAd: msg.ad,
+          // Initiator-first, and here the *claimant* is the initiator — so the
+          // peer's share leads the transcript. Getting this backwards derives
+          // two different keys from one correct code, which looks exactly like
+          // a wrong code.
+          keys: deriveSessionKeys(
+            isk,
+            transcriptIr(
+              peerShare,
+              utf8ToBytes(msg.ad),
+              cpace.share,
+              utf8ToBytes(AD_CLI),
+            ),
+          ),
+        },
+      };
+    },
+    errors: {
+      noMatch: () => new PairingError("That code did not match.", hint),
+      timedOut: () =>
+        new PairingError(
+          "The pairing code expired before anyone used it.",
+          "A fresh code is on its way.",
+        ),
+      lost: () =>
+        new PairingError(
+          "Lost the connection to the pairing service.",
+          "Check your network — the code will be retried.",
+        ),
+      failed: (reason) => new PairingError(describeFailure(reason), hint),
+    },
+  });
+
+  // A caller that re-arms will usually cancel a code it is no longer awaiting,
+  // and in Node an unhandled rejection is fatal. This inert handler defuses
+  // that; the promise handed back is the same one, so the caller's own
+  // `await`/`.catch` still sees every rejection.
+  exchange.result.catch(() => {});
+
+  let cancelled = false;
+  return {
+    code: `${slot}${secret}`,
+    slot,
+    expiresAt,
+    paired: exchange.result,
+    cancel() {
+      if (cancelled) return;
+      cancelled = true;
+      // Tell the broker before dropping the socket: a peerless `pair:close`
+      // destroys the mailbox now rather than leaving a dead code claimable for
+      // the rest of its three minutes.
+      try {
+        socket.send({ type: "pair:close", reason: "cancelled" });
+      } catch {
+        // Socket already gone; the abort below is what matters.
+      }
+      exchange.abort(new PairingError("Pairing cancelled."));
+    },
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
 
 /** Default transport: real HTTP + WebSocket against the broker. */
 export function httpTransport(apiBase: string): PairingTransport {
+  function openSocket(path: string): Promise<PairingSocket> {
+    const ws = new WebSocket(`${apiBase.replace(/^http/, "ws")}${path}`);
+    return new Promise((resolve, reject) => {
+      ws.once("error", reject);
+      ws.once("open", () => {
+        ws.removeAllListeners("error");
+        resolve({
+          send: (message) => ws.send(JSON.stringify(message)),
+          onMessage: (cb) => ws.on("message", (raw) => cb(raw.toString())),
+          onClose: (cb) => ws.on("close", cb),
+          close: () => ws.close(),
+        });
+      });
+    });
+  }
+
   return {
     async postClaim(body) {
       const res = await fetch(`${apiBase}/v1/pair/claim`, {
@@ -301,24 +383,26 @@ export function httpTransport(apiBase: string): PairingTransport {
       if (!res.ok) {
         throw new PairingError(`Pairing service returned ${res.status}.`);
       }
-      return (await res.json()) as { claimId: string; offered: number };
+      // Parsed rather than cast: a broker answering with something else is a
+      // clearer failure here than an undefined claim id three lines later.
+      return PairClaimResponse.parse(await res.json());
     },
 
-    openClaimSocket(claimId) {
-      const url = `${apiBase.replace(/^http/, "ws")}/v1/claim/${claimId}`;
-      const ws = new WebSocket(url);
-      return new Promise((resolve, reject) => {
-        ws.once("error", reject);
-        ws.once("open", () => {
-          ws.removeAllListeners("error");
-          resolve({
-            send: (message) => ws.send(JSON.stringify(message)),
-            onMessage: (cb) => ws.on("message", (raw) => cb(raw.toString())),
-            onClose: (cb) => ws.on("close", cb),
-            close: () => ws.close(),
-          });
-        });
-      });
+    async postMailbox() {
+      const res = await fetch(`${apiBase}/v1/pair/new`, { method: "POST" });
+      if (res.status === 429) {
+        throw new PairingError(
+          "Too many pairing codes requested from this network.",
+          "Wait a minute and try again.",
+        );
+      }
+      if (!res.ok) {
+        throw new PairingError(`Pairing service returned ${res.status}.`);
+      }
+      return PairNewResponse.parse(await res.json());
     },
+
+    openClaimSocket: (claimId) => openSocket(`/v1/claim/${claimId}`),
+    openMailboxSocket: (mailboxId) => openSocket(`/v1/pair/${mailboxId}`),
   };
 }

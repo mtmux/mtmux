@@ -59,9 +59,11 @@ export function PaneResizeControls() {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[var(--z-transient)] flex items-center justify-center bg-background/80 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] backdrop-blur-sm">
       <div className="flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-muted-foreground mb-2">Resize Pane</p>
+        <p className="text-sm font-medium text-muted-foreground mb-2">
+          Resize Pane
+        </p>
         <div className="grid grid-cols-3 gap-2">
           <div />
           {directionButton("U", ArrowUp)}

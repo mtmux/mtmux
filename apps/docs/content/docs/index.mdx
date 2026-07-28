@@ -1,48 +1,82 @@
 ---
 title: Introduction
-description: Access your tmux sessions from any browser with the tmuxremote CLI — one command, any device.
+description: mtmux serves your machine's tmux sessions to any browser. One npm install, one command.
 ---
 
-## What is tmuxremote?
+## What mtmux is
 
-tmuxremote lets you access your server's terminal from any browser. It connects a
-modern web UI to your tmux sessions over a WebSocket, giving you a full terminal
-with session management, file browsing, and mobile support. It works great with
-Claude Code, Vim, REPLs, and long-running jobs — anything you'd run in tmux.
+`mtmux` is a CLI you install on the machine that already runs your tmux. It
+starts one Node process that serves a browser terminal and bridges it to tmux
+over a WebSocket, so you can pick up a session from a phone, a tablet or another
+laptop. It works with anything you would run in tmux — Claude Code, Vim, REPLs,
+long builds.
 
-The shipped product is the **`tmuxremote`** CLI, published on npm. One command
-starts everything on a single port, on the same machine as your tmux.
+The shipped product is the **`mtmux`** npm package. Everything else in the
+repository (`apps/web`, `apps/relay`, `apps/api`, `packages/*`) is the source
+that CLI is built from, plus the split deployment shape used for containers and
+the hosted service.
 
 ## Install and run
 
 ```bash
-npm install -g tmuxremote
-tmuxremote start
+npm install -g mtmux
+mtmux
 ```
 
-That's it. The CLI generates a token, opens your browser, and connects you to
-tmux on the same machine. No config file, no Docker, no reverse proxy required.
+`mtmux` on its own is the same as `mtmux start` — `start` is the default
+command. It checks Node and tmux, loads or generates an auth token, serves the
+terminal, and prints a six-digit code plus a QR block.
 
 - **Requirements:** Node 22+ and `tmux` on your PATH.
-- The server binds to `127.0.0.1:14100` by default.
-- The auto-generated token lives at `~/.tmuxremote/config.json` (mode `0600`).
+- **Port:** `14100` by default.
+- **Bind address:** `0.0.0.0` when the machine has a real LAN address, and
+  `127.0.0.1` when it does not. You do not need to pass `--host` to reach it
+  from your phone.
+- **Config:** `~/.mtmux/config.json`, mode `0600`.
 
-See [Getting Started](/docs/getting-started) for the full CLI walkthrough, flags,
-and token management.
+See [Getting started](/docs/getting-started) for the walkthrough and
+[CLI reference](/docs/cli) for every command and flag.
 
-## Two ways to deploy
+## Getting a second device on
 
-- **CLI (single-port)** — `tmuxremote start`. One Node process serves the web UI
-  and the relay WebSocket (same-origin at `/_relay`) on one port. This is the
-  primary, recommended path for single-machine self-hosting.
-- **Split web + relay** — separate web (`14100`) and relay (`14300`) services for
-  container/multi-tenant deployments, wired together with `NEXT_PUBLIC_RELAY_URL`
-  and a `/ws` reverse-proxy route. See [Deployment](/docs/deployment) and
-  [Self-Hosting](/docs/self-hosting).
+**Scan the QR that `mtmux` printed.** That is the whole flow — one command, one
+scan, and your terminal is on the phone. If the camera will not cooperate, go to
+`app.mtmux.com` and type the six digits instead.
+
+It works the same on your own wifi and on cellular from another country. mtmux
+takes the direct path when the device can reach your machine and falls back to a
+relayed tunnel when it cannot, without asking you.
+
+The code is `slot(2) + secret(4)`. The last four digits are the password for a
+PAKE and **never reach the broker**, not even as a hash; everything afterwards
+is AES-256-GCM under keys neither the broker nor anyone else on the path holds.
+The QR puts the code in a URL _fragment_, which browsers never send to a server.
+
+Already at the browser instead of the terminal? `mtmux pair <code>` runs the
+same handshake from the other end.
+
+Read [How pairing works](/docs/pairing) and [The sealed tunnel](/docs/sealed-tunnel)
+for the details, both of which are checkable against `packages/crypto`.
+
+## Three ways to run it
+
+| Shape                 | Command                       | When                                                                                                                          |
+| --------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **CLI, single port**  | `mtmux`                       | The normal case. One process serves the web UI and the relay WebSocket (same-origin at `/_relay`) on one port.                |
+| **CLI, LAN only**     | `mtmux start --local`         | You would rather no traffic left the building. Contacts no broker at all.                                                     |
+| **Split web + relay** | `pnpm dev:split`, Docker, PM2 | Container and multi-tenant deployments where the web app and relay are separate services. See [Deployment](/docs/deployment). |
+
+## Nothing here is mandatory
+
+An account is optional — anonymous pairing keeps working forever, and
+[Accounts](/docs/accounts) explains exactly what signing in adds. The hosted
+broker is optional too: `--local` skips it, and you can point the CLI at your own
+with `MTMUX_API_URL`. See [Self-hosting](/docs/self-hosting).
 
 ## Next steps
 
-- [Getting Started](/docs/getting-started) — install the CLI, connect, manage tokens
-- [Configuration](/docs/configuration) — flags and environment variables
-- [Self-Hosting](/docs/self-hosting) — expose it to the internet with TLS
-- [Mobile Support](/docs/web-app/mobile) — use tmuxremote on your phone
+- [Getting started](/docs/getting-started) — install, first run, first device
+- [CLI reference](/docs/cli) — every command and flag
+- [How pairing works](/docs/pairing) — the six digits, and why they are enough
+- [Security](/docs/security) — the actual authentication model
+- [`mtmux doctor`](/docs/doctor) — the first thing to run when something is off

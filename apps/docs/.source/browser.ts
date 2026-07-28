@@ -10,18 +10,24 @@ const create = browser<
 >();
 const browserCollections = {
   docs: create.doc("docs", {
+    "accounts.mdx": () =>
+      import("../content/docs/accounts.mdx?collection=docs"),
     "architecture.mdx": () =>
       import("../content/docs/architecture.mdx?collection=docs"),
     "claude-code-remote.mdx": () =>
       import("../content/docs/claude-code-remote.mdx?collection=docs"),
+    "cli.mdx": () => import("../content/docs/cli.mdx?collection=docs"),
     "configuration.mdx": () =>
       import("../content/docs/configuration.mdx?collection=docs"),
     "deployment.mdx": () =>
       import("../content/docs/deployment.mdx?collection=docs"),
+    "doctor.mdx": () => import("../content/docs/doctor.mdx?collection=docs"),
     "getting-started.mdx": () =>
       import("../content/docs/getting-started.mdx?collection=docs"),
     "index.mdx": () => import("../content/docs/index.mdx?collection=docs"),
     "pairing.mdx": () => import("../content/docs/pairing.mdx?collection=docs"),
+    "sealed-tunnel.mdx": () =>
+      import("../content/docs/sealed-tunnel.mdx?collection=docs"),
     "security.mdx": () =>
       import("../content/docs/security.mdx?collection=docs"),
     "self-hosting.mdx": () =>

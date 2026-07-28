@@ -25,6 +25,7 @@
     "@xterm/addon-web-links": "^0.11",
     "@xterm/addon-webgl": "^0.18",
     "@xterm/xterm": "^5",
+    "better-auth": "1.6.25",
     "lucide-react": "^0.469",
     "monaco-editor": "^0.55.1",
     "next": "^16.2.12",

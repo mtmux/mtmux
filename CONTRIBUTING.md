@@ -36,7 +36,8 @@ Thanks for your interest in contributing to mtmux. This guide will help you get 
    startup banner prints a login URL containing the dev token.
 
    Use `pnpm dev:split` if you need the split web (`14100`) + relay (`14300`)
-   model that the Docker and PM2 deployments use, and `pnpm dev:docs` for the
+   model that the Docker and PM2 deployments use, `pnpm dev:pairing` for the
+   hosted-pairing topology with the broker included, and `pnpm dev:docs` for the
    docs site (`14102`).
 
 ## Pull Request Process
@@ -71,13 +72,21 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 **Types:** `feat`, `fix`, `chore`, `docs`, `refactor`, `test`
 
-**Scopes:** `web`, `relay`, `docs`, `protocol`, `ui`, `config`, `logger`, `infra`, `ci`
+**Scopes** — enforced by `commitlint.config.js`, so anything else fails the
+commit hook:
+
+`cli`, `web`, `docs`, `relay`, `api`, `protocol`, `crypto`, `ui`, `config`,
+`logger`, `infra`, `ci`, `deps`
+
+The scope is optional; when present it must be one of those.
 
 Examples:
 
 ```
-feat(web): add session search filter
+feat(cli): add mtmux doctor
 fix(relay): handle disconnection during PTY resize
+feat(crypto): bind the slot into the CPace channel identifier
+chore(deps): upgrade to Next.js 16
 docs: update setup instructions
 ```
 

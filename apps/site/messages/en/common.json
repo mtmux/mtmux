@@ -1,0 +1,23 @@
+{
+  "defaultTitle": "Your tmux sessions in any browser, on any phone",
+  "defaultDescription": "mtmux serves the tmux sessions you already run to any browser — real panes, real keys, end-to-end encrypted, with nothing to port-forward.",
+  "skipToContent": "Skip to content",
+  "copied": "Copied",
+  "copyInstallLabel": "Copy install command: {command}",
+  "readMore": "Read more",
+  "backToTop": "Back to top",
+  "onThisPage": "On this page",
+  "locale": {
+    "label": "Language"
+  },
+  "notFound": {
+    "title": "No pane here",
+    "description": "That URL does not resolve to a page. The session is still running, though.",
+    "cta": "Back to the homepage"
+  },
+  "error": {
+    "title": "Something broke",
+    "description": "An unexpected error occurred while rendering this page.",
+    "retry": "Try again"
+  }
+}

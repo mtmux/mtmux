@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   cpaceStart,
   deriveSessionKeys,
@@ -215,11 +215,13 @@ describe("mailbox sockets", () => {
     expect(s.closed?.reason).toMatch(/Unknown peer/);
   });
 
-  it("will not let a browser send pair:establish", () => {
+  it("rejects pair:establish for a peer it was never given", () => {
     const broker = createBroker();
     const { mailboxId } = broker.pairNew(IP).body as { mailboxId: string };
     const s = fakeSocket();
     const handle = broker.attachMailboxSocket(mailboxId, s.socket)!;
+    // A mailbox holder may end the exchange — but only with the peer that
+    // actually claimed it.
     handle.message(
       JSON.stringify({
         type: "pair:establish",
@@ -227,7 +229,7 @@ describe("mailbox sockets", () => {
         sealedDescriptor: "AAEC",
       }),
     );
-    expect(s.closed?.reason).toMatch(/Unexpected/);
+    expect(s.closed?.reason).toMatch(/Unknown peer/);
   });
 });
 
@@ -539,6 +541,170 @@ describe("tunnel data path", () => {
     return { agent, agentSocket, tunnelId: ready.tunnelId };
   }
 
+  /**
+   * `/v1/tunnel/:id` is unauthenticated by design, and an opened stream makes
+   * the *agent* dial a fresh loopback socket before any frame arrives. Without
+   * a cap, anyone who learned a tunnel id could exhaust file descriptors on
+   * someone else's machine — and tunnel ids are now stable across reconnects,
+   * so a leaked one keeps working.
+   */
+  it("refuses streams past the per-tunnel cap", () => {
+    const broker = createBroker({
+      quotas: { maxBytes: 1024 ** 3, maxMinutes: 720, maxStreams: 2 },
+    });
+    const { tunnelId } = registeredTunnel(broker);
+
+    const accepted = [0, 1].map(() => {
+      const s = fakeSocket();
+      const handle = broker.attachTunnelSocket(tunnelId, s.socket);
+      return { s, handle };
+    });
+    for (const { s, handle } of accepted) {
+      expect(handle).not.toBeNull();
+      expect(s.ofType("stream:open")).toHaveLength(1);
+    }
+
+    const third = fakeSocket();
+    expect(broker.attachTunnelSocket(tunnelId, third.socket)).toBeNull();
+    expect(third.closed?.reason).toMatch(/Too many streams/);
+    expect(third.ofType("stream:open")).toHaveLength(0);
+  });
+
+  it("frees capacity when a stream closes", () => {
+    const broker = createBroker({
+      quotas: { maxBytes: 1024 ** 3, maxMinutes: 720, maxStreams: 1 },
+    });
+    const { tunnelId } = registeredTunnel(broker);
+
+    const first = fakeSocket();
+    const handle = broker.attachTunnelSocket(tunnelId, first.socket)!;
+    expect(broker.attachTunnelSocket(tunnelId, fakeSocket().socket)).toBeNull();
+
+    handle.close();
+
+    const later = fakeSocket();
+    expect(broker.attachTunnelSocket(tunnelId, later.socket)).not.toBeNull();
+    expect(later.ofType("stream:open")).toHaveLength(1);
+  });
+
+  describe("metering", () => {
+    /** A metering seam whose promises resolve on demand, so order is testable. */
+    function meter(
+      owner: { userId: string } | null,
+      decision: { allowed: boolean; reason?: string } = { allowed: true },
+    ) {
+      const recorded: { userId: string; bytes: number; seconds: number }[] = [];
+      return {
+        recorded,
+        metering: {
+          ownerOfDevice: async () => owner,
+          checkTunnel: async () => decision,
+          recordUsage: async (
+            userId: string,
+            bytes: number,
+            seconds: number,
+          ) => {
+            recorded.push({ userId, bytes, seconds });
+          },
+        },
+      };
+    }
+
+    // The tunnel must be usable the instant it registers. Resolving an owner
+    // is a database read, and making a reconnect wait on it would let an
+    // accounts outage delay every CLI on the platform.
+    it("does not delay tunnel:ready on the owner lookup", () => {
+      const { metering } = meter({ userId: "u1" });
+      const broker = createBroker({ metering });
+      const { agentSocket } = registeredTunnel(broker);
+      expect(agentSocket.ofType("tunnel:ready")).toHaveLength(1);
+    });
+
+    it("closes a tunnel whose account is over its plan", async () => {
+      const { metering } = meter(
+        { userId: "u1" },
+        { allowed: false, reason: "Out of transfer" },
+      );
+      const broker = createBroker({ metering });
+      const { agentSocket, tunnelId } = registeredTunnel(broker);
+
+      await vi.waitFor(() =>
+        expect(agentSocket.ofType("tunnel:closed")).toHaveLength(1),
+      );
+      // And the id stops resolving, so no browser can open a stream on it.
+      expect(
+        broker.attachTunnelSocket(tunnelId, fakeSocket().socket),
+      ).toBeNull();
+    });
+
+    // Anonymous use is the product, not a loophole: a machine nobody has
+    // registered has no plan to be over.
+    it("leaves an unregistered machine unmetered", async () => {
+      const { metering, recorded } = meter(null, { allowed: false });
+      const broker = createBroker({ metering });
+      const { agent, agentSocket, tunnelId } = registeredTunnel(broker);
+
+      await Promise.resolve();
+      expect(agentSocket.ofType("tunnel:closed")).toHaveLength(0);
+      expect(
+        broker.attachTunnelSocket(tunnelId, fakeSocket().socket),
+      ).not.toBeNull();
+
+      agent.close();
+      expect(recorded).toHaveLength(0);
+    });
+
+    it("folds a finished tunnel's bytes into the owner's usage", async () => {
+      const { metering, recorded } = meter({ userId: "u1" });
+      const broker = createBroker({ metering });
+      const { agent, agentSocket, tunnelId } = registeredTunnel(broker);
+      await vi.waitFor(() =>
+        expect(agentSocket.ofType("tunnel:ready")).toHaveLength(1),
+      );
+
+      const browserSocket = fakeSocket();
+      const browser = broker.attachTunnelSocket(
+        tunnelId,
+        browserSocket.socket,
+      )!;
+      const open = browserSocket.ofType<{ streamId: string }>(
+        "stream:open",
+      )[0]!;
+      browser.message(
+        JSON.stringify({
+          type: "stream:frame",
+          streamId: open.streamId,
+          data: "AAAAAAAA",
+        }),
+      );
+
+      agent.close();
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      expect(recorded[0]!.userId).toBe("u1");
+      expect(recorded[0]!.bytes).toBeGreaterThan(0);
+    });
+
+    // Metering is accounting. Failing it closed would take paying customers
+    // offline over a database blip.
+    it("keeps the tunnel up when metering throws", async () => {
+      const broker = createBroker({
+        metering: {
+          ownerOfDevice: async () => {
+            throw new Error("database gone");
+          },
+          checkTunnel: async () => ({ allowed: true }),
+          recordUsage: async () => {},
+        },
+      });
+      const { agentSocket, tunnelId } = registeredTunnel(broker);
+      await Promise.resolve();
+      expect(agentSocket.ofType("tunnel:closed")).toHaveLength(0);
+      expect(
+        broker.attachTunnelSocket(tunnelId, fakeSocket().socket),
+      ).not.toBeNull();
+    });
+  });
+
   it("copies sealed frames in both directions verbatim", () => {
     const broker = createBroker();
     const { agent, agentSocket, tunnelId } = registeredTunnel(broker);
@@ -638,5 +804,375 @@ describe("broker logging discipline", () => {
   it("echoes the caller's address from discover without storing it", () => {
     expect((broker.discover(IP).body as { ip: string }).ip).toBe(IP);
     expect(JSON.stringify(broker.health().body)).not.toContain(IP);
+  });
+});
+
+/**
+ * The same protocol with the roles swapped: the CLI parks the mailbox and the
+ * browser claims it, which is what `mtmux start` printing a code and a QR
+ * needs. The broker must not be able to tell the difference — if it can, that
+ * is a fact about the user it had no business knowing.
+ */
+describe("end-to-end pairing, CLI-hosted", () => {
+  function pairThrough(cliSecret: string, browserSecret: string) {
+    const broker = createBroker();
+    const { mailboxId, slot } = broker.pairNew(IP).body as {
+      mailboxId: string;
+      slot: string;
+    };
+    const ci = utf8ToBytes(slot);
+
+    const cliSocket = fakeSocket();
+    const cli = broker.attachMailboxSocket(mailboxId, cliSocket.socket)!;
+
+    // --- Browser claims the code. It is the initiator and picks the sid.
+    const sid = randomBytes(16);
+    const browserAd = "browser";
+    const browserCpace = cpaceStart(utf8ToBytes(browserSecret), ci, sid);
+    const claim = broker.pairClaim(IP, {
+      slot,
+      share: bytesToHex(browserCpace.share),
+      ad: browserAd,
+      sid: bytesToHex(sid),
+    }).body as { claimId: string; offered: number };
+
+    const browserSocket = fakeSocket();
+    const browser = broker.attachClaimSocket(
+      claim.claimId,
+      browserSocket.socket,
+    )!;
+
+    // --- CLI answers with its share and its tag, in that order.
+    const fromBrowser = cliSocket.ofType<{
+      peer: string;
+      share: string;
+      ad: string;
+      sid: string;
+    }>("pair:peer-share")[0]!;
+
+    const cliAd = "cli";
+    const cliCpace = cpaceStart(
+      utf8ToBytes(cliSecret),
+      ci,
+      hexToBytes(fromBrowser.sid),
+    );
+    const cliIsk = cliCpace.finish(hexToBytes(fromBrowser.share), {
+      own: utf8ToBytes(cliAd),
+      peer: utf8ToBytes(fromBrowser.ad),
+      isInitiator: false,
+    });
+    const cliKeys = deriveSessionKeys(
+      cliIsk,
+      transcriptIr(
+        hexToBytes(fromBrowser.share),
+        utf8ToBytes(fromBrowser.ad),
+        cliCpace.share,
+        utf8ToBytes(cliAd),
+      ),
+    );
+
+    cli.message(
+      JSON.stringify({
+        type: "pair:share",
+        peer: fromBrowser.peer,
+        share: bytesToHex(cliCpace.share),
+        ad: cliAd,
+      }),
+    );
+    cli.message(
+      JSON.stringify({
+        type: "pair:confirm",
+        peer: fromBrowser.peer,
+        tag: bytesToHex(confirmationTag(cliKeys.confirm, "cli")),
+      }),
+    );
+
+    // --- Browser completes its own CPace against what came back.
+    const fromCli = browserSocket.ofType<{
+      peer: string;
+      share: string;
+      ad: string;
+    }>("pair:peer-share")[0]!;
+    const browserIsk = browserCpace.finish(hexToBytes(fromCli.share), {
+      own: utf8ToBytes(browserAd),
+      peer: utf8ToBytes(fromCli.ad),
+      isInitiator: true,
+    });
+    const browserKeys = deriveSessionKeys(
+      browserIsk,
+      transcriptIr(
+        browserCpace.share,
+        utf8ToBytes(browserAd),
+        hexToBytes(fromCli.share),
+        utf8ToBytes(fromCli.ad),
+      ),
+    );
+
+    const cliTag = browserSocket.ofType<{ tag: string }>(
+      "pair:peer-confirm",
+    )[0];
+    const browserAcceptsCli =
+      cliTag !== undefined &&
+      verifyConfirmation(browserKeys.confirm, "cli", hexToBytes(cliTag.tag));
+
+    return {
+      broker,
+      cli,
+      browser,
+      cliSocket,
+      browserSocket,
+      peer: fromCli.peer,
+      cliKeys,
+      browserKeys,
+      browserAcceptsCli,
+    };
+  }
+
+  it("agrees on a key and delivers the sealed descriptor when the code matches", () => {
+    const secret = generateSecret();
+    const run = pairThrough(secret, secret);
+
+    expect(run.browserAcceptsCli).toBe(true);
+    expect(bytesToHex(run.cliKeys.c2s)).toBe(bytesToHex(run.browserKeys.c2s));
+    expect(bytesToHex(run.cliKeys.s2c)).toBe(bytesToHex(run.browserKeys.s2c));
+    expect(run.cliKeys.directToken).toBe(run.browserKeys.directToken);
+
+    // Browser confirms back, and the CLI — on the mailbox socket this time —
+    // ends the exchange with the descriptor.
+    run.browser.message(
+      JSON.stringify({
+        type: "pair:confirm",
+        peer: run.peer,
+        tag: bytesToHex(confirmationTag(run.browserKeys.confirm, "browser")),
+      }),
+    );
+    const browserTag = run.cliSocket.ofType<{ tag: string }>(
+      "pair:peer-confirm",
+    )[0]!;
+    expect(
+      verifyConfirmation(
+        run.cliKeys.confirm,
+        "browser",
+        hexToBytes(browserTag.tag),
+      ),
+    ).toBe(true);
+
+    run.cli.message(
+      JSON.stringify({
+        type: "pair:establish",
+        peer: run.peer,
+        sealedDescriptor: "c2VhbGVk",
+      }),
+    );
+    const established = run.browserSocket.ofType<{ sealedDescriptor: string }>(
+      "pair:established",
+    )[0];
+    expect(established?.sealedDescriptor).toBe("c2VhbGVk");
+    // The mailbox is spent, so the code cannot be claimed a second time.
+    expect(run.broker.stats().mailboxes).toBe(0);
+  });
+
+  it("derives mismatched keys when the browser guessed wrong", () => {
+    const run = pairThrough("2716", "2717");
+    expect(run.browserAcceptsCli).toBe(false);
+    expect(bytesToHex(run.cliKeys.c2s)).not.toBe(
+      bytesToHex(run.browserKeys.c2s),
+    );
+  });
+
+  it("burns the mailbox on a failed confirmation — one guess per code", () => {
+    const run = pairThrough("2716", "2717");
+    expect(run.browserAcceptsCli).toBe(false);
+
+    run.browser.message(
+      JSON.stringify({
+        type: "pair:close",
+        peer: run.peer,
+        reason: "confirmation failed",
+      }),
+    );
+
+    const failed = run.cliSocket.ofType<{ reason: string }>("pair:failed")[0];
+    expect(failed?.reason).toBe("confirmation-failed");
+    expect(run.broker.stats().mailboxes).toBe(0);
+  });
+
+  it("tells the claimant a peer-scoped close was a failed confirmation", () => {
+    const run = pairThrough("2716", "2717");
+    run.cli.message(
+      JSON.stringify({
+        type: "pair:close",
+        peer: run.peer,
+        reason: "confirmation failed",
+      }),
+    );
+    const failed = run.browserSocket.ofType<{ reason: string }>(
+      "pair:failed",
+    )[0];
+    expect(failed?.reason).toBe("confirmation-failed");
+    expect(run.broker.stats().mailboxes).toBe(0);
+  });
+
+  it("never exposes the secret or the derived keys to the broker", () => {
+    const secret = "2716";
+    const run = pairThrough(secret, secret);
+    const everything = JSON.stringify([
+      ...(run.cliSocket.sent as unknown[]),
+      ...(run.browserSocket.sent as unknown[]),
+    ]);
+    expect(everything).not.toContain(secret);
+    expect(everything).not.toContain(bytesToHex(run.cliKeys.c2s));
+    expect(everything).not.toContain(bytesToHex(run.cliKeys.s2c));
+    expect(everything).not.toContain(run.cliKeys.directToken);
+  });
+
+  it("routes a second pair:share from the claimant back to the mailbox", () => {
+    const broker = createBroker();
+    const { mailboxId, slot } = broker.pairNew(IP).body as {
+      mailboxId: string;
+      slot: string;
+    };
+    const mailboxSocket = fakeSocket();
+    broker.attachMailboxSocket(mailboxId, mailboxSocket.socket);
+
+    const claim = broker.pairClaim(IP, {
+      slot,
+      share: "a".repeat(64),
+      ad: "browser",
+      sid: "b".repeat(32),
+    }).body as { claimId: string };
+    const claimSocket = fakeSocket();
+    const claimHandle = broker.attachClaimSocket(
+      claim.claimId,
+      claimSocket.socket,
+    )!;
+    const peer = mailboxSocket.ofType<{ peer: string }>("pair:peer-share")[0]!
+      .peer;
+
+    claimHandle.message(
+      JSON.stringify({
+        type: "pair:share",
+        peer,
+        share: "c".repeat(64),
+        ad: "browser",
+      }),
+    );
+
+    const shares = mailboxSocket.ofType<{ share: string; sid: string }>(
+      "pair:peer-share",
+    );
+    expect(shares).toHaveLength(2);
+    expect(shares[1]?.share).toBe("c".repeat(64));
+    // Always the claimant's own sid, never one the broker invented.
+    expect(shares[1]?.sid).toBe("b".repeat(32));
+    expect(claimSocket.closed).toBeNull();
+  });
+});
+
+describe("housekeeping", () => {
+  it("sweeps claim payloads whose claim expired before a socket attached", () => {
+    let clock = 1_000_000;
+    const broker = createBroker({ now: () => clock });
+    broker.pairClaim(IP, {
+      slot: "49",
+      share: "a".repeat(64),
+      ad: "browser",
+      sid: "b".repeat(32),
+    });
+    expect(broker.stats().claimPayloads).toBe(1);
+
+    // Nothing ever connects. Past the mailbox TTL the claim is unreachable, so
+    // its payload must not sit in memory for the life of the process.
+    broker.sweep();
+    expect(broker.stats().claimPayloads).toBe(1);
+    clock += 4 * 60 * 1000;
+    broker.sweep();
+    expect(broker.stats().claimPayloads).toBe(0);
+  });
+
+  it("drops a claim payload as soon as its socket closes", () => {
+    const broker = createBroker();
+    const claim = broker.pairClaim(IP, {
+      slot: "49",
+      share: "a".repeat(64),
+      ad: "browser",
+      sid: "b".repeat(32),
+    }).body as { claimId: string };
+    const s = fakeSocket();
+    const handle = broker.attachClaimSocket(claim.claimId, s.socket)!;
+    expect(broker.stats().claimPayloads).toBe(1);
+    handle.close();
+    expect(broker.stats().claimPayloads).toBe(0);
+  });
+});
+
+describe("tunnel identity", () => {
+  function register(
+    broker: ReturnType<typeof createBroker>,
+    key: ReturnType<typeof generateDeviceKey>,
+  ) {
+    const s = fakeSocket();
+    const handle = broker.attachAgentSocket(s.socket);
+    const challenge = s.ofType<{ challenge: string }>("tunnel:challenge")[0]!;
+    handle.message(
+      JSON.stringify({
+        type: "tunnel:register",
+        deviceId: key.deviceId,
+        publicKey: bytesToHex(key.publicKey),
+        challenge: challenge.challenge,
+        signature: bytesToHex(
+          signChallenge(key.secretKey, hexToBytes(challenge.challenge)),
+        ),
+      }),
+    );
+    return {
+      handle,
+      socket: s,
+      tunnelId: s.ofType<{ tunnelId: string }>("tunnel:ready")[0]!.tunnelId,
+    };
+  }
+
+  it("hands the same tunnel id back when an agent reconnects", () => {
+    const broker = createBroker();
+    const key = generateDeviceKey();
+
+    const first = register(broker, key);
+    first.handle.close();
+    const second = register(broker, key);
+
+    // The browser sealed the old id into its descriptor and has no channel to
+    // be told a new one, so a fresh id would strand every paired session.
+    expect(second.tunnelId).toBe(first.tunnelId);
+    expect(broker.stats().tunnels).toBe(1);
+  });
+
+  it("keeps the id across a reconnect that replaces a live socket", () => {
+    const broker = createBroker();
+    const key = generateDeviceKey();
+    const first = register(broker, key);
+    const second = register(broker, key);
+    expect(second.tunnelId).toBe(first.tunnelId);
+    expect(first.socket.ofType("tunnel:closed")).toHaveLength(1);
+    expect(broker.stats().tunnels).toBe(1);
+  });
+
+  it("gives different devices different ids", () => {
+    const broker = createBroker();
+    const a = register(broker, generateDeviceKey());
+    const b = register(broker, generateDeviceKey());
+    expect(a.tunnelId).not.toBe(b.tunnelId);
+  });
+
+  it("still resolves the sealed tunnel id after the agent reconnects", () => {
+    const broker = createBroker();
+    const key = generateDeviceKey();
+    const first = register(broker, key);
+    first.handle.close();
+    register(broker, key);
+
+    const browser = fakeSocket();
+    expect(
+      broker.attachTunnelSocket(first.tunnelId, browser.socket),
+    ).not.toBeNull();
   });
 });

@@ -20,7 +20,16 @@ import { usePaneStore } from "@/stores/pane-store";
 import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
-const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
+const SHELL_COMMANDS = new Set([
+  "bash",
+  "zsh",
+  "fish",
+  "sh",
+  "dash",
+  "ksh",
+  "tcsh",
+  "csh",
+]);
 
 function shortenPath(path: string): string {
   if (!path) return "";
@@ -45,11 +54,12 @@ export function PaneListPanel() {
     if (!paneListOpen) return null;
     return (
       <Sheet open={paneListOpen} onOpenChange={setPaneListOpen}>
-        <SheetContent side="bottom" className="h-[30vh] p-4">
+        {/* px/pt only: the sheet's own bottom padding carries the safe-area inset. */}
+        <SheetContent side="bottom" className="h-[30vh] px-4 pt-4">
           <SheetHeader className="pb-2">
             <SheetTitle className="text-sm">Panes</SheetTitle>
           </SheetHeader>
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground pb-8">
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
             <LayoutGrid className="h-10 w-10 mb-2 opacity-40" />
             <p className="text-sm">No panes available</p>
             <p className="text-xs mt-1">Attach to a session to see panes</p>
@@ -97,18 +107,26 @@ export function PaneListPanel() {
 
   return (
     <Sheet open={paneListOpen} onOpenChange={setPaneListOpen}>
-      <SheetContent side="bottom" className="flex h-[40vh] flex-col p-4">
+      <SheetContent side="bottom" className="flex h-[40vh] flex-col px-4 pt-4">
         <SheetHeader className="pb-2">
           <div className="flex items-center justify-between">
             <SheetTitle className="text-sm">Panes ({panes.length})</SheetTitle>
             <TooltipProvider delayDuration={300}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleZoomPane}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-11 w-11"
+                    aria-label={zoomedPaneId ? "Unzoom pane" : "Zoom pane"}
+                    onClick={handleZoomPane}
+                  >
                     <Maximize2 className="h-3.5 w-3.5" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>{zoomedPaneId ? "Unzoom" : "Zoom"}</TooltipContent>
+                <TooltipContent>
+                  {zoomedPaneId ? "Unzoom" : "Zoom"}
+                </TooltipContent>
               </Tooltip>
             </TooltipProvider>
           </div>
@@ -125,7 +143,7 @@ export function PaneListPanel() {
               )}
             >
               <button
-                className="flex flex-1 items-center gap-2 text-left"
+                className="flex min-h-11 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 onClick={() => handleSelectPane(pane.id)}
               >
                 <span className="font-mono text-xs text-muted-foreground">
@@ -143,7 +161,8 @@ export function PaneListPanel() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                className="h-11 w-11 shrink-0 text-muted-foreground hover:text-destructive"
+                aria-label="Kill pane"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleKillPane(pane.id);

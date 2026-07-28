@@ -1,0 +1,113 @@
+{
+  "meta": {
+    "title": "mtmux pricing — free on one machine, $10/mo for all",
+    "description": "Free forever on one server with three trusted devices, tunnel included. Pro is $10/month or $100/year for unlimited servers, unlimited devices and 200 GB relayed."
+  },
+  "breadcrumb": {
+    "home": "Home",
+    "current": "Pricing"
+  },
+  "hero": {
+    "eyebrow": "pricing",
+    "title": "Priced like a tool, not a platform.",
+    "lead": "The CLI is MIT-licensed and free on one machine, tunnel included. The only thing that costs us money is relayed bytes, so that is the only thing we meter — and traffic that stays on your own network is never counted at all.",
+    "note": "Every limit below is enforced from one table in the source, <planLink>packages/config/src/plans.ts</planLink>. If this page and that file ever disagree, the file wins."
+  },
+  "toggle": {
+    "ariaLabel": "Billing period",
+    "monthly": "monthly",
+    "yearly": "yearly",
+    "yearlyDiscount": "2 months free"
+  },
+  "tiers": {
+    "free": {
+      "name": "Free",
+      "priceSuffix": "",
+      "note": "1 server · 3 devices · forever",
+      "features": [
+        "Unlimited sessions, windows and panes",
+        "Everything on your own network, unmetered",
+        "The encrypted tunnel, 5 GB relayed a month",
+        "Local mode that contacts no broker at all",
+        "Self-host the broker if you'd rather"
+      ],
+      "cta": "Install"
+    },
+    "pro": {
+      "name": "Pro",
+      "popularBadge": "POPULAR",
+      "priceSuffix": "/mo",
+      "yearlySuffix": "/mo, billed yearly",
+      "note": "Unlimited servers & devices",
+      "features": [
+        "Everything in Free",
+        "Unlimited registered servers",
+        "Unlimited trusted devices per server",
+        "200 GB relayed a month",
+        "Name your machines in the dashboard"
+      ],
+      "cta": "Upgrade"
+    }
+  },
+  "comparison": {
+    "title": "Line by line",
+    "rowHeaderLabel": "Plan feature",
+    "headers": {
+      "free": "Free",
+      "pro": "Pro"
+    },
+    "labels": {
+      "servers": "Registered servers",
+      "devices": "Trusted devices per server",
+      "relayed": "Relayed traffic per month",
+      "localLan": "Local & LAN traffic",
+      "tunnel": "Encrypted tunnel",
+      "namedServers": "Named servers",
+      "selfHost": "Self-hosted broker",
+      "sessions": "Sessions, windows, panes"
+    },
+    "values": {
+      "unlimited": "unlimited",
+      "unmetered": "unmetered",
+      "hostname": "hostname only"
+    },
+    "included": "Included",
+    "notIncluded": "Not included",
+    "note": "Local and LAN traffic never reaches our infrastructure, so it is not metered on any plan and never can be. Relayed traffic is bytes carried through the broker on your behalf — which is the one thing that costs us money to provide."
+  },
+  "team": {
+    "title": "Something else?",
+    "prose": "There is no team plan, no seat pricing and no enterprise tier — we would rather say that than list features we have not built. If you need something the two plans above don't cover, <mailLink>email us</mailLink> and tell us what it is.",
+    "cta": "Email us"
+  },
+  "billingFaq": {
+    "title": "Billing questions",
+    "items": [
+      {
+        "question": "What counts as a server?",
+        "answer": "One machine running mtmux and registered to your account. A laptop, a workstation, an EC2 box — each is one server, however many tmux sessions it hosts."
+      },
+      {
+        "question": "Does the free tier expire?",
+        "answer": "No. Free is free indefinitely on one server, and the encrypted tunnel is included rather than held back as the upsell. We would rather you upgrade because you bought a second machine."
+      },
+      {
+        "question": "What happens if I go over 5 GB in a month?",
+        "answer": "The relayed path is what stops; your own network is not affected, because it never went through us. Local and LAN access keep working exactly as before, and the counter resets with the calendar month."
+      },
+      {
+        "question": "Can I use mtmux without paying and without an account?",
+        "answer": "Yes. An account is only needed to register more than one server or to open a dashboard. Without one you still get the CLI, the tunnel and local mode."
+      },
+      {
+        "question": "Who processes payments?",
+        "answer": "Dodo Payments. Card details never reach our servers, and the prices Dodo shows at checkout are the authoritative ones."
+      },
+      {
+        "question": "Refunds?",
+        "answer": "Ask within 30 days and we refund, no questions. Cancel any time; you keep Pro until the period ends, then fall back to Free."
+      }
+    ],
+    "moreLink": "more answers"
+  }
+}

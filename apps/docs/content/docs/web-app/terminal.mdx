@@ -1,46 +1,94 @@
 ---
 title: Terminal
-description: xterm.js terminal rendering, themes, search, and keyboard shortcuts.
+description: Rendering, themes, search and keyboard shortcuts.
 ---
 
-## Terminal View
+## Rendering
 
-The terminal is rendered using [xterm.js](https://xtermjs.org/) with the following addons:
+The terminal is [xterm.js](https://xtermjs.org/) with these addons:
 
-- **WebGL** — GPU-accelerated rendering (falls back to canvas)
-- **Search** — Find text in terminal scrollback
-- **Unicode 11** — Full emoji and Unicode support
-- **Web Links** — Clickable URLs in terminal output
-- **Fit** — Auto-sizes terminal to container
+| Addon                                         | Always on?                         |
+| --------------------------------------------- | ---------------------------------- |
+| **Fit** — sizes the terminal to its container | yes                                |
+| **Search** — finds text in scrollback         | yes                                |
+| **Unicode 11** — emoji and wide characters    | yes                                |
+| **Web Links** — clickable URLs in output      | yes                                |
+| **WebGL** — GPU-accelerated rendering         | only when GPU rendering is enabled |
 
-## Themes
+GPU rendering is **on by default** and can be turned off in Settings. The
+setting is read once when the terminal initialises, so toggling it applies after
+a reload — the Settings panel says so. If the WebGL context is lost the addon is
+disposed and rendering continues without it. Turn it off if only part of each
+line is visible, which is a known cell-scaling problem on some HiDPI screens.
 
-tmuxremote ships with multiple terminal color themes. Change the theme in Settings. Themes are defined in `packages/ui/terminal-themes.ts` and applied via xterm.js `theme` option.
+Option is mapped as Meta on macOS.
+
+## Resizing
+
+Resize is driven by a `ResizeObserver`, window resize, `orientationchange`,
+`visualViewport` resize and scroll, and an `IntersectionObserver`, all funnelled
+through one debounced fit. Duplicate `terminal:resize` messages are suppressed.
+
+That machinery exists because a mobile browser changes the visual viewport
+without changing the layout viewport when the keyboard appears, and a terminal
+that does not notice ends up drawing under it.
 
 ## Search
 
-Use the search button in the toolbar (or open it from the toolbar) to search terminal scrollback:
+Open it from the toolbar on desktop, or the search button in the mobile keyboard
+toolbar.
 
-- Type to search (highlights matches)
-- **Enter** — next match
-- **Shift+Enter** — previous match
-- **Escape** — close search
+| Key           | Action         |
+| ------------- | -------------- |
+| `Enter`       | Next match     |
+| `Shift+Enter` | Previous match |
+| `Escape`      | Close          |
 
-## Keyboard Shortcuts
+## Keyboard shortcuts
 
-| Shortcut           | Action                            |
-| ------------------ | --------------------------------- |
-| `Ctrl+=` / `Cmd+=` | Increase font size                |
-| `Ctrl+-` / `Cmd+-` | Decrease font size                |
-| `Ctrl+0` / `Cmd+0` | Reset font size to default (14px) |
+These are bound by the app. Everything else goes through to the PTY.
+
+| Shortcut              | Action                       |
+| --------------------- | ---------------------------- |
+| `Ctrl/Cmd` `+` or `=` | Increase font size           |
+| `Ctrl/Cmd` `-`        | Decrease font size           |
+| `Ctrl/Cmd` `0`        | Reset font size              |
+| `Ctrl/Cmd` `B`        | Toggle the sidebar           |
+| `Ctrl/Cmd` `E`        | Switch to the Files tab      |
+| `Ctrl/Cmd` `K`        | Command palette              |
+| `?`                   | Keyboard shortcuts dialog    |
+| `Ctrl/Cmd` `S`        | Save, inside the file editor |
+
+`Ctrl+C`, `Ctrl+D`, `Ctrl+L` and `Ctrl+Z` are _not_ app shortcuts — they pass
+straight through to the shell, which is why they behave exactly as they do in a
+local terminal.
+
+## Copy and paste
+
+Copy takes the current selection and writes it to the clipboard. Paste reads the
+clipboard and sends it as terminal input. Both use the browser Clipboard API and
+therefore need a secure context or localhost.
+
+## Command palette
+
+`Ctrl/Cmd+K`, or the palette button in the mobile keyboard toolbar. It offers:
+
+- **Quick actions** — Interrupt, EOF, Clear, Suspend
+- **Recent commands** — the last ten from history
+- **Free text** — anything typed is sent as a command and appended to history
 
 ## Settings
 
-Terminal settings are persisted to `localStorage` and include:
+Persisted to `localStorage` and applied per browser:
 
-- **Font size** (8–24px, default 14)
-- **Font family** (JetBrains Mono, Fira Code, Cascadia Code)
-- **Theme** (Dracula, One Dark, Solarized, etc.)
-- **Cursor style** (block, underline, bar)
-- **Cursor blink** (on/off)
-- **Scrollback lines** (100–50,000, default 5,000)
+| Setting          | Range                                                      | Default                                                |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------ |
+| Font size        | 8–24, further clamped so at least ~20 columns stay visible | 14 (13 on 769–1024px)                                  |
+| Font family      | —                                                          | JetBrains Mono → Fira Code → Cascadia Code → monospace |
+| Terminal theme   | the set in `@repo/ui`                                      | Dracula                                                |
+| Cursor style     | block, underline, bar                                      | block                                                  |
+| Cursor blink     | on/off                                                     | on                                                     |
+| Scrollback lines | 100 – 50,000                                               | 5,000                                                  |
+| GPU rendering    | on/off (applies after reload)                              | on                                                     |
+
+There is no font-family picker in the UI; the stack above is what you get.

@@ -29,6 +29,39 @@ export type PeerRecord = {
   label: string;
   pairedAt: number;
   lastSeenAt: number;
+  /**
+   * The direct-path token derived with this peer, so restarting the server does
+   * not force it to pair again.
+   *
+   * This is a deliberate weakening of an earlier property — relay session
+   * tokens lived only in memory, so a restart revoked every device. That reads
+   * well but is the wrong trade for a tool that runs on a server: it made every
+   * deploy, crash or reboot cost a walk to another device. "Paired" should mean
+   * what it means for a phone or a Bluetooth keyboard — trusted until revoked.
+   *
+   * The bound is still real: entries expire after `PEER_EXPIRY_MS`,
+   * `mtmux devices revoke` deletes them, and the file is 0600 alongside the
+   * machine's own auth token and Ed25519 secret, so this adds no secret to a
+   * file that was not already the crown jewels.
+   */
+  directToken?: string;
+};
+
+/**
+ * A signed-in account.
+ *
+ * Scoped to `apiBase` on purpose: a token minted by api.mtmux.com means nothing
+ * to a self-hosted broker, and silently sending it there would be both useless
+ * and a credential leak to a third party. Switching brokers therefore means
+ * signing in again, which is the honest behaviour.
+ */
+export type Account = {
+  token: string;
+  userId: string;
+  email: string;
+  apiBase: string;
+  /** The registry row this machine claimed, once it has registered. */
+  serverId?: string;
 };
 
 export type Config = {
@@ -36,6 +69,9 @@ export type Config = {
   /** This machine's device identity, created on first pair. */
   deviceKey?: StoredDeviceKey;
   peers?: PeerRecord[];
+  account?: Account;
+  /** What this machine calls itself in the dashboard. Defaults to hostname. */
+  serverName?: string;
 };
 
 async function write(cfg: Config): Promise<Config> {
@@ -114,6 +150,26 @@ export async function ensureDeviceKey(): Promise<{
   const key = generateDeviceKey();
   const updated = await write({ ...config, deviceKey: encodeDeviceKey(key) });
   return { config: updated, key };
+}
+
+/** The signed-in account, but only if it belongs to the broker being used. */
+export async function getAccount(apiBase: string): Promise<Account | null> {
+  const account = (await load()).account;
+  if (!account) return null;
+  return account.apiBase === apiBase ? account : null;
+}
+
+export async function setAccount(account: Account): Promise<Config> {
+  return write({ ...(await load()), account });
+}
+
+export async function clearAccount(): Promise<Config> {
+  const { account: _discarded, ...rest } = await load();
+  return write(rest as Config);
+}
+
+export async function setServerName(name: string): Promise<Config> {
+  return write({ ...(await load()), serverName: name });
 }
 
 export async function listPeers(): Promise<PeerRecord[]> {

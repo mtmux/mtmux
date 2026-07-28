@@ -1,50 +1,205 @@
 ---
 title: Security
-description: Security considerations for deploying tmuxremote — authentication, TLS, path restrictions, and rate limiting.
+description: The credentials mtmux actually uses, how they are checked, and what each one can do.
 ---
 
-# Security
+mtmux gives a browser a terminal on your machine. This page describes the
+authentication model as implemented, not as intended.
 
-tmuxremote provides terminal access to a remote machine, so security is critical. This page covers the built-in security features and best practices.
+## Three credentials, not one
 
-## Authentication
+| Credential        | Lifetime                                                            | Where it lives                                                    | How you get one                                  |
+| ----------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------ |
+| **`AUTH_TOKEN`**  | Forever, until rotated                                              | `~/.mtmux/config.json`, mode `0600`                               | Generated on first run — 32 random bytes         |
+| **Session token** | 24 hours in the relay; a pairing-derived one is replayed on restart | Relay memory; pairing-derived ones also in `~/.mtmux/config.json` | Redeeming a LAN nonce, or derived from a pairing |
+| **Pairing nonce** | 24 hours as `mtmux start` issues it                                 | Nowhere on disk                                                   | The QR in `--local` mode                         |
 
-All WebSocket connections require a valid `AUTH_TOKEN`. The token is sent as the first message after connection and must match the server's configured value.
+The point of the second and third is that **the long-lived token never has to be
+typed, and never crosses the network.**
 
-- Set a strong, random token in production
-- The token is never stored on the server — it's compared in memory
-- Failed authentication immediately closes the connection
+### AUTH_TOKEN
 
-## Path Restrictions
+The machine's own credential. It authenticates the WebSocket, `GET /file`, and
+the loopback endpoint that registers derived tokens.
 
-The `ALLOWED_PATHS` environment variable restricts which directories the file browser can access. Paths outside this list are rejected.
+- Generated as 32 random bytes on first run. `mtmux token rotate` replaces it
+  while deliberately preserving the device key and every paired peer.
+- Compared by hashing both sides with SHA-256 and then `timingSafeEqual`, so a
+  comparison cannot be timed to recover it byte by byte.
+- The relay **refuses to boot** with the default or an empty token when bound to
+  a non-loopback address. On loopback it is allowed, which keeps local
+  development friction-free.
 
-```bash
-# Only allow access to home directories and a specific project
-ALLOWED_PATHS="/home,/opt/myproject"
+### Session tokens
+
+Scoped, short-lived credentials that stand in for `AUTH_TOKEN`.
+
+- Issued by redeeming a LAN pairing nonce, or derived independently by both
+  sides from a completed PAKE.
+- The relay stores them as a **SHA-256 digest only**, in memory, with an expiry
+  — default 24 hours.
+- Registered through `POST /_pair/session`, which is **loopback-only**, requires
+  `Authorization: Bearer <AUTH_TOKEN>`, caps the body at 1 KB, and requires the
+  token to be at least 32 characters.
+
+**Two lifetimes, and the difference matters:**
+
+- A **LAN nonce** sign-in exists only in relay memory. Restarting mtmux signs it
+  out.
+- A **pairing-derived** token is also written to `~/.mtmux/config.json` against
+  its peer record, and `mtmux start` replays it on boot. Restarting mtmux does
+  _not_ sign that device out — it stays trusted until it goes 90 days unseen or
+  you revoke it. This is the point of pairing, and it means a restart is no
+  longer a blunt revocation tool for those devices. It adds no secret to a file
+  that was not already holding the machine's auth token and Ed25519 secret key.
+
+> **Be precise about "scoped".** These tokens are scoped in _time_ and to a
+> single pairing. They are **not** scoped by capability: a session token
+> authenticates the WebSocket exactly as `AUTH_TOKEN` does and can perform every
+> operation the protocol offers. Treat one as equivalent to the machine token
+> for the 24 hours it lives.
+
+### Pairing nonces
+
+The mechanism behind "no token to type" on your own network.
+
+- Single-use, and **burned on redemption** whether or not the caller does
+  anything with the token it receives.
+- Only one is live at a time — issuing a new one clears the previous.
+- Redeemed at `POST /_pair/local`. `GET` is refused with `405`, on purpose: a
+  `GET` would put the nonce in access logs and `Referer` headers.
+- An unknown, spent or expired nonce gets a generic `401` — _"Pairing code is
+  invalid or already used"_ — and the log line carries no nonce material.
+- It travels in the URL **fragment** (`/login#n=…`), which browsers never send
+  to a server.
+
+## Connecting
+
+Authentication is the **first message** on the WebSocket, not a header or a
+query parameter:
+
+```json
+{ "type": "auth", "token": "…" }
 ```
 
-## Rate Limiting
+- Anything else as the first message is refused.
+- There is a **5-second deadline**. A socket that has not authenticated by then
+  gets `auth:failure` and is closed.
+- Either `AUTH_TOKEN` or a live session token is accepted.
+- On success the relay replies `auth:success` and a `server:info` frame.
+- On failure it replies `auth:failure` with a reason and **closes the socket**.
 
-The relay server enforces per-connection rate limiting via `WS_RATE_LIMIT` (default: 100 messages per window). Connections exceeding the limit are throttled.
+## Failed-auth throttling
 
-## TLS / HTTPS
+Per remote address, in memory.
 
-In production, always terminate TLS in front of tmuxremote:
+- The first **4** failures are free.
+- From the **5th**, a lockout starts at **30 seconds** and doubles on every
+  further failure, up to **15 minutes**.
+- During a lockout, _even a correct token is refused_ — otherwise the lockout
+  would be a free oracle telling an attacker when they had guessed right.
+- One success wipes that address's history entirely.
+- The client is told `retryAfterMs`, then disconnected. Reconnecting is allowed;
+  every auth attempt is simply refused until the lockout expires.
 
-- Use a reverse proxy (nginx, Caddy, Traefik) with a valid certificate
-- Configure `NEXT_PUBLIC_RELAY_URL` with `wss://` instead of `ws://`
-- Set `CORS_ORIGINS` to your specific domain
+Two caveats worth knowing:
 
-## Idle Timeout
+- The throttle keys on the socket's remote address. Behind the tunnel every
+  connection arrives from loopback and therefore shares one bucket.
+- It is wired into WebSocket auth only. Nonce redemption, the loopback session
+  endpoint and `GET /file?token=` are not throttled by it.
 
-Connections idle for longer than `IDLE_TIMEOUT_MINUTES` (default: 30) are automatically closed. Set to `0` to disable.
+## Connection limits
 
-## Best Practices
+| Limit                                       | Value                              |
+| ------------------------------------------- | ---------------------------------- |
+| Total concurrent connections                | 100                                |
+| Concurrent connections per address          | 10                                 |
+| Max WebSocket frame                         | 1 MiB                              |
+| Inbound messages per second, per connection | `WS_RATE_LIMIT`, default 100       |
+| Idle disconnect                             | `IDLE_TIMEOUT_MINUTES`, default 30 |
 
-1. **Never expose tmuxremote directly to the internet** without TLS
-2. **Use a strong auth token** — treat it like a password
-3. **Restrict allowed paths** — only expose directories that need to be accessible
-4. **Keep tmuxremote updated** — pull the latest version for security fixes
-5. **Monitor access** — check relay server logs for unexpected connections
-6. **Firewall** — restrict relay port access to known IPs when possible
+Over-cap upgrades are closed with WebSocket code **1013 Try Again Later**.
+Exceeding the message rate drops that message with a `RATE_LIMITED` error rather
+than disconnecting.
+
+After authentication the relay pings every 30 seconds and terminates a peer that
+missed the previous pong.
+
+## Pairing security
+
+The full argument is in [How pairing works](/docs/pairing) and
+[The sealed tunnel](/docs/sealed-tunnel). In brief:
+
+- The six-digit code is **slot(2) + secret(4)**. The secret never reaches the
+  broker, not even as a hash.
+- Both halves are drawn by **rejection sampling**, so the guessing bound is not
+  weakened by modulo bias.
+- A code is **single-use**, and a failed key confirmation destroys the mailbox.
+  One wrong guess costs the attacker the whole code, and burning one is visible
+  to you.
+- The broker rate-limits claims to **5 per minute per address** and mailboxes to
+  **10 per minute** — this is what stops an attacker spraying claims across every
+  slot.
+- Tunnel traffic is **AES-256-GCM** with per-direction keys and a strictly
+  increasing counter. A replayed or reordered frame is rejected by number; a
+  tampered one fails authentication and closes the connection.
+- The browser is never told `AUTH_TOKEN`. It either derives a session token from
+  the pairing, or needs no token at all on the tunnel path.
+
+## File access
+
+`ALLOWED_PATHS` is the boundary. Enforcement resolves symlinks on both the
+target and each allowed root before comparing, so a symlink pointing out of an
+allowed directory does not escape it. Every read, write, create, delete, rename,
+upload and watch passes the same guard, and the relay refuses to delete an
+allowed root itself.
+
+```bash
+mtmux start --allowed-paths /home/me/projects,/var/log
+```
+
+Keep it as narrow as the job needs. Fixed size caps apply: 100 KB truncating
+read, 1 MB write, 10 MB upload. A partial upload is unlinked if it goes over or
+if the client disconnects.
+
+## Origins
+
+The WebSocket upgrade checks `Origin` against `CORS_ORIGINS`:
+
+- No `Origin` header — allowed. Native and CLI clients do not send one.
+- Empty `CORS_ORIGINS` — allowed. This means "no restriction", not "reject
+  everyone", and is what CLI single-port mode uses because everything is
+  same-origin there.
+- Otherwise, exact string membership.
+
+The relay never emits a wildcard `Access-Control-Allow-Origin`. In production it
+refuses to boot with a `localhost` origin in the list.
+
+## Transport
+
+The CLI serves plain HTTP. That is correct on loopback and on a trusted LAN, and
+the pairing flows are designed so no long-lived secret crosses the network even
+there.
+
+**Do not expose the port directly to the internet.** Either use the sealed
+tunnel — which is end-to-end encrypted regardless of what the transport does —
+or put the single port behind a reverse proxy that terminates TLS. See
+[Self-hosting](/docs/self-hosting).
+
+## Practical checklist
+
+1. Let mtmux generate the token. Do not invent one by hand.
+2. Keep `~/.mtmux/config.json` at mode `0600` — [`mtmux doctor`](/docs/doctor)
+   checks this.
+3. Narrow `ALLOWED_PATHS` to what you actually need.
+4. Revoke with `mtmux devices revoke <id>`, then restart to drop any socket that
+   device still holds. A restart alone no longer un-pairs anything.
+5. Never put the raw port on the public internet without TLS in front.
+6. In split deployments set `CORS_ORIGINS` to your exact production origin.
+7. Keep mtmux current — `npm install -g mtmux@latest`.
+
+## Reporting a vulnerability
+
+Please do not open a public issue. See
+[SECURITY.md](https://github.com/GagnDeep/tmuxremote/blob/main/SECURITY.md).

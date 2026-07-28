@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -27,7 +33,11 @@ import {
   shouldWriteOutput,
   type AttachState,
 } from "@/lib/attach-state";
-import { Terminal, Plus } from "lucide-react";
+import {
+  setTerminalHandle,
+  type TerminalHandle,
+} from "@/components/terminal/terminal-handle";
+import { Terminal, Plus, Loader2 } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { cn } from "@repo/ui/lib/utils";
 import type { ServerMessage } from "@repo/protocol";
@@ -38,11 +48,7 @@ interface TerminalViewProps {
   onCreateSession?: () => void;
 }
 
-export interface TerminalViewHandle {
-  search: (term: string) => void;
-  findNext: () => void;
-  findPrevious: () => void;
-}
+export type TerminalViewHandle = TerminalHandle;
 
 /**
  * All layout signals (ResizeObserver, window resize, orientation, visualViewport,
@@ -99,6 +105,9 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     // the toggle takes effect on the next mount/reload.
     const gpuRendering = useTerminalStore((s) => s.gpuRendering);
     const status = useConnectionStore((s) => s.status);
+    // Mirrors the attach machine for rendering only: until the ack lands the
+    // terminal is a blank black rectangle, for up to ATTACH_TIMEOUT_MS.
+    const [attaching, setAttaching] = useState(false);
 
     useImperativeHandle(ref, () => ({
       search: (term: string) => {
@@ -110,7 +119,25 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       findPrevious: () => {
         searchAddonRef.current?.findPrevious("");
       },
+      getSelection: () => terminalRef.current?.getSelection() ?? "",
     }));
+
+    // Same handle, reachable from outside this subtree — see terminal-handle.ts.
+    useEffect(() => {
+      setTerminalHandle({
+        search: (term: string) => {
+          searchAddonRef.current?.findNext(term);
+        },
+        findNext: () => {
+          searchAddonRef.current?.findNext("");
+        },
+        findPrevious: () => {
+          searchAddonRef.current?.findPrevious("");
+        },
+        getSelection: () => terminalRef.current?.getSelection() ?? "",
+      });
+      return () => setTerminalHandle(null);
+    }, []);
 
     // Initialize terminal ONCE on mount — no sessionName dependency
     useEffect(() => {
@@ -442,6 +469,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         // corrupt the state machine.
         if (next === prev) return;
         attachStateRef.current = next;
+        setAttaching(false);
         // reset(), not clear(): clear() leaves modes and the alternate buffer
         // intact, so old content bleeds through the replayed scrollback.
         terminalRef.current?.reset();
@@ -475,12 +503,14 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           type: "detach",
         });
         lastSentSizeRef.current = null;
+        setAttaching(false);
         return;
       }
 
       // Armed before any early return so a stuck attach is always surfaced,
       // whatever the reason it stalled.
       const errorTimer = setTimeout(() => {
+        setAttaching(false);
         if (
           !shouldWriteOutput(attachStateRef.current) &&
           attachedName(attachStateRef.current) === sessionName &&
@@ -521,6 +551,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           attachId,
         });
         lastSentSizeRef.current = size;
+        setAttaching(true);
 
         client.send({
           type: "session:attach",
@@ -554,6 +585,17 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           className={cn("h-full w-full", !sessionName && "invisible")}
           style={{ touchAction: "manipulation" }}
         />
+
+        {/* Attaching — pointer-events-none so keyboard/touch input still lands
+            on the terminal underneath the moment output starts flowing. */}
+        {sessionName && attaching && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/80 text-muted-foreground">
+            <Loader2 className="h-6 w-6 animate-spin" />
+            <p className="text-sm">
+              Attaching to <span className="font-mono">{sessionName}</span>…
+            </p>
+          </div>
+        )}
 
         {/* No session overlay */}
         {!sessionName && (

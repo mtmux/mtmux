@@ -8,8 +8,9 @@ import { getRelayClient } from "@/hooks/use-websocket";
 /**
  * Slim, persistent banner shown only while the socket is disconnected or
  * reconnecting, so users get clear feedback instead of typing into a dead
- * terminal. Rendered inside the AppShell `<main>` (which is `relative`), it
- * pins to the top of the content area and stays out of the way when connected.
+ * terminal. Rendered at the bottom of the AppShell header so it *displaces*
+ * the content area — as an overlay it sat on top of terminal row 1, hiding
+ * output exactly when the user is trying to work out what went wrong.
  */
 export function ConnectionBanner() {
   const status = useConnectionStore((s) => s.status);
@@ -28,7 +29,7 @@ export function ConnectionBanner() {
       role="status"
       aria-live="polite"
       className={cn(
-        "absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 px-3 py-1 text-xs font-medium shadow-sm",
+        "flex w-full items-center justify-center gap-2 px-3 py-1 text-xs font-medium",
         reconnecting
           ? "bg-warning/95 text-warning-foreground"
           : "bg-destructive/95 text-destructive-foreground",
@@ -47,7 +48,7 @@ export function ConnectionBanner() {
       {!reconnecting && (
         <button
           type="button"
-          className="ml-1 shrink-0 rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] hover:bg-foreground/20 transition-colors"
+          className="ml-1 shrink-0 rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] hover:bg-foreground/20 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current"
           onClick={() => getRelayClient()?.connect()}
         >
           Retry

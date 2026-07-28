@@ -1,0 +1,158 @@
+{
+  "meta": {
+    "title": "tmate vs ttyd vs SSH apps vs mtmux, compared honestly",
+    "description": "How mtmux compares to tmate, ttyd, wetty, mobile SSH clients and VS Code Remote for driving tmux from a phone — including when it's the wrong choice."
+  },
+  "breadcrumb": {
+    "home": "Home",
+    "current": "Compare"
+  },
+  "hero": {
+    "eyebrow": "compare",
+    "title": "There are five ways to reach a terminal from a phone.",
+    "lead": "All of them work. They optimise for different things, and one of them isn't mtmux. Here's the honest version."
+  },
+  "matrix": {
+    "srTitle": "How mtmux compares to tmate, ttyd, wetty, SSH apps and VS Code Remote",
+    "caption": "Feature comparison across eight dimensions: mtmux, tmate, ttyd & wetty, mobile SSH apps, and VS Code Remote.",
+    "rowHeaderLabel": "Capability",
+    "yesLabel": "Supported",
+    "noLabel": "Not supported",
+    "columns": ["mtmux", "tmate", "ttyd / wetty", "SSH apps", "VS Code Remote"],
+    "rows": [
+      {
+        "label": "Attaches to your existing tmux",
+        "cells": [
+          { "kind": "yes" },
+          { "kind": "text", "text": "new session" },
+          { "kind": "text", "text": "via command" },
+          { "kind": "yes" },
+          { "kind": "text", "text": "via terminal" }
+        ]
+      },
+      {
+        "label": "Designed for touch",
+        "cells": [
+          { "kind": "yes" },
+          { "kind": "no" },
+          { "kind": "no" },
+          { "kind": "text", "text": "varies" },
+          { "kind": "no" }
+        ]
+      },
+      {
+        "label": "Reaches a host behind NAT",
+        "cells": [
+          { "kind": "yes", "text": "dials out" },
+          { "kind": "yes", "text": "dials out" },
+          { "kind": "no" },
+          { "kind": "no" },
+          { "kind": "text", "text": "tunnel" }
+        ]
+      },
+      {
+        "label": "Nothing to port-forward",
+        "cells": [
+          { "kind": "yes" },
+          { "kind": "yes" },
+          { "kind": "no" },
+          { "kind": "no" },
+          { "kind": "text", "text": "tunnel" }
+        ]
+      },
+      {
+        "label": "Credentials on the phone",
+        "cells": [
+          { "kind": "good", "text": "none" },
+          { "kind": "good", "text": "none" },
+          { "kind": "text", "text": "password" },
+          { "kind": "warn", "text": "SSH key" },
+          { "kind": "warn", "text": "SSH key" }
+        ]
+      },
+      {
+        "label": "Survives reconnects",
+        "cells": [
+          { "kind": "yes", "text": "reattaches" },
+          { "kind": "text", "text": "session stays" },
+          { "kind": "text", "text": "partial" },
+          { "kind": "text", "text": "with mosh" },
+          { "kind": "text", "text": "partial" }
+        ]
+      },
+      {
+        "label": "Notifies you when a job ends",
+        "cells": [
+          { "kind": "no" },
+          { "kind": "no" },
+          { "kind": "no" },
+          { "kind": "no" },
+          { "kind": "no" }
+        ]
+      },
+      {
+        "label": "Edit files in a GUI",
+        "cells": [
+          { "kind": "text", "text": "in-terminal" },
+          { "kind": "text", "text": "in-terminal" },
+          { "kind": "text", "text": "in-terminal" },
+          { "kind": "text", "text": "in-terminal" },
+          { "kind": "yes" }
+        ]
+      }
+    ],
+    "note": "The notification row is a column of dashes on purpose. None of these tools page you, mtmux included — if that is what you need, a tmux hook into ntfy or your agent's own hook support is the answer, and it composes with any row above it."
+  },
+  "articles": {
+    "eyebrow": "the honest version",
+    "items": [
+      {
+        "id": "tmate",
+        "title": "vs. tmate",
+        "summary": "tmate is built for a ten-minute shared session; mtmux is built for your own sessions, continuously, from your own devices.",
+        "paragraphs": [
+          "tmate is the best tool in the world for “let me show you this for ten minutes.” It forks a second tmux server and hands out an SSH or web link for a shared session, and it has been doing that reliably for years.",
+          "mtmux attaches to the tmux server you are already running rather than starting a new one, and is built around a browser on a small screen rather than a link you paste to a colleague. Different job: pairing versus commuting. If you want someone else in your terminal, use tmate."
+        ]
+      },
+      {
+        "id": "ttyd",
+        "title": "vs. ttyd & wetty",
+        "summary": "ttyd and wetty serve a shell over a WebSocket and leave the proxy, TLS and auth to you; mtmux dials out and encrypts end-to-end past the relay.",
+        "paragraphs": [
+          "Both wrap a shell in a WebSocket and serve xterm.js. Excellent, minimal, and honest about scope: you bring the reverse proxy, the TLS, the auth and the open port.",
+          "mtmux dials out instead of listening, seals frames end-to-end so the relay carries ciphertext, and adds the mobile input layer on top. If you already trust your own proxy and only need a desktop browser on your own network, ttyd is less machinery and you should use it."
+        ]
+      },
+      {
+        "id": "ssh-apps",
+        "title": "vs. mobile SSH clients",
+        "summary": "Mobile SSH clients keep a private key on the phone and need a reachable sshd; mtmux pairs a revocable device key and needs nothing open.",
+        "paragraphs": [
+          "Native SSH apps are fast and mature, and some have genuinely good keyboards. The costs are a private key living on a phone and a reachable sshd — which, for a machine behind NAT, may not be arrangeable at all.",
+          "mtmux pairs a per-browser device key you can revoke by id, and needs nothing open because the CLI dials out. If you want a general-purpose shell to arbitrary hosts you already have SSH access to, keep the SSH app — mtmux only reaches machines you installed it on."
+        ]
+      },
+      {
+        "id": "vscode",
+        "title": "vs. VS Code Remote & code-server",
+        "summary": "VS Code Remote is a full browser IDE; mtmux is the fastest path to the terminal session your work is already happening in.",
+        "paragraphs": [
+          "If you want to write code on a tablet with a pointer, an editor in the browser beats a terminal. It is also a heavy install, a much larger attack surface, and a rough experience on a six-inch screen.",
+          "mtmux doesn't try to be an IDE. It is the fastest path to the session that is already running, on the device in your hand — which is a smaller ambition and a much smaller thing to install."
+        ]
+      }
+    ]
+  },
+  "whenNot": {
+    "title": "When not to use mtmux",
+    "items": [
+      "You need a shell on a host you can't install mtmux on — use SSH.",
+      "You want a GUI editor with a file tree on an iPad — use VS Code Remote.",
+      "You want to hand a colleague temporary access to your terminal — use tmate.",
+      "You want to be paged when a job finishes — mtmux never pages you; wire up a tmux hook.",
+      "Your box has no outbound network access and no LAN reachability — nothing helps."
+    ],
+    "note": "Everything else — a long run you want to keep an eye on from outside the house — is what mtmux was built for. <link>Two-minute quickstart →</link>"
+  }
+}

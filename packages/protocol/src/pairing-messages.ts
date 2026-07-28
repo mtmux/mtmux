@@ -40,7 +40,13 @@ export const StreamIdSchema = z.string().min(1).max(64);
 export const MAX_FRAME_BYTES = 1024 * 1024 + 1024;
 
 // ---------------------------------------------------------------------------
-// Browser → broker (over WS /v1/pair/:mailboxId)
+// Either end → broker (over WS /v1/pair/:mailboxId or WS /v1/claim/:claimId)
+//
+// These messages are deliberately direction-neutral. Pairing has two roles —
+// the mailbox holder who parks a slot and waits, and the claimant who quotes it
+// — and either can be the browser or the CLI: a phone opens app.mtmux.com/pair
+// and the CLI claims it, or `mtmux start` prints a code and the phone claims
+// that. Nothing below names which end runs a terminal, and nothing should.
 // ---------------------------------------------------------------------------
 
 /**
@@ -73,8 +79,12 @@ export const PairConfirmMessage = z.object({
 });
 
 /**
- * CLI → broker: the sealed connection descriptor, forwarded verbatim to the
- * browser as `pair:established`.
+ * The sealed connection descriptor, forwarded verbatim to the peer as
+ * `pair:established`.
+ *
+ * Always sent by the CLI, but on whichever socket the CLI happens to hold: the
+ * claim socket when the browser opened the mailbox, the mailbox socket when
+ * `mtmux start` did. It is the last message of a successful pairing either way.
  */
 export const PairEstablishMessage = z.object({
   type: z.literal("pair:establish"),
@@ -102,10 +112,17 @@ export const PairingClientMessage = z.discriminatedUnion("type", [
 ]);
 
 // ---------------------------------------------------------------------------
-// Broker → browser
+// Broker → either end
 // ---------------------------------------------------------------------------
 
-/** The mailbox is live and holding the given slot. */
+/**
+ * The mailbox is live and holding the given slot.
+ *
+ * Sent once, to the mailbox holder only, immediately after its socket attaches.
+ * The slot and expiry are already known from `POST /v1/pair/new`; this is the
+ * broker confirming the socket is the one that will receive the claim, and its
+ * `expiresAt` is the authoritative countdown to display.
+ */
 export const PairReadyMessage = z.object({
   type: z.literal("pair:ready"),
   mailboxId: MailboxIdSchema,
@@ -116,10 +133,14 @@ export const PairReadyMessage = z.object({
 /**
  * The other side's CPace share.
  *
- * Sent to a browser when someone claims its slot, and to a claiming CLI for
+ * Sent to a mailbox holder when someone claims its slot, and to a claimant for
  * each mailbox that answers. Because a claim is fanned out to every live
  * mailbox on the slot, receiving this is not evidence that the peer knows the
  * secret — only a valid `pair:peer-confirm` is.
+ *
+ * `sid` is always the *claimant's* session id, whichever direction the message
+ * travels: one side has to choose it, and the claimant is the only side that
+ * exists exactly once per exchange.
  */
 export const PairPeerShareMessage = z.object({
   type: z.literal("pair:peer-share"),
@@ -296,7 +317,8 @@ export const DiscoverResponse = z.object({
 });
 
 /**
- * The payload the CLI seals under the pairing key. The broker only ever sees
+ * The payload the CLI seals under the pairing key, sealed fresh at counter 0
+ * with a `FrameSealer` on the CLI→browser direction. The broker only ever sees
  * its ciphertext — publishing the shape here is safe and keeps both ends
  * honest about it.
  */

@@ -110,5 +110,52 @@ module.exports = {
         PORT: 24102,
       },
     },
+    {
+      /**
+       * mtmux.com — the marketing site, docs and blog (apps/site).
+       *
+       * The name and the port are load-bearing: nginx's `server_name mtmux.com`
+       * vhost proxies to http://localhost:41317, and that vhost lives in the
+       * hand-maintained /etc/nginx/conf.d/http.conf. Renaming this app or moving
+       * the port takes the public site down. Port 41317 is deliberately high and
+       * unregistered, clear of the 3000/8000/8080 collisions on this box.
+       *
+       * Deliberately no `env_file`: unlike the hosted-app processes, the site
+       * needs nothing from .env, and inheriting relay/API values here would only
+       * create ways for it to disagree with the bundle it is serving.
+       */
+      name: "mtmux-web",
+      script: "node_modules/next/dist/bin/next",
+      args: "start --port 41317 --hostname 127.0.0.1",
+      cwd: path.resolve(__dirname, "apps/site"),
+      // Cluster mode is what makes `pm2 reload mtmux-web` zero-downtime: PM2
+      // brings up a replacement worker, waits for it to listen, then retires
+      // the old one. Two workers, not "max" — this box shares its cores with
+      // ~20 other services and a prerendered site is not the bottleneck.
+      exec_mode: "cluster",
+      instances: 2,
+      max_memory_restart: "512M",
+      kill_timeout: 5000,
+      listen_timeout: 10000,
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: "20s",
+      restart_delay: 2000,
+      exp_backoff_restart_delay: 200,
+      // Never watch in production — a stray file write should not bounce the
+      // public site.
+      watch: false,
+      out_file: `${LOGS}/mtmux-web-out.log`,
+      error_file: `${LOGS}/mtmux-web-err.log`,
+      merge_logs: true,
+      time: true,
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      env: {
+        ...commonEnv,
+        PORT: 41317,
+        HOSTNAME: "127.0.0.1",
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+    },
   ],
 };

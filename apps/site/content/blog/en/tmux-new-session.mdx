@@ -1,0 +1,187 @@
+---
+title: "tmux new session: create, name and start detached"
+description: "Run tmux new -s name to create a named tmux session, or add -d to start it detached in the background without attaching to it."
+date: "2026-06-08"
+author: "ivo-hart"
+category: "tmux"
+tags: ["tmux", "sessions", "cli"]
+keywords:
+  - "tmux new session"
+  - "tmux create new session"
+  - "create tmux session"
+  - "tmux create session"
+  - "tmux new"
+featured: false
+draft: false
+---
+
+`tmux new-session -s name` (alias: `tmux new -s name`) creates a session called `name` and
+attaches to it immediately. Add `-d` to create it without attaching, and `-c path` to set the
+directory it starts in. Running bare `tmux` does the same thing with an auto-generated numeric
+name, which is fine for a throwaway session and annoying for anything you plan to come back to.
+
+## Named vs unnamed sessions
+
+`tmux` with no arguments creates a session named `0`, or the next free integer if `0` is taken.
+That works right up until you have three of them and `tmux ls` shows:
+
+```
+0: 1 windows (created Mon Jul 14 09:12:41 2026)
+1: 1 windows (created Mon Jul 14 09:14:02 2026)
+2: 1 windows (created Mon Jul 14 09:15:47 2026)
+```
+
+None of that tells you which one is running the deploy and which one is `htop`. Name it at
+creation time instead:
+
+```bash
+tmux new -s deploy
+tmux new -s scratch
+```
+
+Now `tmux ls` reads `deploy: 1 windows...` and `scratch: 1 windows...`, and `tmux attach -t
+deploy` does what it says. Naming costs nothing at creation time and saves real time every
+attach after that — see [tmux attach session](/blog/tmux-attach-session) for what you do with
+the name once you have it.
+
+## Creating a session without attaching: `-d`
+
+`tmux new -s ci -d` creates the session and returns you to your current shell instead of
+switching into it. This is the form you want from a script, a cron job, or anywhere you are
+bootstrapping a session you will attach to later — or never, if it is just running a build.
+
+<TerminalDemo title="~ — starting a background session">
+  $ tmux new -d -s ci $ echo "back in the original shell" back in the original
+  shell $ tmux ls ci: 1 windows (created Mon Jun 08 10:02:11 2026)
+</TerminalDemo>
+
+Without `-d`, `tmux new -s ci` would have taken over your terminal, which is wrong for a
+CI-style session you want to keep polling with `tmux capture-pane` rather than sit in front of.
+
+## Choosing the starting directory: `-c`
+
+By default a new session starts in whatever directory you ran `tmux` from. `-c` overrides that:
+
+```bash
+tmux new -s work -c ~/projects/api
+```
+
+This matters more than it sounds like once you have a dotfiles script creating several
+sessions from `$HOME` — without `-c` every one of them starts in your home directory and you
+`cd` manually into each one. `-c` also accepts `-` in `attach-session`/`switch-client` to reuse
+the current client's directory, but for `new-session` you give it a real path.
+
+## Naming and renaming
+
+You can rename a session two ways: at creation with `-s`, or after the fact with
+`rename-session` (shell command) or `prefix $` (key binding, while attached):
+
+<CompareTable
+  columns={["Where", "How"]}
+  rows={[
+    ["At creation", "tmux new -s name"],
+    ["From another shell", "tmux rename-session -t old new"],
+    ["From inside the session", "prefix $, type the new name, Enter"],
+  ]}
+/>
+
+Renaming does not touch the windows or panes inside — it only changes the label tmux and every
+other command uses to refer to the session.
+
+## Naming a window at the same time
+
+`-n` on `new-session` names the initial window, which is worth doing if you already know what
+it is for:
+
+```bash
+tmux new -s work -n editor
+```
+
+That gives you `work:editor` instead of `work:0`, one step ahead of the renaming you would
+otherwise do with `prefix ,`.
+
+## Creating sessions from a script
+
+The pattern that actually matters for automation is "create this session if it does not exist,
+attach to it if it does" — you do not want a bootstrap script to fail with `duplicate session`
+every time you re-run it. `new-session -A` does exactly that:
+
+```bash
+tmux new-session -A -s work
+```
+
+`-A` makes `new-session` behave like `attach-session` when the session already exists. Run it
+once and you get a fresh session; run it again from the same or a different terminal and you
+attach to the one already running.
+
+For anything with more than one window, `has-session` as an explicit guard reads more clearly:
+
+<TerminalDemo title="~/bin/dev — idempotent bootstrap">
+#!/usr/bin/env bash
+tmux has-session -t work 2>/dev/null && exec tmux attach -t work
+
+tmux new -d -s work -n editor -c ~/projects/api
+tmux send-keys -t work:editor 'nvim' Enter
+tmux new-window -t work -n server
+tmux send-keys -t work:server 'npm run dev' Enter
+exec tmux attach -t work
+
+</TerminalDemo>
+
+`has-session` exits 0 if the session exists and non-zero if it does not, which is exactly the
+shape a shell `&&` guard wants. This same pattern is worth stealing for any dev-environment
+bootstrap — see the scripting section of [tmux commands](/blog/tmux-commands) for more of it.
+
+## The error you will actually hit: duplicate session
+
+Creating a session with a name that already exists does not silently attach you to it — it
+refuses:
+
+<TerminalDemo title="~ — duplicate session name">
+  $ tmux new -s work $ tmux new -s work duplicate session: work
+</TerminalDemo>
+
+That is `tmux new-session`, not `-A`. Either attach instead (`tmux attach -t work`), pick a
+different name, or use `tmux new-session -A -s work` if you want "create or attach" behaviour
+without checking first.
+
+<Callout type="note" title="If you see 'sessions should be nested with care'">
+  That warning appears when you run `tmux new` while you are already inside a
+  tmux session (tmux detects the `TMUX` environment variable). It is not an
+  error — it is tmux warning you that you are about to run tmux inside tmux,
+  which works but usually is not what you meant. Detach first with `prefix d`,
+  or open a new session from outside the current one over SSH.
+</Callout>
+
+## Checking on a session you just started
+
+`-d` sessions are easy to lose track of, especially a long build kicked off before you left for
+the day. `tmux capture-pane -p -t ci` from another terminal will print the pane's current
+contents, which is the honest way to check on it without a second tool. If you would rather open
+the session and look than shell in first, that is what mtmux is for — it serves the sessions you
+already created with `tmux new -d` to a browser tab on any device, including a phone with no SSH
+client and nothing forwarded to it.
+
+<FAQ>
+  <FAQItem q="What is the difference between tmux new and tmux new-session?">
+    None — `new` is the built-in alias for `new-session`. Both accept the same
+    flags.
+  </FAQItem>
+  <FAQItem q="How do I create a tmux session without attaching to it?">
+    Add `-d`: `tmux new -d -s name`. The session starts running in the
+    background and your current shell is unaffected.
+  </FAQItem>
+  <FAQItem q="How do I fix 'duplicate session' in tmux?">
+    It means a session with that name already exists. Attach to it with `tmux
+    attach -t name` instead of creating it again, or use `tmux new-session -A -s
+    name` to get create-or-attach behaviour automatically.
+  </FAQItem>
+  <FAQItem q="Can I set the starting directory for a new tmux session?">
+    Yes — `tmux new -s name -c /path/to/dir`. Without `-c`, the session starts
+    in whatever directory you ran the `tmux` command from.
+  </FAQItem>
+  <FAQItem q="How many sessions can tmux run at once?">
+    There is no practical hard limit — each session is cheap. `tmux ls` lists
+    everything the server currently has running.
+  </FAQItem>
+</FAQ>

@@ -3,6 +3,7 @@ import {
   cpaceStart,
   deriveSessionKeys,
   confirmationTag,
+  verifyConfirmation,
   transcriptIr,
   bytesToHex,
   hexToBytes,
@@ -13,9 +14,11 @@ import {
 import type { SealedDescriptor } from "@repo/protocol";
 import {
   pairWithCode,
+  hostPairing,
   PairingError,
+  type ClaimTransport,
+  type MailboxTransport,
   type PairingSocket,
-  type PairingTransport,
 } from "./pairing-client.js";
 
 const DESCRIPTOR: SealedDescriptor = {
@@ -71,7 +74,7 @@ function scenario(opts: {
     close() {},
   };
 
-  const transport: PairingTransport = {
+  const transport: ClaimTransport = {
     postClaim(body) {
       const b = body as {
         slot: string;
@@ -157,7 +160,7 @@ const sealed: (
 ) => Promise<Uint8Array> = () => Promise.resolve(new Uint8Array([1, 2, 3]));
 
 describe("code validation", () => {
-  const transport: PairingTransport = {
+  const transport: ClaimTransport = {
     postClaim: () => Promise.reject(new Error("should not be called")),
     openClaimSocket: () => Promise.reject(new Error("should not be called")),
   };
@@ -352,5 +355,275 @@ describe("failure handling", () => {
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PairingError);
     expect((err as PairingError).hint).toMatch(/three minutes/);
+  });
+});
+
+/**
+ * The inverted direction: the CLI parks the mailbox (`mtmux start`) and a
+ * scripted browser claims the code. Every browser step here is the real CPace
+ * exchange, so a transcript ordered the wrong way round fails these tests
+ * rather than quietly deriving two different keys from one correct code.
+ */
+function hostScenario(opts: { slot?: string; expiresInMs?: number } = {}) {
+  const slot = opts.slot ?? "49";
+  const sent: Record<string, unknown>[] = [];
+  const closedPeers: string[] = [];
+  let inbound: ((raw: string) => void) | null = null;
+  let markReady!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+
+  const socket: PairingSocket = {
+    send(message) {
+      const msg = message as Record<string, unknown>;
+      sent.push(msg);
+      if (msg.type === "pair:close" && typeof msg.peer === "string") {
+        closedPeers.push(msg.peer);
+      }
+    },
+    onMessage(cb) {
+      inbound = cb;
+      markReady();
+    },
+    onClose() {},
+    close() {},
+  };
+
+  const transport: MailboxTransport = {
+    postMailbox: () =>
+      Promise.resolve({
+        mailboxId: "mbx-abcdefgh",
+        slot,
+        expiresAt: Date.now() + (opts.expiresInMs ?? 180_000),
+      }),
+    openMailboxSocket: () => Promise.resolve(socket),
+  };
+
+  function deliver(msg: unknown) {
+    inbound?.(JSON.stringify(msg));
+  }
+
+  function find(type: string, peer: string) {
+    return sent.find((m) => m.type === type && m.peer === peer) as
+      | Record<string, string>
+      | undefined;
+  }
+
+  /** One browser claiming the code, as the CPace initiator. */
+  function claim(peer: string, secret: string) {
+    const sid = randomBytes(16);
+    const browser = cpaceStart(utf8ToBytes(secret), utf8ToBytes(slot), sid);
+    const ad = "browser";
+
+    deliver({
+      type: "pair:peer-share",
+      peer,
+      share: bytesToHex(browser.share),
+      ad,
+      sid: bytesToHex(sid),
+    });
+
+    // The CLI answers with its own share and its confirmation tag, in that
+    // order, before the browser has proved anything.
+    const share = find("pair:share", peer)!;
+    const isk = browser.finish(hexToBytes(share.share!), {
+      own: utf8ToBytes(ad),
+      peer: utf8ToBytes(share.ad!),
+      isInitiator: true,
+    });
+    const keys = deriveSessionKeys(
+      isk,
+      transcriptIr(
+        browser.share,
+        utf8ToBytes(ad),
+        hexToBytes(share.share!),
+        utf8ToBytes(share.ad!),
+      ),
+    );
+
+    const cliConfirm = find("pair:confirm", peer);
+    const cliTagVerifies =
+      cliConfirm !== undefined &&
+      verifyConfirmation(keys.confirm, "cli", hexToBytes(cliConfirm.tag!));
+
+    return {
+      keys,
+      cliTagVerifies,
+      /** Answer honestly with the tag this browser derived. */
+      confirm: () =>
+        deliver({
+          type: "pair:peer-confirm",
+          peer,
+          tag: bytesToHex(confirmationTag(keys.confirm, "browser")),
+        }),
+      confirmWith: (tag: string) =>
+        deliver({ type: "pair:peer-confirm", peer, tag }),
+    };
+  }
+
+  return { transport, sent, closedPeers, ready, deliver, claim, slot };
+}
+
+const hostOpts = (transport: MailboxTransport) => ({
+  transport,
+  buildDescriptor: () => DESCRIPTOR,
+  seal: sealed,
+});
+
+describe("hostPairing", () => {
+  it("shows six digits: the broker's slot plus a locally generated secret", async () => {
+    const s = hostScenario({ slot: "07" });
+    const hosted = await hostPairing(hostOpts(s.transport));
+    expect(hosted.code).toMatch(/^\d{6}$/);
+    expect(hosted.slot).toBe("07");
+    expect(hosted.code.slice(0, 2)).toBe("07");
+    expect(hosted.expiresAt).toBeGreaterThan(Date.now());
+    hosted.cancel();
+  });
+
+  it("agrees on a key with a browser that claims the code", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+
+    const browser = s.claim("peer-0", hosted.code.slice(2));
+    expect(browser.cliTagVerifies).toBe(true);
+    browser.confirm();
+
+    const result = await hosted.paired;
+    expect(bytesToHex(result.keys.c2s)).toBe(bytesToHex(browser.keys.c2s));
+    expect(bytesToHex(result.keys.s2c)).toBe(bytesToHex(browser.keys.s2c));
+    expect(result.keys.directToken).toBe(browser.keys.directToken);
+
+    const establish = s.sent.find((m) => m.type === "pair:establish");
+    expect(establish?.peer).toBe("peer-0");
+    expect(establish?.sealedDescriptor).toBe("AQID");
+  });
+
+  it("never puts the secret on the wire", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+    const secret = hosted.code.slice(2);
+    s.claim("peer-0", secret).confirm();
+    await hosted.paired;
+    expect(JSON.stringify(s.sent)).not.toContain(secret);
+  });
+
+  it("burns the code when the browser guessed wrong", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+
+    // Any secret but the real one. The CLI's tag cannot verify for the browser
+    // and the browser's tag cannot verify for the CLI.
+    const real = hosted.code.slice(2);
+    const wrong = real === "0000" ? "0001" : "0000";
+    const browser = s.claim("peer-0", wrong);
+    expect(browser.cliTagVerifies).toBe(false);
+    browser.confirm();
+
+    await expect(hosted.paired).rejects.toThrow(/did not match/);
+    // Closing the peer is what destroys the mailbox, so the code is spent.
+    expect(s.closedPeers).toEqual(["peer-0"]);
+    expect(s.sent.some((m) => m.type === "pair:establish")).toBe(false);
+  });
+
+  it("rejects a tampered confirmation tag", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+
+    const browser = s.claim("peer-0", hosted.code.slice(2));
+    const good = bytesToHex(confirmationTag(browser.keys.confirm, "browser"));
+    // One flipped nibble — the key is right, the tag is not.
+    browser.confirmWith((good[0] === "0" ? "1" : "0") + good.slice(1));
+
+    await expect(hosted.paired).rejects.toThrow(/did not match/);
+    expect(s.closedPeers).toEqual(["peer-0"]);
+  });
+
+  it("refuses a share that is not a valid group element", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+    s.deliver({
+      type: "pair:peer-share",
+      peer: "peer-evil",
+      share: "f".repeat(64),
+      ad: "browser",
+      sid: bytesToHex(randomBytes(16)),
+    });
+    await expect(hosted.paired).rejects.toThrow(/did not match/);
+    expect(s.closedPeers).toContain("peer-evil");
+  });
+
+  it("ignores a second share for a conversation already under way", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+
+    const browser = s.claim("peer-0", hosted.code.slice(2));
+    // A second share for the same peer must not restart the run or replace the
+    // key the first one established.
+    s.deliver({
+      type: "pair:peer-share",
+      peer: "peer-0",
+      share: "f".repeat(64),
+      ad: "browser",
+      sid: bytesToHex(randomBytes(16)),
+    });
+    expect(s.closedPeers).toEqual([]);
+
+    browser.confirm();
+    const result = await hosted.paired;
+    expect(bytesToHex(result.keys.c2s)).toBe(bytesToHex(browser.keys.c2s));
+  });
+
+  it("gives up when the code expires unused", async () => {
+    const s = hostScenario({ expiresInMs: 20 });
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await expect(hosted.paired).rejects.toThrow(/expired/);
+  });
+
+  it("cancel destroys the mailbox rather than leaving a dead code claimable", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing(hostOpts(s.transport));
+    await s.ready;
+    hosted.cancel();
+    hosted.cancel(); // idempotent
+
+    expect(s.sent).toContainEqual({ type: "pair:close", reason: "cancelled" });
+    expect(s.sent.filter((m) => m.type === "pair:close")).toHaveLength(1);
+    await expect(hosted.paired).rejects.toThrow(/cancelled/i);
+  });
+
+  it("re-arms with a fresh secret and pairs on the new code", async () => {
+    const opts = { buildDescriptor: () => DESCRIPTOR, seal: sealed };
+
+    const first = hostScenario();
+    const spent = await hostPairing({ ...opts, transport: first.transport });
+    await first.ready;
+    spent.cancel();
+    await expect(spent.paired).rejects.toThrow();
+
+    // Re-arming is just calling again: nothing survives from the spent code.
+    const second = hostScenario();
+    const fresh = await hostPairing({ ...opts, transport: second.transport });
+    await second.ready;
+    const browser = second.claim("peer-0", fresh.code.slice(2));
+    browser.confirm();
+
+    const result = await fresh.paired;
+    expect(bytesToHex(result.keys.c2s)).toBe(bytesToHex(browser.keys.c2s));
+    // The old code's secret is worthless against the new mailbox.
+    expect(second.sent.some((m) => m.type === "pair:establish")).toBe(true);
+  });
+
+  it("needs somewhere to reach the broker", async () => {
+    await expect(
+      hostPairing({ buildDescriptor: () => DESCRIPTOR, seal: sealed }),
+    ).rejects.toThrow(/apiBase or a transport/);
   });
 });

@@ -39,6 +39,19 @@ const logger = createLogger("api:broker");
  *
  * Logging follows from that: counts and outcomes only. No blob, ciphertext,
  * slot, mailbox id, or IP-to-mailbox mapping is ever written down.
+ *
+ * ## Why the two sockets are symmetric
+ *
+ * There are two roles here — the mailbox holder, who parks a slot and waits,
+ * and the claimant, who quotes the slot — and they used to be hard-wired to
+ * "browser" and "CLI" respectively. That made `mtmux start` unable to print a
+ * code for a phone to scan: the CLI could only ever be the claimant.
+ *
+ * Nothing about brokering needs to know which end runs a terminal. So both
+ * sockets now accept the same four client messages and route them to the
+ * counterpart, and the direction of the pairing is entirely a matter of which
+ * side opened the mailbox. That is one fewer thing the broker knows, which is
+ * the direction this file should always move in.
  */
 
 /** Minimal socket shape, so the logic is testable without real WebSockets. */
@@ -52,8 +65,25 @@ export type BrokerDeps = {
   tunnels?: TunnelRegistry;
   claimLimiter?: RateLimiter;
   mailboxLimiter?: RateLimiter;
-  quotas?: { maxBytes: number; maxMinutes: number };
+  quotas?: { maxBytes: number; maxMinutes: number; maxStreams: number };
+  /**
+   * Ties a tunnel to an account, so plan limits mean something and usage can
+   * be billed.
+   *
+   * Optional by design: with no database — every self-hosted install — this is
+   * absent and tunnels are simply unmetered. Nothing here may ever be able to
+   * *prevent* an anonymous pairing, only an over-quota account's.
+   */
+  metering?: Metering;
   now?: () => number;
+};
+
+export type Metering = {
+  ownerOfDevice(publicKey: string): Promise<{ userId: string } | null>;
+  checkTunnel(
+    userId: string | null,
+  ): Promise<{ allowed: boolean; reason?: string }>;
+  recordUsage(userId: string, bytes: number, seconds: number): Promise<void>;
 };
 
 export type HttpResult = {
@@ -75,12 +105,19 @@ export function createBroker(deps: BrokerDeps = {}) {
   const quotas = deps.quotas ?? {
     maxBytes: 1024 ** 3,
     maxMinutes: 720,
+    maxStreams: 16,
   };
   const tunnels = deps.tunnels ?? createTunnelRegistry(quotas);
   const claimLimiter = deps.claimLimiter ?? createRateLimiter(5);
   const mailboxLimiter = deps.mailboxLimiter ?? createRateLimiter(10);
 
-  /** Claim payloads, kept only long enough to fan them out and reply. */
+  /**
+   * Claim payloads, kept only long enough to fan them out and reply.
+   *
+   * Deleted when the claim's socket closes — but a claim whose socket never
+   * attaches (the claimant crashed, or never had one) would otherwise keep its
+   * entry forever, so the sweeper drops any whose claim the store has expired.
+   */
   const claimPayloads = new Map<
     string,
     { share: string; ad: string; sid: string }
@@ -96,6 +133,59 @@ export function createBroker(deps: BrokerDeps = {}) {
     return (message: TunnelServerMessage) => {
       socket.send(JSON.stringify(message));
     };
+  }
+
+  /**
+   * Attach an account to a freshly registered tunnel, and refuse it if that
+   * account is over its plan.
+   *
+   * Runs after `tunnel:ready` rather than before it, so the common path — an
+   * anonymous, self-hosted or simply unregistered machine — pays nothing, and
+   * a database that is slow or down delays no one. The window this opens is
+   * bounded and benign: an over-quota account gets a few streams through
+   * before the block lands, which is the right way round for a limit whose
+   * purpose is cost control rather than security.
+   */
+  async function meter(
+    tunnel: { id: string; userId: string | null; blocked: string | null },
+    publicKey: string,
+  ): Promise<void> {
+    if (!deps.metering) return;
+    try {
+      const owner = await deps.metering.ownerOfDevice(publicKey);
+      // An unregistered machine is anonymous, and anonymous is unlimited.
+      if (!owner) return;
+      tunnel.userId = owner.userId;
+
+      const decision = await deps.metering.checkTunnel(owner.userId);
+      if (decision.allowed) return;
+
+      tunnel.blocked = decision.reason ?? "Plan limit reached";
+      logger.info("Tunnel blocked by plan limit");
+      tunnels.close(tunnel.id, "quota-exceeded");
+    } catch (err) {
+      // Metering is an accounting concern. Failing it closed would take
+      // paying customers offline over a database blip.
+      logger.warn({ err }, "Could not meter tunnel; continuing unmetered");
+    }
+  }
+
+  /** Fold a finished tunnel's totals into the owner's monthly usage. */
+  async function settle(tunnel: {
+    userId: string | null;
+    bytes: number;
+    createdAt: number;
+  }): Promise<void> {
+    if (!deps.metering || !tunnel.userId) return;
+    try {
+      const seconds = Math.max(
+        0,
+        Math.round((now() - tunnel.createdAt) / 1000),
+      );
+      await deps.metering.recordUsage(tunnel.userId, tunnel.bytes, seconds);
+    } catch (err) {
+      logger.warn({ err }, "Could not record tunnel usage");
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -191,7 +281,7 @@ export function createBroker(deps: BrokerDeps = {}) {
   }
 
   // -------------------------------------------------------------------------
-  // WS /v1/pair/:mailboxId — the browser
+  // WS /v1/pair/:mailboxId — whoever opened the mailbox
   // -------------------------------------------------------------------------
 
   function attachMailboxSocket(
@@ -242,17 +332,16 @@ export function createBroker(deps: BrokerDeps = {}) {
             store.deliver(claim, {
               type: "pair:failed",
               peer: mailbox.peer,
-              reason: "peer-gone",
+              // Naming a peer means that conversation's key confirmation
+              // failed, exactly as it does on the claim socket. A bare close is
+              // the holder walking away.
+              reason: msg.peer ? "confirmation-failed" : "peer-gone",
             });
           }
+          // Either way the mailbox goes: one wrong guess burns the code, and a
+          // holder that walked away has nothing left to offer.
           store.destroyMailbox(mailbox.id);
           socket.close(1000, "Closed");
-          return;
-        }
-
-        if (msg.type === "pair:establish") {
-          // Only the claiming CLI produces the descriptor.
-          socket.close(1008, "Unexpected message");
           return;
         }
 
@@ -292,10 +381,29 @@ export function createBroker(deps: BrokerDeps = {}) {
             tag: msg.tag,
           });
           established = true;
+          return;
         }
+
+        // pair:establish — the last message of a successful pairing, sent by
+        // whichever side ends the exchange. When the CLI holds the mailbox
+        // (`mtmux start` printing a code for a phone) that is this socket.
+        store.deliver(claim, {
+          type: "pair:established",
+          peer: msg.peer,
+          sealedDescriptor: msg.sealedDescriptor,
+        });
+        established = true;
+        store.destroyMailbox(mailbox.id);
+        claim.peers.delete(msg.peer);
+        logger.info("Pairing established");
       },
 
       close() {
+        // `established` means this side has said its last word of the exchange
+        // — the confirmation tag, or the sealed descriptor after it. Up to that
+        // point a dropped socket is an abandoned pairing and the mailbox goes
+        // with it; after it the counterpart may still owe a final message, so
+        // only the sink is dropped and the mailbox can be re-attached.
         if (!established) store.destroyMailbox(mailbox.id);
         else mailbox.sink = null;
       },
@@ -303,7 +411,7 @@ export function createBroker(deps: BrokerDeps = {}) {
   }
 
   // -------------------------------------------------------------------------
-  // WS /v1/claim/:claimId — the CLI
+  // WS /v1/claim/:claimId — whoever quoted the slot
   // -------------------------------------------------------------------------
 
   function attachClaimSocket(
@@ -337,9 +445,9 @@ export function createBroker(deps: BrokerDeps = {}) {
         const msg = parsed.message;
 
         if (msg.type === "pair:close") {
-          // A CLI closing a specific peer means its key confirmation failed.
-          // Destroy that mailbox: one wrong guess burns the code, which is the
-          // entire guessing bound.
+          // A claimant closing a specific peer means its key confirmation
+          // failed. Destroy that mailbox: one wrong guess burns the code, which
+          // is the entire guessing bound.
           if (msg.peer) {
             const mailbox = mailboxFor(msg.peer);
             if (mailbox) {
@@ -359,19 +467,29 @@ export function createBroker(deps: BrokerDeps = {}) {
           return;
         }
 
-        if (msg.type === "pair:share") {
-          // The claimant's share travelled in the POST body; a second one here
-          // would be a protocol violation.
-          socket.close(1008, "Unexpected message");
-          return;
-        }
-
         const mailbox = mailboxFor(msg.peer);
         if (!mailbox) {
           store.deliver(claim, {
             type: "pair:failed",
             peer: msg.peer,
             reason: "peer-gone",
+          });
+          return;
+        }
+
+        if (msg.type === "pair:share") {
+          // The claimant's first share travels in the POST body, so this is
+          // only reached by a client that sends a second one. Forwarding it
+          // costs the broker nothing and keeps the two sockets symmetric; a
+          // peer that already has a CPace run in flight ignores it.
+          store.deliver(mailbox, {
+            type: "pair:peer-share",
+            peer: msg.peer,
+            share: msg.share,
+            ad: msg.ad,
+            // Always the claimant's own sid, so both ends agree on the CPace
+            // session id without the broker inventing one.
+            sid: claimPayloads.get(claim.id)?.sid ?? "0".repeat(32),
           });
           return;
         }
@@ -385,7 +503,9 @@ export function createBroker(deps: BrokerDeps = {}) {
           return;
         }
 
-        // pair:establish — the last message of a successful pairing.
+        // pair:establish — the last message of a successful pairing. Reached
+        // when the claimant is the side holding the descriptor, which is the
+        // browser-first flow (`mtmux pair <code>`).
         store.deliver(mailbox, {
           type: "pair:established",
           peer: msg.peer,
@@ -455,6 +575,9 @@ export function createBroker(deps: BrokerDeps = {}) {
           tunnelId = tunnel.id;
           send({ type: "tunnel:ready", tunnelId: tunnel.id });
           logger.info("Tunnel registered");
+          // Deliberately not awaited: the tunnel is usable immediately, and an
+          // accounts outage must not delay — or fail — a reconnect.
+          void meter(tunnel, msg.publicKey);
           return;
         }
 
@@ -490,7 +613,11 @@ export function createBroker(deps: BrokerDeps = {}) {
       },
 
       close() {
-        if (tunnelId) tunnels.close(tunnelId, "agent-gone");
+        if (!tunnelId) return;
+        // Read the totals before the registry forgets the tunnel.
+        const tunnel = tunnels.get(tunnelId, now());
+        if (tunnel) void settle(tunnel);
+        tunnels.close(tunnelId, "agent-gone");
       },
     };
   }
@@ -514,6 +641,17 @@ export function createBroker(deps: BrokerDeps = {}) {
 
     const send = tunnelSink(socket);
     const stream = tunnels.openStream(tunnel, send, now());
+    if (!stream) {
+      // The tunnel is already carrying its maximum. Refusing here is what keeps
+      // a leaked tunnel id from being turned into unbounded loopback sockets on
+      // the paired machine.
+      logger.warn("Stream refused: tunnel at capacity");
+      socket.send(
+        JSON.stringify({ type: "tunnel:closed", reason: "quota-exceeded" }),
+      );
+      socket.close(1008, "Too many streams");
+      return null;
+    }
     // Tell the browser its stream id too, so both ends label frames the same.
     send({ type: "stream:open", streamId: stream.id });
 
@@ -559,10 +697,27 @@ export function createBroker(deps: BrokerDeps = {}) {
     };
   }
 
-  const sweeper = setInterval(() => {
+  /**
+   * Drop payloads whose claim the store no longer has.
+   *
+   * `store.sweep` has just expired the claims themselves, so a `getClaim` miss
+   * here means the entry is unreachable — nothing can ever ask for its sid
+   * again. Without this the map grows for the lifetime of the process on every
+   * claim whose socket never attached.
+   */
+  function sweepClaimPayloads(): void {
+    for (const claimId of [...claimPayloads.keys()]) {
+      if (!store.getClaim(claimId, now())) claimPayloads.delete(claimId);
+    }
+  }
+
+  function sweepAll(): void {
     store.sweep(now());
+    sweepClaimPayloads();
     tunnels.sweep(now());
-  }, 30_000);
+  }
+
+  const sweeper = setInterval(sweepAll, 30_000);
   // Never hold the process open just to sweep in-memory maps.
   sweeper.unref?.();
 
@@ -575,7 +730,14 @@ export function createBroker(deps: BrokerDeps = {}) {
     attachClaimSocket,
     attachAgentSocket,
     attachTunnelSocket,
-    stats: () => ({ ...store.stats(), ...tunnels.stats() }),
+    stats: () => ({
+      ...store.stats(),
+      ...tunnels.stats(),
+      /** Claims still holding a payload. Diagnostics and the leak test. */
+      claimPayloads: claimPayloads.size,
+    }),
+    /** Run the periodic cleanup now. The interval is the only other caller. */
+    sweep: sweepAll,
     shutdown: () => clearInterval(sweeper),
   };
 }

@@ -1,21 +1,62 @@
 import kleur from "kleur";
 import qrcode from "qrcode-terminal";
+import { formatCodeForDisplay } from "@repo/crypto";
+
+/**
+ * What `mtmux start` prints.
+ *
+ * The banner has one job: get a phone into the session. Everything competes for
+ * the same few lines of attention, so the layout is ordered by how likely a
+ * given reader is to use it — scan the code, or type the code, or open a local
+ * URL — and anything that is merely *available* (the auth token, the interface
+ * name) is demoted or dropped entirely.
+ */
+
+export type PairingInvite = {
+  /** Six digits. Rendered grouped, never as one run. */
+  code: string;
+  /** What the QR encodes: the join URL with the code in the fragment. */
+  url: string;
+  /** Origin shown to someone typing the code by hand, e.g. "app.mtmux.com". */
+  host: string;
+};
 
 export type BannerOpts = {
+  version: string;
   /** Always-correct loopback URL for the machine running the server. */
   localUrl: string;
   /** Reachable LAN URL, or null when bound to loopback / there is no network. */
   lanUrl?: string | null;
   /** Interface the LAN address came from, e.g. "wlp3s0". */
   lanInterface?: string | null;
-  /** What the QR encodes — normally a `/login#n=<nonce>` tokenless sign-in. */
-  qrPayload?: string | null;
-  token: string;
+  /**
+   * The hosted invite, when the tunnel is up. Null in `--local` mode, and also
+   * when the broker could not be reached — in which case `note` explains why.
+   */
+  invite?: PairingInvite | null;
+  /**
+   * A LAN sign-in URL to encode instead, used in `--local` mode. Ignored when
+   * `invite` is set.
+   */
+  lanQrPayload?: string | null;
+  /**
+   * Draw the QR block. `--no-qr` clears this and the code is still printed —
+   * the two are separate because a terminal that mangles block characters can
+   * still relay six digits perfectly well.
+   */
+  showQr?: boolean;
+  /**
+   * Shown only when there is no QR at all, because that is the only case where
+   * someone has to authenticate by hand.
+   */
+  token?: string;
+  /** A dim line under the addresses — degradation notices go here. */
+  note?: string | null;
   /** Terminal width; injectable so the layout can be tested. */
   columns?: number;
 };
 
-const GAP = "  ";
+const GAP = "   ";
 const INDENT = "  ";
 const ANSI = /\[[0-9;]*m/g;
 
@@ -46,70 +87,140 @@ function width(line: string): number {
 }
 
 /**
- * Zip a text column and a QR column side by side, falling back to stacked
- * output when the terminal is too narrow to hold both.
+ * Zip a QR column and a text column side by side, stacking them instead when
+ * the terminal is too narrow to hold both.
+ *
+ * The QR leads because it is the fastest path in and it is the one element
+ * whose size is fixed — the prose beside it can wrap or be dropped, the code
+ * cannot shrink.
  */
 function twoColumn(left: string[], right: string[], columns: number): string[] {
+  if (left.length === 0) return right;
   if (right.length === 0) return left;
 
   const leftWidth = Math.max(...left.map(width), 0);
   const rightWidth = Math.max(...right.map(width), 0);
 
-  if (leftWidth + GAP.length + rightWidth + INDENT.length > columns) {
-    return [...left, "", ...right.map((line) => INDENT + line)];
+  if (INDENT.length + leftWidth + GAP.length + rightWidth > columns) {
+    return [...left, "", ...right];
   }
 
+  // Centre the shorter column against the taller one, which is almost always
+  // the prose against the QR. Left-aligning it hangs the text off the top edge.
   const rows = Math.max(left.length, right.length);
+  const rightPad = Math.max(0, Math.floor((rows - right.length) / 2));
+
   const out: string[] = [];
   for (let i = 0; i < rows; i++) {
     const l = left[i] ?? "";
-    const r = right[i];
+    const r = right[i - rightPad];
     if (r === undefined) {
       out.push(l);
       continue;
     }
-    out.push(l + " ".repeat(leftWidth - width(l)) + GAP + r);
+    out.push(l + " ".repeat(Math.max(0, leftWidth - width(l))) + GAP + r);
   }
   return out;
 }
 
-export function renderBannerLines(opts: BannerOpts): string[] {
-  const coral = kleur.red; // closest stock color; full RGB requires kleur/colors
-  const columns = opts.columns ?? process.stdout.columns ?? 80;
+/** `482913` → `48 2913`, so it can be read aloud and typed without losing place. */
+function renderCode(code: string): string {
+  return formatCodeForDisplay(code);
+}
 
-  const left: string[] = [];
-  left.push(
-    INDENT +
-      coral().bold("›  mtmux") +
-      kleur.dim("  Your tmux, in any browser."),
+function addressBlock(opts: BannerOpts): string[] {
+  const rows: [string, string, string][] = [
+    ["Local", opts.localUrl, ""],
+    ...(opts.lanUrl
+      ? ([["Network", opts.lanUrl, opts.lanInterface ?? ""]] as [
+          string,
+          string,
+          string,
+        ][])
+      : []),
+  ];
+  const labelWidth = Math.max(...rows.map(([label]) => label.length));
+  return rows.map(
+    ([label, url, iface]) =>
+      INDENT +
+      kleur.dim(label.padEnd(labelWidth)) +
+      "  " +
+      url +
+      (iface ? kleur.dim(`  (${iface})`) : ""),
   );
-  left.push("");
-  left.push(INDENT + kleur.bold("On this machine"));
-  left.push(INDENT + "  " + coral(opts.localUrl));
+}
 
-  if (opts.lanUrl) {
-    const iface = opts.lanInterface
-      ? kleur.dim(`  (${opts.lanInterface})`)
-      : "";
-    left.push("");
-    left.push(INDENT + kleur.bold("On your network") + iface);
-    left.push(INDENT + "  " + coral(opts.lanUrl));
-  }
+export function renderBannerLines(opts: BannerOpts): string[] {
+  const columns = opts.columns ?? process.stdout.columns ?? 80;
+  const brand = kleur.red;
 
-  const right = opts.qrPayload ? colorizeQr(qrLines(opts.qrPayload)) : [];
-  const body = twoColumn(left, right, columns);
+  const out: string[] = [
+    "",
+    INDENT + brand().bold("›  mtmux") + kleur.dim(`  ${opts.version}`),
+    "",
+  ];
 
-  const footer: string[] = [""];
-  if (opts.qrPayload) {
-    footer.push(
-      INDENT + kleur.dim("Scan the code to sign in — no token to type."),
+  const qrPayload = opts.invite ? opts.invite.url : (opts.lanQrPayload ?? null);
+  const showQr = opts.showQr !== false && qrPayload !== null;
+  const qr = showQr ? colorizeQr(qrLines(qrPayload!)) : [];
+
+  const aside: string[] = [];
+  if (opts.invite) {
+    aside.push(
+      kleur.bold(showQr ? "Scan to open your terminal" : "Open your terminal"),
     );
+    aside.push("");
+    aside.push(
+      kleur.dim(showQr ? "or go to  " : "Go to    ") + brand(opts.invite.host),
+    );
+    aside.push(
+      kleur.dim("and enter ") + kleur.bold(renderCode(opts.invite.code)),
+    );
+  } else if (opts.lanQrPayload && showQr) {
+    aside.push(kleur.bold("Scan to sign in"));
+    aside.push("");
+    aside.push(kleur.dim("No token to type — the"));
+    aside.push(kleur.dim("code signs the device in."));
   }
-  footer.push(INDENT + kleur.bold("Token") + "  " + kleur.dim(opts.token));
-  footer.push("");
-  footer.push(INDENT + kleur.dim(`Press ${kleur.bold("Ctrl+C")} to stop.`));
 
-  return ["", ...body, ...footer, ""];
+  if (qr.length > 0) {
+    out.push(
+      ...twoColumn(
+        qr.map((line) => INDENT + line),
+        aside,
+        columns,
+      ),
+    );
+    out.push("");
+  } else if (aside.length > 0) {
+    out.push(...aside.map((line) => INDENT + line));
+    out.push("");
+  }
+
+  out.push(...addressBlock(opts));
+
+  if (opts.note) {
+    out.push("");
+    out.push(INDENT + kleur.dim(opts.note));
+  }
+
+  // The token is a fallback, not a feature. It only earns space when there is
+  // neither a code to type nor one to scan — the one case left where a human
+  // has to authenticate by hand.
+  if (!opts.invite && !showQr && opts.token) {
+    out.push("");
+    out.push(INDENT + kleur.dim("Token  ") + kleur.dim(opts.token));
+  }
+
+  out.push("");
+  out.push(
+    INDENT +
+      kleur.dim(opts.invite ? "Waiting for a device…" : "Ready.") +
+      kleur.dim("   Ctrl+C to stop."),
+  );
+  out.push("");
+
+  return out;
 }
 
 export function banner(opts: BannerOpts) {

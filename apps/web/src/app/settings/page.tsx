@@ -9,6 +9,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useCommandStore } from "@/stores/command-store";
 import { useFileStore } from "@/stores/file-store";
+import { LAST_SESSION_KEY, TOKEN_KEY, clearStored } from "@/lib/storage-keys";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -28,8 +29,8 @@ export default function SettingsPage() {
     useFileStore.getState().setFileContent(null);
 
     // Clear localStorage
-    localStorage.removeItem("ccremote-token");
-    localStorage.removeItem("ccremote-last-session");
+    clearStored(TOKEN_KEY);
+    clearStored(LAST_SESSION_KEY);
 
     router.push("/login");
   };

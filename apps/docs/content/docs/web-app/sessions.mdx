@@ -1,40 +1,82 @@
 ---
-title: Session Management
-description: Create, attach, kill, and rename tmux sessions.
+title: Sessions, Windows and Panes
+description: Everything the client can do to tmux.
 ---
 
-## Overview
+Sessions live on the host and persist across disconnects. Close the tab, come
+back tomorrow, and everything is where you left it.
 
-tmuxremote manages tmux sessions on the remote host. Sessions persist even when you disconnect — reconnect later and pick up where you left off.
+## Sessions
 
-## Creating Sessions
+| Action | How                                             |
+| ------ | ----------------------------------------------- |
+| List   | Automatic on connect; pull to refresh on mobile |
+| Create | The **+** button, or the empty-state button     |
+| Attach | Click a session card or a desktop tab           |
+| Rename | Inline on the session card                      |
+| Kill   | The kill button, behind a confirmation dialog   |
+| Detach | The toolbar, or the tmux sheet on mobile        |
 
-Click the **+** button in the session sidebar (or the "Create Session" button in the empty state). You can optionally specify:
+Creating takes an optional **name**, **working directory** and **command** to
+run instead of the default shell. The client attaches to the new session
+automatically.
 
-- **Name** — Session identifier (auto-generated if blank)
-- **Working Directory** — Starting directory for the shell
-- **Command** — Command to run instead of the default shell
+Attaching clears the terminal and connects to that session's PTY. The previously
+attached session is detached but keeps running.
 
-After creation, tmuxremote automatically attaches to the new session.
+The last active session is remembered and restored on the next page load.
 
-## Attaching to Sessions
+### Session cards
 
-Click any session in the sidebar to attach. The terminal clears and connects to the selected session's PTY. Your previous session is detached but continues running.
+Each card shows a status dot — attached, recently active, or detached — the
+window count, and the creation and activity timestamps. Expanding a card lists
+its windows and panes.
 
-The last active session is saved to `localStorage` and auto-restored on page load.
+### Desktop tabs
 
-## Session Tabs
+Sessions you have opened appear as tabs in the header for quick switching, each
+with a close button. On mobile, swiping left and right switches session instead
+(or pane, when the window has more than one).
 
-On desktop, session tabs appear in the header bar for quick switching between sessions.
+### Exits
 
-## Killing Sessions
+When a session's process exits, the client shows an alert and removes it from
+the list.
 
-Click the kill button on a session card to terminate it. The session and its processes are destroyed on the server.
+## Windows
 
-## Renaming Sessions
+| Action        | Where                                                                                        |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| List          | Automatic on attach                                                                          |
+| Create        | Window tab bar (mobile), tmux sheet                                                          |
+| Select        | Window tab bar                                                                               |
+| Rename        | tmux sheet                                                                                   |
+| Kill          | tmux sheet, with confirmation                                                                |
+| Layout        | tmux sheet — `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled` |
+| Rotate layout | tmux sheet                                                                                   |
 
-Sessions can be renamed via the session rename functionality. The server validates that the old session exists before attempting the rename.
+## Panes
 
-## Session Exit Notifications
+| Action                          | Where                                                       |
+| ------------------------------- | ----------------------------------------------------------- |
+| List                            | The pane-count button, or the pane sheet                    |
+| Split horizontally / vertically | Toolbar buttons, tmux sheet, long-press the FAB             |
+| Select                          | Pane sheet, or swipe on mobile                              |
+| Zoom                            | Pane sheet, tmux sheet                                      |
+| Resize                          | Resize mode — a D-pad overlay, 5 cells per press, repeating |
+| Swap                            | tmux sheet                                                  |
+| Kill                            | tmux sheet, with confirmation                               |
+| Capture contents                | Copy mode overlay                                           |
 
-When a session exits (process completes or is killed), tmuxremote shows a toast notification and removes it from the session list.
+### Auto-zoom
+
+On mobile, an optional setting zooms the active pane automatically on attach and
+after a split. A split pane on a phone screen is usually unreadable, so this is
+on by preference rather than by default behaviour of tmux.
+
+### Copy mode
+
+The copy-mode overlay captures a pane's contents and renders them read-only in
+Monaco, with a pane switcher, a recapture button and Copy All. It is a practical
+substitute for `tmux copy-mode` key sequences on a touch screen. `tmux:copy-mode`
+and `tmux:prefix` are also available directly from the tmux sheet.

@@ -8,6 +8,7 @@ interface UiStore {
   resizeModeActive: boolean;
   sidebarCollapsed: boolean;
   copyModeOpen: boolean;
+  terminalSearchOpen: boolean;
   capturedPaneId: string | null;
   capturedContent: string | null;
   setMobileTab: (tab: MobileTab) => void;
@@ -16,6 +17,7 @@ interface UiStore {
   setResizeModeActive: (active: boolean) => void;
   toggleSidebar: () => void;
   setCopyModeOpen: (open: boolean) => void;
+  setTerminalSearchOpen: (open: boolean) => void;
   setCapturedPane: (id: string | null, content: string | null) => void;
 }
 
@@ -26,6 +28,7 @@ export const useUiStore = create<UiStore>((set) => ({
   resizeModeActive: false,
   sidebarCollapsed: false,
   copyModeOpen: false,
+  terminalSearchOpen: false,
   capturedPaneId: null,
   capturedContent: null,
   setMobileTab: (mobileTab) => set({ mobileTab }),
@@ -34,6 +37,12 @@ export const useUiStore = create<UiStore>((set) => ({
   setResizeModeActive: (resizeModeActive) => set({ resizeModeActive }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setCopyModeOpen: (copyModeOpen) =>
-    set(copyModeOpen ? { copyModeOpen } : { copyModeOpen, capturedPaneId: null, capturedContent: null }),
-  setCapturedPane: (capturedPaneId, capturedContent) => set({ capturedPaneId, capturedContent }),
+    set(
+      copyModeOpen
+        ? { copyModeOpen }
+        : { copyModeOpen, capturedPaneId: null, capturedContent: null },
+    ),
+  setTerminalSearchOpen: (terminalSearchOpen) => set({ terminalSearchOpen }),
+  setCapturedPane: (capturedPaneId, capturedContent) =>
+    set({ capturedPaneId, capturedContent }),
 }));

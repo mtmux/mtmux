@@ -1,0 +1,118 @@
+{
+  "meta": {
+    "title": "mtmux changelog — every release, what shipped, what broke",
+    "description": "Every mtmux release: hosted pairing over a CPace PAKE, the sealed tunnel, QR sign-in, optional accounts, and the single-port CLI that started it."
+  },
+  "breadcrumb": {
+    "home": "Home",
+    "current": "Changelog"
+  },
+  "hero": {
+    "eyebrow": "changelog",
+    "title": "What shipped.",
+    "lead": "mtmux is young and the version number says so. Releases are listed here when they are on npm — nothing is dated before it exists."
+  },
+  "typeLabels": {
+    "new": "new",
+    "perf": "perf",
+    "fix": "fix",
+    "break": "break"
+  },
+  "current": "current",
+  "unreleased": "in development",
+  "firstRelease": "first published release",
+  "releases": [
+    {
+      "id": "v0-4-0",
+      "version": "0.4.0",
+      "date": "next",
+      "unreleased": true,
+      "entries": [
+        {
+          "type": "new",
+          "text": "Hosted pairing: <cmd>mtmux</cmd> opens a sealed tunnel and prints a QR and a six-digit code, so a phone anywhere can attach without port forwarding."
+        },
+        {
+          "type": "new",
+          "text": "The pairing handshake is a CPace PAKE over ristretto255. The broker routes on two digits and never receives the other four."
+        },
+        {
+          "type": "new",
+          "text": "Sealed transport: HKDF-SHA256 key schedule, AES-256-GCM frames, per-direction nonces and a counter that rejects replays."
+        },
+        {
+          "type": "new",
+          "text": "Device keys. A paired browser reconnects with a signed challenge, so the code is needed exactly once and <cmd>mtmux devices</cmd> can revoke it."
+        },
+        {
+          "type": "new",
+          "text": "Optional accounts via OAuth device authorization — <cmd>mtmux login</cmd>, <cmd>whoami</cmd>, <cmd>servers</cmd> — plus multi-server and the Pro plan."
+        },
+        {
+          "type": "new",
+          "text": "<cmd>mtmux doctor</cmd>, <cmd>status</cmd> and <cmd>stop</cmd>, and <cmd>--local</cmd> for a run that contacts no broker at all."
+        }
+      ]
+    },
+    {
+      "id": "v0-3-0",
+      "version": "0.3.0",
+      "date": "current release on npm",
+      "current": true,
+      "entries": [
+        {
+          "type": "new",
+          "text": "Binds the LAN by default when there is one, and prints a scannable sign-in code instead of asking you to copy a token."
+        },
+        {
+          "type": "new",
+          "text": "Scoped session tokens and throttling on failed authentication in the relay."
+        },
+        {
+          "type": "fix",
+          "text": "Web and relay are served from one port, with dev and production behaving the same way."
+        },
+        {
+          "type": "fix",
+          "text": "Reconnect robustness, authenticated media requests, and sign-in via the URL fragment."
+        },
+        {
+          "type": "fix",
+          "text": "The file browser now opens at the directory the relay actually allows, rather than failing at the root."
+        }
+      ]
+    },
+    {
+      "id": "v0-2-0",
+      "version": "0.2.0",
+      "date": "pre-0.3.0",
+      "entries": [
+        {
+          "type": "new",
+          "text": "The <cmd>mtmux</cmd> CLI itself: one npm package that bundles the web client and the relay into a single process on one port."
+        },
+        {
+          "type": "fix",
+          "text": "Security and resource-lifecycle hardening in the relay, and a clean error when the port is already in use."
+        }
+      ]
+    },
+    {
+      "id": "v0-1-0",
+      "version": "0.1.0",
+      "date": "pre-0.3.0",
+      "firstRelease": true,
+      "entries": [
+        {
+          "type": "new",
+          "text": "Attach to a running tmux server from a browser: real panes, scrollback, and a modifier row built for a phone."
+        },
+        {
+          "type": "new",
+          "text": "Session, window and pane management, a file browser, and a terminal view that survives reattaching."
+        }
+      ]
+    }
+  ],
+  "subscribe": "Releases are published to <ghLink>GitHub</ghLink> and to npm. <cmd>mtmux version</cmd> prints what you have installed; upgrading is <cmd>npm i -g mtmux</cmd> like any other package."
+}

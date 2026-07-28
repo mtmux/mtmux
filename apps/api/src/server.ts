@@ -9,6 +9,12 @@ import {
   type Socket,
   type SocketHandle,
 } from "./broker.js";
+import { createRateLimiter } from "./rate-limit.js";
+import {
+  createAccounts,
+  openAccountsDb,
+  type Accounts,
+} from "./accounts/index.js";
 
 const logger = createLogger("api:server");
 
@@ -66,7 +72,16 @@ export async function handleApiRequest(
   broker: Broker,
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  accounts?: Accounts,
 ): Promise<void> {
+  // Accounts get first refusal, and answer with their own CORS headers.
+  //
+  // They must run before `applyCors` rather than after it: credentialed
+  // cross-origin requests need `Access-Control-Allow-Credentials` and an exact
+  // origin, which the broker's CORS deliberately does not send — the pairing
+  // endpoints take no cookies and should not invite any.
+  if (accounts && (await accounts.handleRequest(req, res))) return;
+
   applyCors(req, res);
 
   if (req.method === "OPTIONS") {
@@ -163,6 +178,7 @@ function attach(
 export type ApiServer = {
   server: http.Server;
   broker: Broker;
+  accounts: Accounts;
   close: () => Promise<void>;
 };
 
@@ -170,15 +186,34 @@ export async function startApiServer(
   port = config.port,
   host = config.host,
 ): Promise<ApiServer> {
+  // Null when DATABASE_URL is unset or the file will not open, in which case
+  // `createAccounts` hands back a stub and the broker keeps brokering. An
+  // accounts failure must never be a pairing failure.
+  const accounts = createAccounts({ db: openAccountsDb() });
+
   const broker = createBroker({
+    // These were configurable in name only: without them `createBroker` fell
+    // back to its 5/10 defaults, so API_CLAIMS_PER_MINUTE and
+    // API_MAILBOXES_PER_MINUTE were parsed, validated, and then ignored.
+    claimLimiter: createRateLimiter(config.claimsPerMinute),
+    mailboxLimiter: createRateLimiter(config.mailboxesPerMinute),
     quotas: {
       maxBytes: config.tunnelMaxBytes,
       maxMinutes: config.tunnelMaxMinutes,
+      maxStreams: config.tunnelMaxStreams,
+    },
+    // Ties tunnels to accounts so plan limits and usage are real. With no
+    // database every method here is inert, and tunnels stay unmetered.
+    metering: {
+      ownerOfDevice: (publicKey) => accounts.ownerOfDevice(publicKey),
+      checkTunnel: (userId) => accounts.checkTunnel(userId),
+      recordUsage: (userId, bytes, seconds) =>
+        accounts.recordUsage(userId, bytes, seconds),
     },
   });
 
   const server = http.createServer((req, res) => {
-    void handleApiRequest(broker, req, res).catch((err: unknown) => {
+    void handleApiRequest(broker, req, res, accounts).catch((err: unknown) => {
       logger.error({ err }, "Unhandled request error");
       if (!res.headersSent) res.writeHead(500);
       res.end();
@@ -212,11 +247,15 @@ export async function startApiServer(
   return {
     server,
     broker,
-    close: () =>
-      new Promise<void>((resolve) => {
+    accounts,
+    close: async () => {
+      await new Promise<void>((resolve) => {
         broker.shutdown();
         wss.close();
         server.close(() => resolve());
-      }),
+      });
+      // Last, so an in-flight request still has its database when it lands.
+      await accounts.close();
+    },
   };
 }

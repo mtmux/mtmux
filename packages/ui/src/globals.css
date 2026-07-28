@@ -52,6 +52,20 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* Z-index scale. Every stacked layer picks a step from here — ad-hoc numbers
+   are how the FAB ended up painting over the command bar's send button.
+   Full-screen panels sit *below* --z-modal on purpose: Radix portals (dropdown,
+   dialog, tooltip) mount on <body>, so a panel above them would bury its own
+   menus. */
+:root {
+  --z-banner: 20; /* status strips pinned inside a pane */
+  --z-fab: 30; /* floating controls inside a pane */
+  --z-panel: 40; /* full-screen app panels (file viewer/editor, copy mode) */
+  --z-popover: 45; /* hand-rolled popovers / context menus */
+  --z-modal: 50; /* Radix portals: dialog, sheet, dropdown, tooltip */
+  --z-transient: 60; /* transient full-screen modes layered over everything */
+}
+
 :root {
   --radius: 0.625rem;
   --background: oklch(0.99 0.005 80);
@@ -60,38 +74,42 @@
   --card-foreground: oklch(0.18 0.02 30);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.18 0.02 30);
-  --primary: oklch(0.66 0.20 35);
+  --primary: oklch(0.66 0.2 35);
   --primary-foreground: oklch(0.98 0.01 80);
   --secondary: oklch(0.94 0.02 70);
   --secondary-foreground: oklch(0.25 0.04 35);
   --muted: oklch(0.96 0.01 75);
-  --muted-foreground: oklch(0.50 0.03 35);
+  --muted-foreground: oklch(0.5 0.03 35);
   --accent: oklch(0.92 0.04 80);
   --accent-foreground: oklch(0.25 0.04 35);
   --destructive: oklch(0.58 0.23 27);
   --destructive-foreground: oklch(0.98 0.01 80);
-  --border: oklch(0.90 0.015 70);
-  --input: oklch(0.90 0.015 70);
-  --ring: oklch(0.66 0.20 35);
-  --chart-1: oklch(0.66 0.20 35);
+  --border: oklch(0.9 0.015 70);
+  --input: oklch(0.9 0.015 70);
+  --ring: oklch(0.66 0.2 35);
+  --chart-1: oklch(0.66 0.2 35);
   --chart-2: oklch(0.72 0.15 65);
-  --chart-3: oklch(0.55 0.10 25);
+  --chart-3: oklch(0.55 0.1 25);
   --chart-4: oklch(0.78 0.12 80);
   --chart-5: oklch(0.45 0.18 15);
   --sidebar: oklch(0.98 0.005 80);
   --sidebar-foreground: oklch(0.18 0.02 30);
-  --sidebar-primary: oklch(0.66 0.20 35);
+  --sidebar-primary: oklch(0.66 0.2 35);
   --sidebar-primary-foreground: oklch(0.98 0.01 80);
   --sidebar-accent: oklch(0.94 0.02 70);
   --sidebar-accent-foreground: oklch(0.25 0.04 35);
-  --sidebar-border: oklch(0.90 0.015 70);
-  --sidebar-ring: oklch(0.66 0.20 35);
-  --info: oklch(0.623 0.214 259.815);
-  --info-foreground: oklch(0.488 0.243 264.376);
-  --success: oklch(0.627 0.194 149.214);
-  --success-foreground: oklch(0.393 0.194 149.214);
-  --warning: oklch(0.795 0.184 86.047);
-  --warning-foreground: oklch(0.554 0.135 66.442);
+  --sidebar-border: oklch(0.9 0.015 70);
+  --sidebar-ring: oklch(0.66 0.2 35);
+  /* Status colors keep the shadcn contract: `--x` is a solid fill whose text is
+     `--x-foreground`, while a `/15` wash of `--x` takes `--x` itself as text.
+     Both pairings clear 4.5:1; the old pair was two mid-lightness oranges that
+     managed roughly 2:1 either way. */
+  --info: oklch(0.52 0.19 260);
+  --info-foreground: oklch(0.99 0.01 260);
+  --success: oklch(0.5 0.15 150);
+  --success-foreground: oklch(0.99 0.01 150);
+  --warning: oklch(0.52 0.13 75);
+  --warning-foreground: oklch(0.99 0.01 80);
 }
 
 .dark {
@@ -101,38 +119,38 @@
   --card-foreground: oklch(0.96 0.01 80);
   --popover: oklch(0.16 0.025 30);
   --popover-foreground: oklch(0.96 0.01 80);
-  --primary: oklch(0.72 0.20 35);
+  --primary: oklch(0.72 0.2 35);
   --primary-foreground: oklch(0.15 0.02 30);
   --secondary: oklch(0.22 0.03 30);
   --secondary-foreground: oklch(0.96 0.01 80);
-  --muted: oklch(0.20 0.025 30);
-  --muted-foreground: oklch(0.70 0.03 70);
-  --accent: oklch(0.30 0.05 35);
+  --muted: oklch(0.2 0.025 30);
+  --muted-foreground: oklch(0.7 0.03 70);
+  --accent: oklch(0.3 0.05 35);
   --accent-foreground: oklch(0.96 0.01 80);
   --destructive: oklch(0.62 0.23 27);
   --destructive-foreground: oklch(0.98 0.01 80);
   --border: oklch(0.25 0.03 30);
   --input: oklch(0.25 0.03 30);
-  --ring: oklch(0.72 0.20 35);
-  --chart-1: oklch(0.72 0.20 35);
+  --ring: oklch(0.72 0.2 35);
+  --chart-1: oklch(0.72 0.2 35);
   --chart-2: oklch(0.78 0.15 65);
-  --chart-3: oklch(0.62 0.10 25);
+  --chart-3: oklch(0.62 0.1 25);
   --chart-4: oklch(0.84 0.12 80);
   --chart-5: oklch(0.55 0.18 15);
-  --sidebar: oklch(0.10 0.02 30);
+  --sidebar: oklch(0.1 0.02 30);
   --sidebar-foreground: oklch(0.96 0.01 80);
-  --sidebar-primary: oklch(0.72 0.20 35);
+  --sidebar-primary: oklch(0.72 0.2 35);
   --sidebar-primary-foreground: oklch(0.15 0.02 30);
   --sidebar-accent: oklch(0.22 0.03 30);
   --sidebar-accent-foreground: oklch(0.96 0.01 80);
   --sidebar-border: oklch(0.25 0.03 30);
-  --sidebar-ring: oklch(0.72 0.20 35);
-  --info: oklch(0.488 0.243 264.376);
-  --info-foreground: oklch(0.623 0.214 259.815);
-  --success: oklch(0.393 0.194 149.214);
-  --success-foreground: oklch(0.627 0.194 149.214);
-  --warning: oklch(0.554 0.135 66.442);
-  --warning-foreground: oklch(0.795 0.184 86.047);
+  --sidebar-ring: oklch(0.72 0.2 35);
+  --info: oklch(0.82 0.14 250);
+  --info-foreground: oklch(0.18 0.04 260);
+  --success: oklch(0.82 0.17 150);
+  --success-foreground: oklch(0.18 0.03 150);
+  --warning: oklch(0.84 0.15 86);
+  --warning-foreground: oklch(0.2 0.04 60);
 }
 
 @layer base {

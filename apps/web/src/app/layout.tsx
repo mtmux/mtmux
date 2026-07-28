@@ -11,13 +11,14 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ccremote",
-  description: "Access Claude Code from any browser — remote terminal with tmux session management",
+  title: "mtmux",
+  description:
+    "Access Claude Code from any browser — remote terminal with tmux session management",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "ccremote",
+    title: "mtmux",
   },
 };
 
@@ -27,6 +28,10 @@ export const viewport: Viewport = {
   maximumScale: 5,
   userScalable: true,
   viewportFit: "cover",
+  // Without this Chrome/Android only shrinks the *visual* viewport when the soft
+  // keyboard opens, so `h-[100dvh]` keeps its full height and the whole footer
+  // stack — command bar included — slides underneath the keyboard.
+  interactiveWidget: "resizes-content",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#1a1b26" },

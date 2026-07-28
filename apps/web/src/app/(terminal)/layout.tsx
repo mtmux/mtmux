@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@repo/ui/components/app-shell";
 import { cn } from "@repo/ui/lib/utils";
@@ -14,6 +14,8 @@ import { MobileNav } from "@/components/mobile/mobile-nav";
 import { KeyboardToolbar } from "@/components/mobile/keyboard-toolbar";
 import { MobileCommandBar } from "@/components/mobile/mobile-command-bar";
 import { useUiStore } from "@/stores/ui-store";
+import { useAlertStore } from "@/stores/alert-store";
+import { getTerminalHandle } from "@/components/terminal/terminal-handle";
 import {
   useTerminalStore,
   getDefaultFontSize,
@@ -31,12 +33,14 @@ import { useMobileHistory } from "@/hooks/use-mobile-history";
 import { resolveRelayWsUrl } from "@/lib/relay-url";
 import {
   loadDescriptor,
+  hydrateDescriptor,
   loadSessionKeys,
   serverIdFor,
 } from "@/lib/session-store";
 import { sealedTransport, type TransportFactory } from "@/lib/transport";
 import { env } from "@/env";
 import { Terminal } from "lucide-react";
+import { LAST_SESSION_KEY, TOKEN_KEY, readStored } from "@/lib/storage-keys";
 
 export default function TerminalLayout({
   children,
@@ -58,38 +62,47 @@ export default function TerminalLayout({
 
   // Auth guard. Two accepted credentials:
   //
-  //   1. localStorage["ccremote-token"] — the self-hosted path, unchanged.
+  //   1. localStorage["mtmux-token"] — the self-hosted path, unchanged.
   //   2. A session paired through the broker, whose keys live in IndexedDB
   //      rather than localStorage so an XSS cannot read them. The relay is
   //      authenticated with the direct-path token both sides derived, so no
   //      long-lived secret was ever sent to this device.
   useEffect(() => {
-    const storedToken = localStorage.getItem("ccremote-token");
+    const storedToken = readStored(TOKEN_KEY);
     if (storedToken) {
       setToken(storedToken);
       return;
     }
 
-    const session = loadDescriptor();
-    if (!session) {
-      router.push("/login");
-      return;
-    }
-
     let cancelled = false;
-    void loadSessionKeys(serverIdFor(session.descriptor)).then((keys) => {
+
+    void (async () => {
+      // `loadDescriptor` reads a tab-scoped mirror, which a fresh tab has not
+      // filled yet — so an empty one means "not loaded", not "never paired".
+      // Falling back to the durable record before giving up is what stops every
+      // reload bouncing through /login and straight back again.
+      const session = loadDescriptor() ?? (await hydrateDescriptor());
+      if (cancelled) return;
+      if (!session) {
+        router.push("/login");
+        return;
+      }
+
+      const keys = await loadSessionKeys(serverIdFor(session.descriptor));
       if (cancelled) return;
       if (!keys) {
         router.push("/login");
         return;
       }
+
       setToken(keys.directToken);
       if (!session.preferredCandidate && env.NEXT_PUBLIC_API_URL) {
         // No direct candidate won, so everything rides the sealed tunnel.
         const url = `${env.NEXT_PUBLIC_API_URL.replace(/^http/, "ws")}/v1/tunnel/${session.descriptor.tunnelId}`;
         setTransport(() => sealedTransport({ url, keys }));
       }
-    });
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -97,7 +110,7 @@ export default function TerminalLayout({
 
   // Auto-restore last session
   useEffect(() => {
-    const lastSession = localStorage.getItem("ccremote-last-session");
+    const lastSession = readStored(LAST_SESSION_KEY);
     if (lastSession && !activeSessionId) {
       useSessionStore.getState().setActiveSession(lastSession);
     }
@@ -130,6 +143,28 @@ export default function TerminalLayout({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Copy the terminal's current selection. The toolbar lives in the shell
+  // footer, outside the tree holding the terminal ref, hence the module-level
+  // handle.
+  const handleCopySelection = useCallback(async () => {
+    const selection = getTerminalHandle()?.getSelection() ?? "";
+    if (!selection) {
+      useAlertStore
+        .getState()
+        .push(
+          "info",
+          "Nothing selected — long-press the terminal, or use copy mode",
+        );
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection);
+      useAlertStore.getState().push("success", "Copied selection");
+    } catch {
+      useAlertStore.getState().push("error", "Clipboard access denied");
+    }
+  }, []);
+
   // Register service worker
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -159,55 +194,64 @@ export default function TerminalLayout({
           : "disconnected";
 
   const header = (
-    <div
-      className={cn(
-        "flex min-w-0 items-center gap-3 px-3",
-        isMobile ? "py-1" : "py-1.5",
-      )}
-    >
-      <Terminal className="h-4 w-4 text-primary" />
-      {/* #5: Hide "ccremote" text on mobile — icon only */}
-      {!isMobile && <span className="text-sm font-semibold">ccremote</span>}
-      <ConnectionStatus
-        status={connectionStatusType}
-        latency={latency ?? undefined}
-        reconnectCount={reconnectCount}
-        onReconnect={() => {
-          const client = getRelayClient();
-          if (client) {
-            client.disconnect();
-            client.connect();
-          }
-        }}
-        className="ml-1 shrink-0"
-      />
-      <AlertBanner />
-      {!isMobile && (
-        <SessionTabs
-          onCreateClick={() => setShowCreateDialog(true)}
-          className="flex-1 ml-2"
+    <>
+      <div
+        className={cn(
+          "flex min-w-0 items-center gap-3 px-3",
+          isMobile ? "py-1" : "py-1.5",
+        )}
+      >
+        <Terminal className="h-4 w-4 text-primary" />
+        {/* #5: Hide the wordmark on mobile — icon only */}
+        {!isMobile && <span className="text-sm font-semibold">mtmux</span>}
+        <ConnectionStatus
+          status={connectionStatusType}
+          latency={latency ?? undefined}
+          reconnectCount={reconnectCount}
+          onReconnect={() => {
+            const client = getRelayClient();
+            if (client) {
+              client.disconnect();
+              client.connect();
+            }
+          }}
+          className="ml-1 shrink-0"
         />
-      )}
-      {/* #5: ThemeToggle hidden on mobile — moved to settings panel (#12) */}
-      {!isMobile && (
-        <div className="ml-auto flex items-center gap-1">
-          <ThemeToggle />
-        </div>
-      )}
-    </div>
+        <AlertBanner />
+        {!isMobile && (
+          <SessionTabs
+            onCreateClick={() => setShowCreateDialog(true)}
+            className="flex-1 ml-2"
+          />
+        )}
+        {/* #5: ThemeToggle hidden on mobile — moved to settings panel (#12) */}
+        {!isMobile && (
+          <div className="ml-auto flex items-center gap-1">
+            <ThemeToggle />
+          </div>
+        )}
+      </div>
+      {/* Part of the header, not an overlay, so a degraded connection pushes the
+          terminal down instead of covering its first row. */}
+      <ConnectionBanner />
+    </>
   );
 
   const toolbar = isMobile ? (
     <div>
       {mobileTab === "terminal" && activeSessionId && <MobileCommandBar />}
-      {mobileTab === "terminal" && <KeyboardToolbar />}
+      {mobileTab === "terminal" && (
+        <KeyboardToolbar
+          onSearchOpen={() => useUiStore.getState().setTerminalSearchOpen(true)}
+          onCopy={handleCopySelection}
+        />
+      )}
       <MobileNav activeTab={mobileTab} onTabChange={setMobileTab} />
     </div>
   ) : undefined;
 
   return (
     <AppShell header={header} toolbar={toolbar}>
-      <ConnectionBanner />
       <VisualViewportSync />
       <ErrorBoundary fallbackMessage="Terminal crashed">
         {children}

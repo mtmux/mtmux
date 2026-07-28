@@ -1,136 +1,274 @@
 ---
-title: Pairing a device
-description: Get a phone or laptop onto your tmux — on your network or over the internet
+title: How Pairing Works
+description: Six digits, a PAKE, and a broker that cannot read them — how a phone gets onto your tmux.
 ---
 
-There are two ways to sign a second device in. Neither involves typing a
-64-character token.
+Getting a second device onto your terminal should not involve typing a
+64-character token, forwarding a port, or issuing a certificate. It should be
+one command and one scan.
 
-## On the same network
+## The normal way
 
-`mtmux start` binds your LAN automatically whenever there is one, prints the
-address a phone can actually reach, and shows a QR code beside it:
-
-```
-  ›  mtmux  Your tmux, in any browser.   ▄▄▄▄▄▄▄ ▄▄  ▄ ▄▄▄▄▄▄▄
-                                         █ ▄▄▄ █ ▀▄▀▄█ █ ▄▄▄ █
-  On this machine                        █ ███ █ ▀ ▄▄▄ █ ███ █
-    http://localhost:14100               █▄▄▄▄▄█ █ ▀ █ █▄▄▄▄▄█
-
-  On your network  (wlp3s0)              ▄▄▄▄  ▄ ▄▀▀▄▀▄▄▄ ▄▄
-    http://192.168.1.5:14100             █ ▄█▀▄▄▀█▄ ▄▀ ▀▄█▄▀▄█
-
-  Scan the code to sign in — no token to type.
+```bash
+mtmux
 ```
 
-Scanning it opens `/login#n=<nonce>`. The nonce is in the URL _fragment_, so it
-is never sent to a server as part of the navigation and never lands in an
-access log; the page posts it to the relay and gets back a scoped session token
-that expires after 24 hours.
+```
+  ›  mtmux  0.3.0
 
-The nonce is single-use. Once a device has signed in, mtmux mints a fresh one
-and reprints the code for the next device, so what is on screen is always live.
-Session tokens are held only in memory, so restarting the server signs every
-paired device out.
+  ▄▄▄▄▄▄▄ ▄▄  ▄ ▄▄▄▄▄▄▄
+  █ ▄▄▄ █ ▀▄▀▄█ █ ▄▄▄ █    Scan to open your terminal
+  █ ███ █ ▀ ▄▄▄ █ ███ █
+  █▄▄▄▄▄█ █ ▀ █ █▄▄▄▄▄█    or go to  app.mtmux.com
+  ▄▄▄▄  ▄ ▄▀▀▄▀▄▄▄ ▄▄      and enter  48 29 13
 
-`--host 127.0.0.1` still suppresses all of this and keeps the server on
-loopback.
+  Local    http://localhost:14100
+  Network  http://192.168.1.5:14100  (wlp3s0)
 
-## Over the internet
+  Waiting for a device…   Ctrl+C to stop.
+```
 
-When the device is not on your network — cellular, a different office, someone
-else's wifi — use a six-digit code instead. No port forwarding, no certificates.
+**Scan the QR and you are in.** Zero taps: the code arrives in the URL fragment,
+the page claims it, and the terminal loads. No second terminal, no second
+command.
 
-1. Open <code>https://app.mtmux.com/pair</code> on the device. It shows six
-   digits.
-2. Run `mtmux pair 492716` on the machine running mtmux.
+If the QR will not scan — a cracked camera, a terminal that mangles block
+characters, someone reading the digits to you over the phone — go to
+**app.mtmux.com** and type the six digits into the field it shows. Same flow,
+same result.
 
-That is the whole flow. The session then runs directly over your LAN if the
-device can reach it, and falls back to a relayed tunnel if it cannot — you
-don't choose, and the change is invisible.
+This works whether the device is on your wifi or on cellular in another country.
+mtmux takes the fast path when there is one and falls back to a relayed tunnel
+when there is not; you do not choose, and the change is invisible.
 
-> **Why six digits are enough.** A wrong guess is online, one-shot and loud.
-> Each code may be claimed exactly once, and a failed attempt destroys it — the
-> page says so and offers a new one. An attacker gets a single 1-in-10,000 shot
-> per code they burn, and burning one is visible to you. This is the same
-> argument Bluetooth pairing and Magic Wormhole rest on.
+### Why the QR target is a fragment
 
-### What the pairing service can see
+The QR encodes `https://app.mtmux.com/j#482913`. Everything after the `#` is a
+**fragment**, and browsers never transmit a fragment to a server. So the four
+digits that are the PAKE password never reach the web host's access log, a
+referrer header, or a CDN — which is the entire reason the code can be short
+enough to read off a screen.
+
+The page strips the fragment from the address bar with `history.replaceState`
+before the handshake starts, so a screenshot, a shared tab or the back button
+cannot resurrect a live code.
+
+## The other direction
+
+Sometimes the browser is already open and the terminal is the thing you have to
+go and find. `mtmux pair` covers that:
+
+1. Open **`https://app.mtmux.com/pair`** on the device. It shows six digits.
+2. Run **`mtmux pair 482913`** on the machine running mtmux.
+
+Same protocol, same guarantees — only the question of which side showed the code
+first differs. `mtmux pair` needs a server already running on that port; it
+checks and tells you to start one if not.
+
+Use it when you are already at the browser, when you are pairing a machine you
+reached over SSH, or when you want `--tunnel-only`.
+
+## On your own network, with no broker at all
+
+`mtmux start --local` contacts no broker. The QR then encodes a LAN sign-in URL
+instead of a pairing code:
+
+```
+  ▄▄▄▄▄▄▄ ▄▄  ▄ ▄▄▄▄▄▄▄
+  █ ▄▄▄ █ ▀▄▀▄█ █ ▄▄▄ █    Scan to sign in
+  █ ███ █ ▀ ▄▄▄ █ ███ █
+  █▄▄▄▄▄█ █ ▀ █ █▄▄▄▄▄█    No token to type — the
+  ▄▄▄▄  ▄ ▄▀▀▄▀▄▄▄ ▄▄      code signs the device in.
+```
+
+Scanning opens `http://192.168.1.5:14100/login#n=<nonce>`. The nonce is in the
+fragment for the same reason the pairing code is. The page posts it to
+`POST /_pair/local` and gets back a session token scoped to 24 hours.
+
+That endpoint is `POST`-only on purpose — a `GET` would put the nonce in access
+logs and `Referer` headers — and it answers a spent, unknown or expired nonce
+with a generic `401` that reveals nothing about which.
+
+The nonce is **single-use**, and burned on redemption whether or not the caller
+does anything with the token it got back. Only one is ever live: issuing a new
+one clears the old. Once a device signs in, mtmux mints another and reprints the
+code, so what is on screen is always current.
+
+Unlike a paired device, a LAN nonce sign-in is **not** remembered across
+restarts — see [Staying paired](#staying-paired).
+
+`--host 127.0.0.1` suppresses all of this and keeps the server on loopback.
+
+## What the six digits are
+
+```
+    4 8   2 9 1 3
+    └┬┘   └──┬──┘
+   slot     secret
+```
+
+The split is the load-bearing design decision.
+
+- **The first two digits are a slot.** The broker assigns it, so it can route a
+  claim to the right pending mailbox.
+- **The last four are the secret.** They are generated locally and used as the
+  password for a PAKE. They are **never sent to the broker — not even as a
+  hash.** A four-digit hash is an instant offline search, so hashing would give
+  away exactly as much as sending the digits.
+
+A broker that knew the whole code would know the PAKE password, and could run
+the protocol against both sides at once to pair your CLI to an attacker's
+browser. Splitting the code is what makes that impossible rather than merely
+forbidden.
+
+Both halves are drawn by rejection sampling, not `random % 10000`, because the
+modulo bias would measurably weaken the one-shot guessing bound the whole design
+rests on.
+
+Slots are **not scarce**. Many pairings can hold slot `48` at once. A claim is
+fanned out to every live mailbox under that slot, and only the one whose secret
+matches produces a key confirmation that verifies. So slots never run out and
+reveal nothing.
+
+## Why six digits are enough
+
+A wrong guess is online, one-shot and loud.
+
+Each code may be claimed once, and a failed confirmation **destroys the
+mailbox** — the page says so and offers a new code. An attacker therefore gets a
+single 1-in-10,000 shot per code they burn, and burning one is visible to you.
+The broker additionally rate-limits claims to 5 per minute per address and new
+mailboxes to 10 per minute, which is what stops an attacker spraying claims
+across every slot to improve those odds.
+
+This is the same argument Bluetooth pairing and Magic Wormhole rest on.
+
+## What the broker can see
 
 `api.mtmux.com` is a blind broker. It routes on the first two digits and
-forwards opaque blobs; it cannot read a keystroke, and this is structural
-rather than a promise:
+forwards opaque blobs. This is structural, not a promise:
 
-- **The last four digits never reach it.** They are generated in your browser
-  and used as the password for a PAKE ([CPace](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/)).
-  The broker sees only group elements. It is not sent a hash either — 10⁴ is an
-  instant offline search.
-- **Traffic is sealed end to end.** Everything over the tunnel is AES-256-GCM
+- **The secret never reaches it.** It is the password for
+  [CPace](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/), a balanced
+  PAKE. The broker sees only ristretto255 group elements, from which the
+  password cannot be recovered.
+- **Traffic is sealed end to end.** Every frame over the tunnel is AES-256-GCM
   under keys derived from the PAKE. A tampered or replayed frame closes the
-  connection rather than being forwarded.
+  connection instead of being forwarded. See
+  [The sealed tunnel](/docs/sealed-tunnel).
+- **Your LAN topology is sealed too.** The list of directly reachable addresses
+  the CLI offers is encrypted under the pairing key before it leaves the
+  machine, so the broker never learns it.
 - **Your token stays on your machine.** The browser is never told the relay's
   long-lived `AUTH_TOKEN`. On the direct path both sides _derive_ a session
   token from the pairing key; on the tunnel path the browser needs no token at
   all, because the local agent authenticates the loopback socket itself.
-- **Nothing identifying is logged.** No blob, ciphertext, slot, mailbox id, or
-  address-to-pairing mapping.
 
-The two digits it does see are a routing slot, shared by many simultaneous
-pairings at once. A claim is offered to every pairing waiting on that slot, and
-only the one whose four digits match produces a key confirmation that verifies.
-Slots therefore never run out and reveal nothing.
+## The message flow
 
-### Keeping the tunnel open
+Both ends speak the schemas in `packages/protocol/src/pairing-messages.ts`.
+Every message is either routing metadata or an opaque blob.
 
-`mtmux pair` stays in the foreground and holds the tunnel. Press Ctrl+C to end
-remote access; the local and LAN paths are unaffected.
+The messages are **direction-neutral**: pairing has a mailbox holder who parks a
+slot and a claimant who quotes it, and either role can be the browser or the
+CLI. When `mtmux` prints a code the CLI holds the mailbox and the phone claims
+it; with `mtmux pair` it is the other way round. Nothing in the schema names
+which end runs a terminal.
+
+| Step                                 | Message                                                                   | Direction        |
+| ------------------------------------ | ------------------------------------------------------------------------- | ---------------- |
+| One side parks a mailbox             | `POST /v1/pair/new` → `{ mailboxId, slot, expiresAt }`                    | HTTP             |
+| Mailbox socket attaches              | `pair:ready`                                                              | broker → holder  |
+| The other quotes the code            | `POST /v1/pair/claim` `{ slot, share, ad, sid }` → `{ offered, claimId }` | HTTP             |
+| Fan-out to every mailbox on the slot | `pair:peer-share`                                                         | broker → holder  |
+| Holder answers                       | `pair:share`                                                              | holder → broker  |
+| Both prove the same key              | `pair:confirm` / `pair:peer-confirm`                                      | either direction |
+| CLI seals the descriptor             | `pair:establish` → `pair:established`                                     | CLI → browser    |
+| Anything goes wrong                  | `pair:failed` — and the mailbox dies                                      | broker → either  |
+
+`pair:failed` carries one of `expired`, `already-claimed`, `confirmation-failed`,
+`peer-gone`, `rate-limited` or `server-error`. All of them destroy the mailbox.
+
+The `offered` count in the claim response says how many live mailboxes the claim
+reached — never _which_.
+
+## Direct or tunnelled
+
+The sealed descriptor the CLI produces carries up to eight candidate direct URLs
+plus one tunnel id. The browser races the candidates over WebSocket, and a
+candidate wins only by completing the relay's auth handshake with the derived
+token — not by answering an HTTP probe, which a captive portal can fake. If none
+wins within 800 ms, the session rides the tunnel.
 
 ### Forcing the tunnel
 
-By default `mtmux pair` seals a short list of directly reachable addresses into
-the descriptor so the browser can try the fast path first. `--tunnel-only`
-sends none:
-
 ```bash
-mtmux pair 492716 --tunnel-only
+mtmux pair 482913 --tunnel-only
 ```
 
-Use it if you would rather the paired device never learn your LAN addresses at
-all. The session then always goes through the relay, which costs some latency.
+Sends no candidates at all. Two uses: keeping your LAN topology out of the
+descriptor entirely for anyone who would rather the paired device never learn
+it, and making the tunnel path deterministically testable — otherwise a
+reachable candidate silently wins and the tunnel goes unexercised.
 
-### What the file browser can do over the tunnel
+### What differs between the two paths
 
 Terminal I/O, session management, browsing directories and reading or editing
-text files all work identically on both paths — they are protocol messages on
-the same sealed socket.
+text files all work identically on both. They are protocol messages on the same
+sealed socket.
 
-Two things need the direct path: previewing binary media (images, video, audio)
-and downloading a file. Both are plain HTTP `GET /file` requests, and a tunnelled
-session has no HTTP route to the relay — only sealed WebSocket frames. Over the
-tunnel the UI says so instead of failing obscurely. On the direct path both work,
-authenticated with the same derived token as the socket.
+Two things need the direct path: **previewing binary media** (images, video,
+audio) and **downloading a file**. Both are plain HTTP `GET /file` requests, and
+a tunnelled session has no HTTP route to the relay — only sealed WebSocket
+frames. Over the tunnel the UI says so instead of failing obscurely.
 
-## Self-hosting
+## Staying paired
 
-None of this is required. `mtmux start` never contacts `api.mtmux.com`, and a
-machine with no route to it behaves exactly as it always has. If you want the
-hosted flow on your own infrastructure, run `apps/api` and point the CLI at it:
+The first pairing is the only one that needs a code. Three separate mechanisms
+keep it that way.
 
-```bash
-MTMUX_API_URL=https://api.example.com mtmux pair 492716
-```
+**Restarting mtmux does not un-pair anything.** The token derived with each
+paired browser is stored in `~/.mtmux/config.json`, and `mtmux start` replays
+them to the relay on boot. A paired device is therefore trusted until you revoke
+it — which is what the word "paired" ought to mean, and covers a deploy, a crash
+and a reboot as well as a deliberate restart. The bound is still real: entries
+expire after **90 days** of not being seen, and `mtmux devices revoke` drops one
+immediately. This adds no secret to a file that was not already holding the
+machine's auth token and its Ed25519 secret key.
 
-The broker needs a reverse proxy that upgrades WebSockets and a generous read
-timeout, since an idle tunnel holds its socket open. See
-[Self-hosting](/docs/self-hosting) for its configuration.
+**Reloading the browser does not force a re-pair.** The sealed descriptor lives
+in **IndexedDB** alongside the session keys, with a `sessionStorage` mirror for
+synchronous reads. It used to be in `sessionStorage` alone, which meant a
+refresh threw away the descriptor while the keys survived, and the browser had
+to pair again for no good reason.
 
-The bundled web client reads its broker address from `NEXT_PUBLIC_API_URL`,
-baked in when the CLI is built. To ship a CLI pointed at your own broker, set
-`MTMUX_BUILD_API_URL` for the build.
+**A dropped tunnel does not strand anyone.** Tunnel ids are stable across agent
+reconnects, so an agent that loses its socket and comes back replaces it without
+invalidating the tunnel id already sealed into paired browsers' descriptors. The
+one exception is revocation, which surrenders the id deliberately — every other
+close reason is transient.
 
-## Revoking a device
+Reconnecting also does not need a code: both ends keep a long-lived Ed25519
+device key, so a browser that has paired once reconnects with a signed
+challenge.
 
-Session tokens die with the server process, so restarting mtmux revokes every
-device it has paired. Rotating the auth token (`mtmux token rotate`)
-deliberately does _not_ — rotating a token should not un-pair every device you
-own.
+## Revoking
+
+| To revoke                               | Do this                                      |
+| --------------------------------------- | -------------------------------------------- |
+| One device, permanently                 | `mtmux devices revoke <id>`                  |
+| A live socket that device already holds | Restart mtmux after revoking                 |
+| Every LAN-nonce sign-in                 | Restart mtmux — those tokens are memory-only |
+
+Revoking removes the peer record, so the device is not re-admitted on the next
+start and cannot reconnect. A browser with an already-open socket keeps it until
+the server restarts; `mtmux devices revoke` says so.
+
+`mtmux token rotate` deliberately does **not** revoke devices. Rotating a token
+should not un-pair every device you own.
+
+## Self-hosting the broker
+
+None of this requires ours. `mtmux start --local` contacts no broker at all, and
+a machine with no route to one degrades to exactly that behaviour. To run your
+own, see [Self-hosting](/docs/self-hosting#the-pairing-broker).

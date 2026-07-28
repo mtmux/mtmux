@@ -1,0 +1,264 @@
+---
+title: CLI Reference
+description: Every mtmux command and flag, as implemented.
+---
+
+The binary is `mtmux`. `start` is the default command, so bare `mtmux` and
+`mtmux start` are the same thing.
+
+```
+mtmux [command] [options]
+```
+
+`mtmux --help` lists commands; `mtmux <command> --help` lists that command's
+flags.
+
+## Commands at a glance
+
+| Command                             | What it does                                                                 |
+| ----------------------------------- | ---------------------------------------------------------------------------- |
+| `mtmux`                             | Alias for `mtmux start` — the command you actually use                       |
+| `mtmux start`                       | Serve this machine's tmux, open a sealed tunnel, print a QR + six-digit code |
+| `mtmux local`                       | Alias for `mtmux start --local`                                              |
+| `mtmux pair [code]`                 | The other direction: join a pairing a browser started                        |
+| `mtmux status`                      | Show the server running on this machine                                      |
+| `mtmux stop`                        | Stop the server running on this machine                                      |
+| `mtmux doctor`                      | Check everything mtmux needs                                                 |
+| `mtmux login` / `logout` / `whoami` | Account, which is optional                                                   |
+| `mtmux servers`                     | List the machines on your account                                            |
+| `mtmux devices`                     | Browsers this machine trusts                                                 |
+| `mtmux upgrade`                     | Open checkout for Pro                                                        |
+| `mtmux token`                       | Manage the auth token                                                        |
+| `mtmux version`                     | Print version info (alias: `v`)                                              |
+
+## `mtmux start`
+
+Serves the web client and the relay WebSocket from one process on one port,
+opens a reverse tunnel to the pairing broker, re-admits previously paired
+devices, and arms a six-digit code.
+
+Scanning the QR it prints opens `app.mtmux.com/j` with the code in the URL
+fragment and connects with no further input. Typing the six digits at
+`app.mtmux.com` does the same thing. This is the flow — you do not need a second
+command in a second terminal.
+
+```bash
+mtmux start [options]
+```
+
+| Flag                      | Default                              | Description                                                   |
+| ------------------------- | ------------------------------------ | ------------------------------------------------------------- |
+| `-p, --port <number>`     | `14100`                              | HTTP + WebSocket port                                         |
+| `-h, --host <address>`    | `0.0.0.0` on a LAN, else `127.0.0.1` | Bind address. An explicit value always wins.                  |
+| `--local`                 | off                                  | LAN and loopback only — never contact a broker                |
+| `--no-qr`                 | QR shown                             | Print the code without the QR block                           |
+| `-n, --name <label>`      | this machine's hostname              | What to call this machine in the dashboard                    |
+| `-t, --token <value>`     | the stored token                     | Override the auth token for this run only                     |
+| `--allowed-paths <paths>` | `$HOME`                              | Comma-separated path allow-list for the file browser          |
+| `--no-open`               | opens                                | Don't open a browser on this machine                          |
+| `--api <url>`             | `https://api.mtmux.com`              | Pairing service base URL                                      |
+| `--json`                  | off                                  | Print a machine-readable startup record instead of the banner |
+
+### The default bind address
+
+There is deliberately **no fixed default**. `mtmux start` looks for a usable
+IPv4 address on a real network interface and binds `0.0.0.0` if it finds one,
+`127.0.0.1` if it does not.
+
+"Usable" excludes container bridges, VM host-only networks and overlay VPNs
+(`docker*`, `br-*`, `veth*`, `virbr*`, `vmnet*`, `vboxnet*`, `tun*`, `tap*`,
+`utun*`, `zt*`, `tailscale*`, `wg*`, `lxcbr*`, `cni*`, `flannel*`, `kube*`), and
+accepts only private ranges, preferred in this order: `192.168/16`, then
+`10/8`, then `172.16–31`, then `169.254/16` as a last resort. Anything public is
+dropped — a public address is not "your network".
+
+Binding the LAN does not open up access. The relay refuses to serve a default or
+empty token on a non-loopback bind, and the CLI always holds a 32-byte random
+one. Pass `--host 127.0.0.1` if you want loopback only anyway.
+
+### `--json`
+
+```json
+{
+  "version": "0.3.0",
+  "localUrl": "http://localhost:14100",
+  "lanUrl": "http://192.168.1.5:14100",
+  "mode": "tunnel",
+  "code": "482913",
+  "joinUrl": "https://app.mtmux.com/j#482913",
+  "token": "…",
+  "note": null
+}
+```
+
+`mode` is `"tunnel"` or `"local"`. `code` and `joinUrl` are `null` in local
+mode. `note` carries a degradation message — for example when the broker could
+not be reached and `start` fell back to serving locally.
+
+### When the broker is unreachable
+
+The tunnel is a convenience, not a dependency. An offline machine, a blocked
+outbound connection or a broker outage all leave a working LAN server behind,
+with the reason printed as a dim note under the addresses. This is what makes
+`mtmux start` behave identically to its self-hosted shape when the hosted
+service is absent.
+
+## `mtmux local`
+
+```bash
+mtmux local [options]
+```
+
+Alias for `mtmux start --local`. It accepts `-p/--port`, `-h/--host`,
+`--no-qr`, `-t/--token`, `--allowed-paths`, `--no-open` and `--json`. It does
+not accept `--name` or `--api`, since neither means anything without a broker.
+
+In local mode the QR encodes a LAN sign-in URL — `http://<lan>:<port>/login#n=<nonce>`
+— instead of a pairing code.
+
+## `mtmux pair`
+
+The **other** direction. `mtmux start` prints a code for a browser to claim;
+`mtmux pair` claims a code a browser is already showing. Open
+`https://app.mtmux.com/pair` on the device, read the six digits, and quote them
+here.
+
+```bash
+mtmux pair 482913
+```
+
+Run with no code and it prints those steps rather than guessing.
+
+Reach for it when you are already at the browser, when you are pairing a machine
+you got to over SSH, or when you want `--tunnel-only`. For the ordinary case,
+`mtmux` and a scan is fewer moving parts.
+
+| Flag                  | Default                 | Description                                                    |
+| --------------------- | ----------------------- | -------------------------------------------------------------- |
+| `-p, --port <number>` | `14100`                 | Port mtmux is already serving on                               |
+| `--api <url>`         | `https://api.mtmux.com` | Pairing service base URL                                       |
+| `--tunnel-only`       | off                     | Advertise no direct addresses; always relay through the tunnel |
+
+`mtmux pair` requires a server to already be running on that port — it checks
+`http://127.0.0.1:<port>/health` first and refuses with a pointer to
+`mtmux start` if nothing answers.
+
+It stays in the foreground holding the tunnel open. Ctrl+C ends remote access;
+the local and LAN paths are unaffected.
+
+## `mtmux status`
+
+```
+  Status   running  pid 48213
+  Uptime   2h 14m
+  Mode     tunnel + local
+  Local    http://localhost:14100
+  Network  http://192.168.1.5:14100
+  Invite   https://app.mtmux.com/j#482913
+  Version  0.3.0
+```
+
+Read from `~/.mtmux/server.json`. That file is a hint, not a lock: every read
+checks the pid is still alive and the port still answers `/health`, and a record
+that fails is deleted rather than reported.
+
+## `mtmux stop`
+
+Sends `SIGTERM` to the recorded pid and waits up to 8 seconds for it to go, then
+escalates to `SIGKILL`. `SIGTERM` first because the server has a shutdown path
+that closes the tunnel cleanly. If the process belongs to another user, it
+reports that rather than pretending to have stopped it.
+
+## `mtmux doctor`
+
+```bash
+mtmux doctor [-p <port>] [--api <url>]
+```
+
+Six checks in dependency order, so the first failure is the cause rather than a
+symptom. Exits `1` if anything fails; warnings alone exit `0`. See
+[Troubleshooting with doctor](/docs/doctor).
+
+## `mtmux devices`
+
+Browsers this machine has paired with. These are **local** records, kept in
+`~/.mtmux/config.json` — the command works with no account and no network.
+
+```bash
+mtmux devices                    # list (the default subcommand)
+mtmux devices list
+mtmux devices revoke <deviceId>
+```
+
+Paired devices survive a restart: `mtmux start` replays the token it derived
+with each one, so a browser stays trusted until it is revoked or goes stale.
+
+A device idle for more than 90 days is shown as `(stale)` and is not re-admitted
+on the next start. Revoking drops the record immediately, so the device can
+never reconnect — but a browser holding a live socket keeps it until the server
+restarts. The command says so.
+
+## `mtmux token`
+
+```bash
+mtmux token print          # show the current token
+mtmux token rotate         # generate a new 32-byte random token
+mtmux token set <value>    # set a specific value
+```
+
+`rotate` preserves the device key and every paired peer. Rotating a token should
+not un-pair every device you own.
+
+## Account commands
+
+All optional. See [Accounts](/docs/accounts).
+
+| Command         | Description                                                      |
+| --------------- | ---------------------------------------------------------------- |
+| `mtmux login`   | Sign in via OAuth device authorization — works on a headless box |
+| `mtmux logout`  | Sign out on this machine                                         |
+| `mtmux whoami`  | Show the signed-in account, plan and broker                      |
+| `mtmux servers` | List the machines registered to the account                      |
+| `mtmux upgrade` | Open checkout for mtmux Pro                                      |
+
+`login`, `logout`, `whoami`, `servers` and `upgrade` all take `--api <url>`.
+`login` and `upgrade` also take `--no-open`.
+
+An account is stored against the broker that issued it. Point the CLI at a
+different `--api` and you are anonymous there until you sign in again — a token
+minted by `api.mtmux.com` means nothing to a self-hosted broker, and sending it
+anyway would be a credential leak.
+
+## `mtmux version`
+
+```
+mtmux     0.3.0
+node      22.14.0
+tmux      tmux 3.4
+platform  linux/x64
+```
+
+Aliased as `mtmux v`.
+
+## Environment variables
+
+| Variable              | Effect                                                                          |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `MTMUX_CONFIG_DIR`    | Directory holding `config.json` and `server.json`. Default `~/.mtmux`.          |
+| `MTMUX_API_URL`       | Pairing broker base URL. Default `https://api.mtmux.com`. `--api` overrides it. |
+| `MTMUX_BUILD_API_URL` | **Build time only.** Bakes a broker origin into the bundled web client.         |
+
+## Files
+
+| Path                        | Contents                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `~/.mtmux/config.json`      | Auth token, device key, paired peers, account, server name. Mode `0600`.       |
+| `~/.mtmux/server.json`      | The running server's pid, port, URLs and mode.                                 |
+| `~/.tmuxremote/config.json` | Legacy location. Its token is adopted on first run if the new file is missing. |
+
+## Commands that do not exist
+
+If you have seen these in an older guide or a generated snippet, they are not
+part of mtmux and never were: `mtmux up`, `mtmux down`, `mtmux watch`,
+`mtmux run`, `mtmux notify`, `mtmux share`, `mtmux sessions`. There is likewise
+no `~/.mtmux/agents.toml` — the only configuration file is `config.json`.

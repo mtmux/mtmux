@@ -2,7 +2,7 @@ import { resolveRelayHttpBase } from "@/lib/relay-url";
 
 import { loadDescriptor } from "@/lib/session-store";
 
-const TOKEN_KEY = "ccremote-token";
+import { TOKEN_KEY, readStored } from "./storage-keys";
 
 /**
  * Thrown when the current connection has no HTTP route to the relay.
@@ -27,7 +27,7 @@ export class FilesUnavailableError extends Error {
  */
 export function getStoredToken(): string {
   if (typeof window === "undefined") return "";
-  const stored = localStorage.getItem(TOKEN_KEY);
+  const stored = readStored(TOKEN_KEY);
   if (stored) return stored;
   return loadDescriptor()?.directToken ?? "";
 }

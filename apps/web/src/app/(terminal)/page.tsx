@@ -4,8 +4,12 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useStableMediaQuery } from "@repo/ui/hooks/use-media-query";
-import { TerminalView, type TerminalViewHandle } from "@/components/terminal/terminal-view";
+import {
+  TerminalView,
+  type TerminalViewHandle,
+} from "@/components/terminal/terminal-view";
 import { TerminalToolbar } from "@/components/terminal/terminal-toolbar";
+import { TerminalSearch } from "@/components/terminal/terminal-search";
 import { SessionList } from "@/components/session/session-list";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { FileTree } from "@/components/files/file-tree";
@@ -26,17 +30,26 @@ import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 
 const FileEditor = dynamic(
-  () => import("@/components/files/file-editor").then((m) => ({ default: m.FileEditor })),
+  () =>
+    import("@/components/files/file-editor").then((m) => ({
+      default: m.FileEditor,
+    })),
   { ssr: false },
 );
 
 const FileViewer = dynamic(
-  () => import("@/components/files/file-viewer").then((m) => ({ default: m.FileViewer })),
+  () =>
+    import("@/components/files/file-viewer").then((m) => ({
+      default: m.FileViewer,
+    })),
   { ssr: false },
 );
 
 const CopyModeOverlay = dynamic(
-  () => import("@/components/mobile/copy-mode-overlay").then((m) => ({ default: m.CopyModeOverlay })),
+  () =>
+    import("@/components/mobile/copy-mode-overlay").then((m) => ({
+      default: m.CopyModeOverlay,
+    })),
   { ssr: false },
 );
 
@@ -53,6 +66,10 @@ export default function TerminalPage() {
   const setMobileTab = useUiStore((s) => s.setMobileTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const copyModeOpen = useUiStore((s) => s.copyModeOpen);
+  // Opened from the mobile keyboard toolbar, which lives in the layout's footer
+  // and so can only reach the terminal through the store.
+  const terminalSearchOpen = useUiStore((s) => s.terminalSearchOpen);
+  const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const terminalRef = useRef<TerminalViewHandle>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -99,9 +116,15 @@ export default function TerminalPage() {
 
   const handleToggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+      document.documentElement
+        .requestFullscreen()
+        .then(() => setIsFullscreen(true))
+        .catch(() => {});
     } else {
-      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+      document
+        .exitFullscreen()
+        .then(() => setIsFullscreen(false))
+        .catch(() => {});
     }
   }, []);
 
@@ -118,10 +141,13 @@ export default function TerminalPage() {
       <div className="absolute inset-0 overflow-hidden">
         {/* Terminal tab: use visibility+absolute instead of display:none to keep xterm's
             internal renderer dimensions valid and prevent Viewport ResizeObserver crashes */}
-        <div className={cn(
-          "h-full flex flex-col",
-          mobileTab !== "terminal" && "invisible absolute inset-0 pointer-events-none",
-        )}>
+        <div
+          className={cn(
+            "h-full flex flex-col",
+            mobileTab !== "terminal" &&
+              "invisible absolute inset-0 pointer-events-none",
+          )}
+        >
           <SwipeSessionSwitcher className="h-full max-h-full">
             <div className="flex h-full flex-col">
               <WindowTabs />
@@ -134,17 +160,39 @@ export default function TerminalPage() {
                     onCreateSession={() => setShowCreateDialog(true)}
                   />
                 </PinchZoomHandler>
+                {terminalSearchOpen && (
+                  <TerminalSearch
+                    className="absolute inset-x-2 top-2 z-[var(--z-banner)]"
+                    onSearch={handleSearch}
+                    onNext={handleSearchNext}
+                    onPrevious={handleSearchPrevious}
+                    onClose={() => setTerminalSearchOpen(false)}
+                  />
+                )}
+                {/* Lives inside the terminal pane, not the viewport: as a
+                    `fixed` element it overlapped the command bar's send button. */}
+                <TmuxFab />
               </div>
             </div>
           </SwipeSessionSwitcher>
         </div>
-        <div className={cn("h-full flex-col", mobileTab === "sessions" ? "flex" : "hidden")}>
+        <div
+          className={cn(
+            "h-full flex-col",
+            mobileTab === "sessions" ? "flex" : "hidden",
+          )}
+        >
           <SessionList
             onCreateClick={() => setShowCreateDialog(true)}
             className="flex-1"
           />
         </div>
-        <div className={cn("h-full flex-col", mobileTab === "files" ? "flex" : "hidden")}>
+        <div
+          className={cn(
+            "h-full flex-col",
+            mobileTab === "files" ? "flex" : "hidden",
+          )}
+        >
           <FileTree
             onFileSelect={handleFileSelect}
             className="flex-1"
@@ -152,18 +200,23 @@ export default function TerminalPage() {
             onNavigate={handleBreadcrumbNavigate}
           />
         </div>
-        <div className={cn("h-full flex-col", mobileTab === "settings" ? "flex" : "hidden")}>
+        <div
+          className={cn(
+            "h-full flex-col",
+            mobileTab === "settings" ? "flex" : "hidden",
+          )}
+        >
           <SettingsPanel className="h-full" />
         </div>
         {/* File editor overlay */}
-        {editorFile && (
-          editorForceText || getFileViewMode(editorFile) === "text"
-            ? <FileEditor />
-            : <FileViewer />
-        )}
+        {editorFile &&
+          (editorForceText || getFileViewMode(editorFile) === "text" ? (
+            <FileEditor />
+          ) : (
+            <FileViewer />
+          ))}
         {/* Copy mode overlay */}
         {copyModeOpen && <CopyModeOverlay />}
-        <TmuxFab />
         <PaneListPanel />
         <PaneResizeControls />
         <SessionCreateDialog
@@ -228,11 +281,12 @@ export default function TerminalPage() {
       </div>
 
       {/* File editor overlay */}
-      {editorFile && (
-          editorForceText || getFileViewMode(editorFile) === "text"
-            ? <FileEditor />
-            : <FileViewer />
-        )}
+      {editorFile &&
+        (editorForceText || getFileViewMode(editorFile) === "text" ? (
+          <FileEditor />
+        ) : (
+          <FileViewer />
+        ))}
 
       <SessionCreateDialog
         open={showCreateDialog}

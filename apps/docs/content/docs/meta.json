@@ -2,15 +2,19 @@
   "pages": [
     "index",
     "getting-started",
+    "cli",
     "pairing",
-    "self-hosting",
-    "claude-code-remote",
-    "architecture",
-    "configuration",
+    "sealed-tunnel",
+    "accounts",
     "web-app",
+    "architecture",
     "relay",
+    "configuration",
     "security",
+    "self-hosting",
     "deployment",
-    "troubleshooting"
+    "doctor",
+    "troubleshooting",
+    "claude-code-remote"
   ]
 }

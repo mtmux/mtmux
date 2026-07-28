@@ -5,6 +5,7 @@ import { Button } from "@repo/ui/components/ui/button";
 import { ScrollArea, ScrollBar } from "@repo/ui/components/ui/scroll-area";
 import { cn } from "@repo/ui/lib/utils";
 import { useSessionStore } from "@/stores/session-store";
+import { LAST_SESSION_KEY, writeStored } from "@/lib/storage-keys";
 
 interface SessionTabsProps {
   onCreateClick: () => void;
@@ -41,13 +42,13 @@ export function SessionTabs({ onCreateClick, className }: SessionTabsProps) {
                 )}
                 onClick={() => {
                   setActiveSession(name);
-                  localStorage.setItem("ccremote-last-session", name);
+                  writeStored(LAST_SESSION_KEY, name);
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter" && e.key !== " ") return;
                   e.preventDefault();
                   setActiveSession(name);
-                  localStorage.setItem("ccremote-last-session", name);
+                  writeStored(LAST_SESSION_KEY, name);
                 }}
               >
                 <span className="truncate max-w-[120px]">{name}</span>

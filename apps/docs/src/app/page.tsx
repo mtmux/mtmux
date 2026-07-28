@@ -1,19 +1,12 @@
-import { Hero } from "@/components/landing/hero";
-import { FeatureGrid } from "@/components/landing/feature-grid";
-import { Install } from "@/components/landing/install";
-import { Quickstart } from "@/components/landing/quickstart";
-import { Architecture } from "@/components/landing/architecture";
-import { CTA } from "@/components/landing/cta";
+import { redirect } from "next/navigation";
 
-export default function HomePage() {
-  return (
-    <main>
-      <Hero />
-      <FeatureGrid />
-      <Install />
-      <Quickstart />
-      <Architecture />
-      <CTA />
-    </main>
-  );
+/**
+ * This site is documentation only.
+ *
+ * The marketing landing page lives at mtmux.com (`apps/site`). A second one
+ * here would compete with it for the same search terms and drift out of sync,
+ * so `/` sends people straight into the docs tree.
+ */
+export default function RootPage() {
+  redirect("/docs");
 }
