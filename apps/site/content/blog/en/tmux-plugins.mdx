@@ -57,9 +57,9 @@ hits once.
 </Steps>
 
 <Callout type="warning" title="Capital I, not lowercase i">
-  `prefix I` (shift held) installs plugins and reloads the tmux environment.
-  `prefix i` is unbound and does nothing. Pressing prefix, then i, and seeing no
-  reaction isn't a bug — it's the wrong key.
+`prefix I` (shift held) installs plugins and reloads the tmux environment. `prefix i` is unbound
+and does nothing. Pressing prefix, then i, and seeing no reaction isn't a bug — it's the wrong
+key.
 </Callout>
 
 ## The plugins worth installing
@@ -67,26 +67,11 @@ hits once.
 <CompareTable
   columns={["Plugin", "What it does"]}
   rows={[
-    [
-      "tmux-resurrect",
-      "Saves the current layout, panes and running programs; prefix Ctrl-s to save, prefix Ctrl-r to restore",
-    ],
-    [
-      "tmux-continuum",
-      "Autosaves on an interval and can restore automatically when tmux starts — builds on resurrect, doesn't replace it",
-    ],
-    [
-      "tmux-sensible",
-      "A bundle of defaults nearly everyone agrees on: bigger history-limit, shorter escape-time, aggressive-resize",
-    ],
-    [
-      "vim-tmux-navigator",
-      "Ctrl-h/j/k/l cross between vim splits and tmux panes as if they were one grid",
-    ],
-    [
-      "tmux-yank",
-      "Copies a copy-mode selection straight to the system clipboard, detecting pbcopy, xclip, xsel or wl-copy for you",
-    ],
+    ["tmux-resurrect", "Saves the current layout, panes and running programs; prefix Ctrl-s to save, prefix Ctrl-r to restore"],
+    ["tmux-continuum", "Autosaves on an interval and can restore automatically when tmux starts — builds on resurrect, doesn't replace it"],
+    ["tmux-sensible", "A bundle of defaults nearly everyone agrees on: bigger history-limit, shorter escape-time, aggressive-resize"],
+    ["vim-tmux-navigator", "Ctrl-h/j/k/l cross between vim splits and tmux panes as if they were one grid"],
+    ["tmux-yank", "Copies a copy-mode selection straight to the system clipboard, detecting pbcopy, xclip, xsel or wl-copy for you"],
   ]}
 />
 
@@ -94,9 +79,8 @@ hits once.
 
 These are two separate plugins that are almost always installed together, and it's worth being
 precise about which one does what. tmux-resurrect is the save/restore mechanism — prefix
-
-<Cmd>Ctrl-s</Cmd> writes the current state to disk, prefix <Cmd>Ctrl-r</Cmd>
-reads it back. On its own it's a manual snapshot, not automatic.
+<Cmd>Ctrl-s</Cmd> writes the current state to disk, prefix <Cmd>Ctrl-r</Cmd> reads it back. On
+its own it's a manual snapshot, not automatic.
 
 tmux-continuum sits on top of it: it calls resurrect's save on a timer, and can call its restore
 automatically the moment tmux starts.
@@ -161,32 +145,28 @@ at a session from a browser than reattach over SSH to confirm, that's what mtmux
 (`npm i -g mtmux`) does.
 
 <FAQ>
-  <FAQItem q="What is TPM in tmux?">
-    Tmux Plugin Manager — a small tmux plugin, installed like any other tool,
-    that reads `set -g @plugin` lines from `~/.tmux.conf` and fetches, updates
-    and loads the plugins listed there.
-  </FAQItem>
-  <FAQItem q="How do I install tmux plugins?">
-    List them as `set -g @plugin 'owner/repo'` lines in `~/.tmux.conf`, reload
-    the config, then press `prefix` followed by a capital `I` inside a tmux
-    session.
-  </FAQItem>
-  <FAQItem q="Why isn't prefix + I installing my plugins?">
-    The two most common causes: pressing lowercase `i` instead of `I`, or the
-    `run '~/.tmux/plugins/tpm/tpm'` line missing or not being the last line in
-    the config. Reload with `tmux source-file ~/.tmux.conf` after any edit and
-    try again.
-  </FAQItem>
-  <FAQItem q="What's the difference between tmux-resurrect and tmux-continuum?">
-    tmux-resurrect saves and restores state on demand via key bindings.
-    tmux-continuum automates that — it saves on a timer and can restore
-    automatically when tmux starts. Continuum requires resurrect; it doesn't
-    work standalone.
-  </FAQItem>
-  <FAQItem q="Do tmux plugins slow down startup?">
-    Yes, proportionally to how many you have and what they do. Each plugin's
-    install hooks run once per new client, and status-bar plugins that shell out
-    on every refresh add ongoing redraw lag on top of that. A handful of
-    well-chosen plugins is unnoticeable; thirty rarely is.
-  </FAQItem>
+<FAQItem q="What is TPM in tmux?">
+Tmux Plugin Manager — a small tmux plugin, installed like any other tool, that reads
+`set -g @plugin` lines from `~/.tmux.conf` and fetches, updates and loads the plugins listed
+there.
+</FAQItem>
+<FAQItem q="How do I install tmux plugins?">
+List them as `set -g @plugin 'owner/repo'` lines in `~/.tmux.conf`, reload the config, then press
+`prefix` followed by a capital `I` inside a tmux session.
+</FAQItem>
+<FAQItem q="Why isn't prefix + I installing my plugins?">
+The two most common causes: pressing lowercase `i` instead of `I`, or the `run
+'~/.tmux/plugins/tpm/tpm'` line missing or not being the last line in the config. Reload with
+`tmux source-file ~/.tmux.conf` after any edit and try again.
+</FAQItem>
+<FAQItem q="What's the difference between tmux-resurrect and tmux-continuum?">
+tmux-resurrect saves and restores state on demand via key bindings. tmux-continuum automates
+that — it saves on a timer and can restore automatically when tmux starts. Continuum requires
+resurrect; it doesn't work standalone.
+</FAQItem>
+<FAQItem q="Do tmux plugins slow down startup?">
+Yes, proportionally to how many you have and what they do. Each plugin's install hooks run once
+per new client, and status-bar plugins that shell out on every refresh add ongoing redraw lag on
+top of that. A handful of well-chosen plugins is unnoticeable; thirty rarely is.
+</FAQItem>
 </FAQ>

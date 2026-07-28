@@ -51,8 +51,11 @@ switching into it. This is the form you want from a script, a cron job, or anywh
 bootstrapping a session you will attach to later — or never, if it is just running a build.
 
 <TerminalDemo title="~ — starting a background session">
-  $ tmux new -d -s ci $ echo "back in the original shell" back in the original
-  shell $ tmux ls ci: 1 windows (created Mon Jun 08 10:02:11 2026)
+$ tmux new -d -s ci
+$ echo "back in the original shell"
+back in the original shell
+$ tmux ls
+ci: 1 windows (created Mon Jun 08 10:02:11 2026)
 </TerminalDemo>
 
 Without `-d`, `tmux new -s ci` would have taken over your terminal, which is wrong for a
@@ -125,7 +128,6 @@ tmux send-keys -t work:editor 'nvim' Enter
 tmux new-window -t work -n server
 tmux send-keys -t work:server 'npm run dev' Enter
 exec tmux attach -t work
-
 </TerminalDemo>
 
 `has-session` exits 0 if the session exists and non-zero if it does not, which is exactly the
@@ -138,7 +140,9 @@ Creating a session with a name that already exists does not silently attach you 
 refuses:
 
 <TerminalDemo title="~ — duplicate session name">
-  $ tmux new -s work $ tmux new -s work duplicate session: work
+$ tmux new -s work
+$ tmux new -s work
+duplicate session: work
 </TerminalDemo>
 
 That is `tmux new-session`, not `-A`. Either attach instead (`tmux attach -t work`), pick a
@@ -146,11 +150,10 @@ different name, or use `tmux new-session -A -s work` if you want "create or atta
 without checking first.
 
 <Callout type="note" title="If you see 'sessions should be nested with care'">
-  That warning appears when you run `tmux new` while you are already inside a
-  tmux session (tmux detects the `TMUX` environment variable). It is not an
-  error — it is tmux warning you that you are about to run tmux inside tmux,
-  which works but usually is not what you meant. Detach first with `prefix d`,
-  or open a new session from outside the current one over SSH.
+That warning appears when you run `tmux new` while you are already inside a tmux session (tmux
+detects the `TMUX` environment variable). It is not an error — it is tmux warning you that you
+are about to run tmux inside tmux, which works but usually is not what you meant. Detach first
+with `prefix d`, or open a new session from outside the current one over SSH.
 </Callout>
 
 ## Checking on a session you just started
@@ -163,25 +166,24 @@ already created with `tmux new -d` to a browser tab on any device, including a p
 client and nothing forwarded to it.
 
 <FAQ>
-  <FAQItem q="What is the difference between tmux new and tmux new-session?">
-    None — `new` is the built-in alias for `new-session`. Both accept the same
-    flags.
-  </FAQItem>
-  <FAQItem q="How do I create a tmux session without attaching to it?">
-    Add `-d`: `tmux new -d -s name`. The session starts running in the
-    background and your current shell is unaffected.
-  </FAQItem>
-  <FAQItem q="How do I fix 'duplicate session' in tmux?">
-    It means a session with that name already exists. Attach to it with `tmux
-    attach -t name` instead of creating it again, or use `tmux new-session -A -s
-    name` to get create-or-attach behaviour automatically.
-  </FAQItem>
-  <FAQItem q="Can I set the starting directory for a new tmux session?">
-    Yes — `tmux new -s name -c /path/to/dir`. Without `-c`, the session starts
-    in whatever directory you ran the `tmux` command from.
-  </FAQItem>
-  <FAQItem q="How many sessions can tmux run at once?">
-    There is no practical hard limit — each session is cheap. `tmux ls` lists
-    everything the server currently has running.
-  </FAQItem>
+<FAQItem q="What is the difference between tmux new and tmux new-session?">
+None — `new` is the built-in alias for `new-session`. Both accept the same flags.
+</FAQItem>
+<FAQItem q="How do I create a tmux session without attaching to it?">
+Add `-d`: `tmux new -d -s name`. The session starts running in the background and your current
+shell is unaffected.
+</FAQItem>
+<FAQItem q="How do I fix 'duplicate session' in tmux?">
+It means a session with that name already exists. Attach to it with `tmux attach -t name`
+instead of creating it again, or use `tmux new-session -A -s name` to get create-or-attach
+behaviour automatically.
+</FAQItem>
+<FAQItem q="Can I set the starting directory for a new tmux session?">
+Yes — `tmux new -s name -c /path/to/dir`. Without `-c`, the session starts in whatever
+directory you ran the `tmux` command from.
+</FAQItem>
+<FAQItem q="How many sessions can tmux run at once?">
+There is no practical hard limit — each session is cheap. `tmux ls` lists everything the server
+currently has running.
+</FAQItem>
 </FAQ>

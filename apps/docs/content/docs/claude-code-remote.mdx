@@ -78,12 +78,12 @@ Entirely optional. Anonymous pairing keeps working forever.
 
 ## What survives a dropped connection
 
-|                                       | Survives?                                     |
-| ------------------------------------- | --------------------------------------------- |
-| The tmux session and everything in it | yes                                           |
-| Terminal scrollback                   | yes, on the host                              |
-| Your place in the session             | yes — it re-attaches                          |
-| Keystrokes typed while offline        | **no** — deliberately dropped, never replayed |
+| | Survives? |
+| --- | --- |
+| The tmux session and everything in it | yes |
+| Terminal scrollback | yes, on the host |
+| Your place in the session | yes — it re-attaches |
+| Keystrokes typed while offline | **no** — deliberately dropped, never replayed |
 
 That last row is a choice: replaying input into a session that has moved on is
 worse than losing it.

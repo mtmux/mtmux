@@ -31,7 +31,17 @@ function eslintByWorkspace(files) {
 
 export default {
   "*.{ts,tsx}": eslintByWorkspace,
-  "*.{ts,tsx,js,jsx,mjs,cjs,json,css,md,mdx,yaml,yml}": [
+  // `.mdx` is deliberately absent.
+  //
+  // Prettier formats MDX with its markdown printer, which re-wraps prose to the
+  // print width without understanding that inline JSX cannot straddle the
+  // result. It turned `<Cmd>Ctrl-b</Cmd>` into an opening tag on one line and a
+  // closing tag on the next, and MDX then failed to compile with "Expected a
+  // closing tag for `<Cmd>` before the end of `paragraph`" — a build break, in
+  // 37 content files, produced by a formatter running on commit.
+  //
+  // MDX is content, and content does not need a formatter.
+  "*.{ts,tsx,js,jsx,mjs,cjs,json,css,md,yaml,yml}": [
     "pnpm exec prettier --write",
   ],
 };

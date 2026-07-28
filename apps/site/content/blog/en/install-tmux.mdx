@@ -31,22 +31,10 @@ depend on the version you actually got.
   rows={[
     ["Ubuntu 24.04 (noble)", "sudo apt install tmux", "3.4"],
     ["Debian 12 (bookworm)", "sudo apt install tmux", "3.3a"],
-    [
-      "Fedora",
-      "sudo dnf install tmux",
-      "Current stable release, usually within one or two versions of upstream",
-    ],
+    ["Fedora", "sudo dnf install tmux", "Current stable release, usually within one or two versions of upstream"],
     ["RHEL 9 / CentOS Stream 9", "sudo dnf install tmux", "3.2a"],
-    [
-      "Arch Linux",
-      "sudo pacman -S tmux",
-      "Current upstream release — Arch tracks tmux closely",
-    ],
-    [
-      "Alpine Linux",
-      "sudo apk add tmux",
-      "Whatever's current in the release branch you're on",
-    ],
+    ["Arch Linux", "sudo pacman -S tmux", "Current upstream release — Arch tracks tmux closely"],
+    ["Alpine Linux", "sudo apk add tmux", "Whatever's current in the release branch you're on"],
   ]}
 />
 
@@ -56,7 +44,9 @@ noticeably older, because both distributions freeze package versions for years a
 exchange for stability.
 
 <TerminalDemo title="~ — install and verify">
-  $ sudo apt update && sudo apt install tmux $ tmux -V tmux 3.3a
+$ sudo apt update && sudo apt install tmux
+$ tmux -V
+tmux 3.3a
 </TerminalDemo>
 
 ## Debian and Ubuntu
@@ -140,26 +130,10 @@ the one a feature needs before assuming your config is wrong:
 <CompareTable
   columns={["Feature", "Minimum version", "What breaks below it"]}
   rows={[
-    [
-      "Unified mouse option (set -g mouse on)",
-      "2.1",
-      "Older configs need separate mouse-select-pane / mouse-resize-pane options instead",
-    ],
-    [
-      "window-size option",
-      "2.9",
-      "No control over whether windows size to the smallest, largest, or manual client",
-    ],
-    [
-      "RGB / true-color support",
-      "2.2",
-      "Truecolor apps fall back to 256-color even with a correct terminal-overrides line",
-    ],
-    [
-      "display-popup",
-      "3.2",
-      "prefix-bound popup commands (fzf pickers, quick scratch popups) silently fail to bind",
-    ],
+    ["Unified mouse option (set -g mouse on)", "2.1", "Older configs need separate mouse-select-pane / mouse-resize-pane options instead"],
+    ["window-size option", "2.9", "No control over whether windows size to the smallest, largest, or manual client"],
+    ["RGB / true-color support", "2.2", "Truecolor apps fall back to 256-color even with a correct terminal-overrides line"],
+    ["display-popup", "3.2", "prefix-bound popup commands (fzf pickers, quick scratch popups) silently fail to bind"],
   ]}
 />
 
@@ -172,24 +146,22 @@ tmux has two real dependencies: `libevent` and `ncurses`. You also need a C comp
 `pkg-config`, and a yacc implementation (`bison` works).
 
 <Steps>
-  <Step title="Install build dependencies">
-    On Debian/Ubuntu: `sudo apt install build-essential pkg-config libevent-dev
-    libncurses-dev bison`. Fedora/RHEL: `sudo dnf install gcc make pkgconfig
-    libevent-devel ncurses-devel bison`.
-  </Step>
-  <Step title="Download a release tarball">
-    Grab one from `https://github.com/tmux/tmux/releases` rather than cloning
-    the repo — releases ship a pre-generated `configure` script, so you skip
-    needing `autoconf`/`automake`.
-  </Step>
-  <Step title="Configure, build, install">
-    `./configure && make` then `sudo make install`. This installs to
-    `/usr/local/bin/tmux` by default, ahead of the distro package on `PATH`.
-  </Step>
-  <Step title="Confirm you got the right one">
-    `tmux -V` and `which tmux` — the path should point at `/usr/local/bin/tmux`,
-    not `/usr/bin/tmux`, confirming the source build is what actually runs.
-  </Step>
+<Step title="Install build dependencies">
+On Debian/Ubuntu: `sudo apt install build-essential pkg-config libevent-dev libncurses-dev
+bison`. Fedora/RHEL: `sudo dnf install gcc make pkgconfig libevent-devel ncurses-devel bison`.
+</Step>
+<Step title="Download a release tarball">
+Grab one from `https://github.com/tmux/tmux/releases` rather than cloning the repo — releases
+ship a pre-generated `configure` script, so you skip needing `autoconf`/`automake`.
+</Step>
+<Step title="Configure, build, install">
+`./configure && make` then `sudo make install`. This installs to `/usr/local/bin/tmux` by
+default, ahead of the distro package on `PATH`.
+</Step>
+<Step title="Confirm you got the right one">
+`tmux -V` and `which tmux` — the path should point at `/usr/local/bin/tmux`, not
+`/usr/bin/tmux`, confirming the source build is what actually runs.
+</Step>
 </Steps>
 
 If `configure` stops with `curses not found` even though `libncurses-dev` is installed, it's
@@ -199,10 +171,10 @@ something before re-running `configure`. Missing `libevent` at link time produce
 error naming `libevent` directly, which is easier to diagnose than the curses case.
 
 <Callout type="note" title="Two tmux binaries on the same machine">
-  `apt`/`dnf` install to `/usr/bin`, a source build installs to `/usr/local/bin`
-  by default. Since `/usr/local/bin` normally comes first on `PATH`, the source
-  build wins without needing to uninstall the package version — but it's worth
-  confirming with `which tmux` rather than assuming.
+`apt`/`dnf` install to `/usr/bin`, a source build installs to `/usr/local/bin` by default. Since
+`/usr/local/bin` normally comes first on `PATH`, the source build wins without needing to
+uninstall the package version — but it's worth confirming with `which tmux` rather than
+assuming.
 </Callout>
 
 ## After installing
@@ -214,28 +186,25 @@ job from somewhere other than the machine it's on, mtmux (`npm i -g mtmux`) serv
 in the tmux you just installed to a browser on any device, with nothing to port-forward.
 
 <FAQ>
-  <FAQItem q="How do I check which version of tmux I have installed?">
-    `tmux -V`. It prints a single line like `tmux 3.3a`.
-  </FAQItem>
-  <FAQItem q="Why does Ubuntu or Debian ship an old version of tmux?">
-    Debian stable and Ubuntu LTS freeze package versions at release time and
-    only backport security fixes, not new upstream versions, for the life of the
-    release. Debian's `bookworm-backports` repository carries newer builds if
-    you need one without a full distro upgrade.
-  </FAQItem>
-  <FAQItem q="What do I need to build tmux from source?">
-    `libevent` and `ncurses` as dependencies, plus a C compiler, `make`,
-    `pkg-config`, and a yacc implementation like `bison`. Download a release
-    tarball (not a git clone) so `configure` is already generated, then
-    `./configure && make && sudo make install`.
-  </FAQItem>
-  <FAQItem q="Is tmux available on CentOS or RHEL by default?">
-    It's not preinstalled, but `sudo dnf install tmux` pulls it from the
-    standard repos on RHEL 9 and CentOS Stream 9, giving you tmux 3.2a.
-  </FAQItem>
-  <FAQItem q="Do I need to install anything else to use tmux?">
-    No — tmux is a single binary with no required runtime dependencies once
-    built or installed. A shell to run inside it is the only other thing you
-    need, and every distro already has one.
-  </FAQItem>
+<FAQItem q="How do I check which version of tmux I have installed?">
+`tmux -V`. It prints a single line like `tmux 3.3a`.
+</FAQItem>
+<FAQItem q="Why does Ubuntu or Debian ship an old version of tmux?">
+Debian stable and Ubuntu LTS freeze package versions at release time and only backport security
+fixes, not new upstream versions, for the life of the release. Debian's `bookworm-backports`
+repository carries newer builds if you need one without a full distro upgrade.
+</FAQItem>
+<FAQItem q="What do I need to build tmux from source?">
+`libevent` and `ncurses` as dependencies, plus a C compiler, `make`, `pkg-config`, and a yacc
+implementation like `bison`. Download a release tarball (not a git clone) so `configure` is
+already generated, then `./configure && make && sudo make install`.
+</FAQItem>
+<FAQItem q="Is tmux available on CentOS or RHEL by default?">
+It's not preinstalled, but `sudo dnf install tmux` pulls it from the standard repos on RHEL 9
+and CentOS Stream 9, giving you tmux 3.2a.
+</FAQItem>
+<FAQItem q="Do I need to install anything else to use tmux?">
+No — tmux is a single binary with no required runtime dependencies once built or installed. A
+shell to run inside it is the only other thing you need, and every distro already has one.
+</FAQItem>
 </FAQ>

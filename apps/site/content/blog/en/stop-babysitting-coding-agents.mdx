@@ -70,9 +70,10 @@ long as the process refuses to exit. It's a perfectly correct check for the thin
 just isn't the thing you actually needed to know.
 
 <TerminalDemo title="what $? sees vs. what actually happened">
-  $ ./run-migration.sh; echo "exit: $?" Applying migration 0042... Overwrite
-  existing index? (y/n) # ... 40 minutes pass, nobody is watching this terminal
-  ...
+$ ./run-migration.sh; echo "exit: $?"
+Applying migration 0042...
+Overwrite existing index? (y/n)
+# ... 40 minutes pass, nobody is watching this terminal ...
 </TerminalDemo>
 
 Forty minutes later, that shell is exactly as informative as it was at minute one. No exit code
@@ -100,37 +101,12 @@ of this natively, and both leave gaps you have to fill by watching the pane's ac
 just its exit status.
 
 <CompareTable
-  columns={[
-    "State",
-    "What it looks like",
-    "What $? shows",
-    "What's actually needed",
-  ]}
+  columns={["State", "What it looks like", "What $? shows", "What's actually needed"]}
   rows={[
-    [
-      "Done",
-      "idle prompt, or exit 0",
-      "0 — accurate",
-      "nothing, or a glance at the diff",
-    ],
-    [
-      "Blocked",
-      "y/n prompt, no new output",
-      "nothing — hasn't exited",
-      "an answer, now",
-    ],
-    [
-      "Stalled",
-      "silence past the normal cadence",
-      "nothing — hasn't exited",
-      "investigation, maybe a kill",
-    ],
-    [
-      "Failed",
-      "non-zero exit, or dead pane",
-      "non-zero — accurate",
-      "the last N lines, and a decision",
-    ],
+    ["Done", "idle prompt, or exit 0", "0 — accurate", "nothing, or a glance at the diff"],
+    ["Blocked", "y/n prompt, no new output", "nothing — hasn't exited", "an answer, now"],
+    ["Stalled", "silence past the normal cadence", "nothing — hasn't exited", "investigation, maybe a kill"],
+    ["Failed", "non-zero exit, or dead pane", "non-zero — accurate", "the last N lines, and a decision"],
   ]}
 />
 
@@ -138,7 +114,7 @@ just its exit status.
 
 Treat blocked and stalled as the same "still going, check later" state and the cost isn't
 symmetric. A blocked run is cheap to unblock — you're one keystroke away from unsticking forty
-minutes of dead time — but only if you know it's blocked _now_, not when you happen to look. A
+minutes of dead time — but only if you know it's blocked *now*, not when you happen to look. A
 stalled run is a different problem: something is actually wrong, and the fix is investigation, not
 a keystroke. Conflating them means you either interrupt a genuinely fine long-running process to
 check, or you leave a one-keystroke fix sitting for an hour because you assumed it was still
@@ -166,31 +142,28 @@ everything okay" — and that reading the pane is still the only thing that sepa
 what's worth shortening is how long it takes you to get in front of one.
 
 <FAQ>
-  <FAQItem q="Why can't I just check if the process is still running?">
-    Because "still running" covers three different situations — working
-    normally, waiting on a prompt, and stalled with no progress — and they need
-    three different responses. A liveness check alone can't distinguish them.
-  </FAQItem>
-  <FAQItem q="What's the difference between a blocked and a stalled agent?">
-    Blocked means the agent is waiting on a specific answer from you — a
-    permission prompt, a y/n — and will resume the instant you respond. Stalled
-    means no new output and no exit, with nothing obviously waiting on you; it
-    usually means something is actually wrong.
-  </FAQItem>
-  <FAQItem q="Do exit codes catch failures reliably?">
-    Yes, for the failures that involve exiting — a non-zero return code is a
-    solid signal. They catch nothing for a hung or blocked process, because
-    nothing has exited yet.
-  </FAQItem>
-  <FAQItem q="How long should I wait before calling a quiet agent 'stalled' instead of 'thinking'?">
-    It depends on the tool and the task — a long test suite and a chat response
-    have very different normal cadences. Most setups use a fixed idle threshold
-    (a few minutes) as a starting point and tune it per project once they see a
-    few false positives.
-  </FAQItem>
-  <FAQItem q="Does this apply to non-AI long-running scripts too?">
-    Yes — the four-state framing is really about any unattended terminal
-    process, agent or not. A database migration or a long build can sit blocked
-    on a prompt or stall on a network hiccup in exactly the same way.
-  </FAQItem>
+<FAQItem q="Why can't I just check if the process is still running?">
+Because "still running" covers three different situations — working normally, waiting on a
+prompt, and stalled with no progress — and they need three different responses. A liveness check
+alone can't distinguish them.
+</FAQItem>
+<FAQItem q="What's the difference between a blocked and a stalled agent?">
+Blocked means the agent is waiting on a specific answer from you — a permission prompt, a y/n —
+and will resume the instant you respond. Stalled means no new output and no exit, with nothing
+obviously waiting on you; it usually means something is actually wrong.
+</FAQItem>
+<FAQItem q="Do exit codes catch failures reliably?">
+Yes, for the failures that involve exiting — a non-zero return code is a solid signal. They catch
+nothing for a hung or blocked process, because nothing has exited yet.
+</FAQItem>
+<FAQItem q="How long should I wait before calling a quiet agent 'stalled' instead of 'thinking'?">
+It depends on the tool and the task — a long test suite and a chat response have very different
+normal cadences. Most setups use a fixed idle threshold (a few minutes) as a starting point and
+tune it per project once they see a few false positives.
+</FAQItem>
+<FAQItem q="Does this apply to non-AI long-running scripts too?">
+Yes — the four-state framing is really about any unattended terminal process, agent or not. A
+database migration or a long build can sit blocked on a prompt or stall on a network hiccup in
+exactly the same way.
+</FAQItem>
 </FAQ>

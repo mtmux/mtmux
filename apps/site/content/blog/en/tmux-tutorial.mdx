@@ -31,22 +31,10 @@ window, pane.**
 <CompareTable
   columns={["Level", "What it is"]}
   rows={[
-    [
-      "Server",
-      "One background process per machine, started automatically by your first tmux command",
-    ],
-    [
-      "Session",
-      "A named container of windows — the thing that survives you disconnecting",
-    ],
-    [
-      "Window",
-      "A tab inside a session, with its own name, shown in the status bar",
-    ],
-    [
-      "Pane",
-      "A split within a window — one window can hold several panes side by side or stacked",
-    ],
+    ["Server", "One background process per machine, started automatically by your first tmux command"],
+    ["Session", "A named container of windows — the thing that survives you disconnecting"],
+    ["Window", "A tab inside a session, with its own name, shown in the status bar"],
+    ["Pane", "A split within a window — one window can hold several panes side by side or stacked"],
   ]}
 />
 
@@ -60,44 +48,41 @@ terminal window while attached to tmux over SSH just drops the connection — th
 everything running in it, keeps going on the server.
 
 <Callout type="note" title="Install first if you haven't">
-  This tutorial assumes `tmux -V` already prints something. If it doesn't,
-  [installing tmux](/blog/install-tmux) covers every major package manager and
-  building from source.
+This tutorial assumes `tmux -V` already prints something. If it doesn't,
+[installing tmux](/blog/install-tmux) covers every major package manager and building from
+source.
 </Callout>
 
 ## Your first session
 
 <Steps>
-  <Step title="Start tmux">
-    Run `tmux new -s intro` in a terminal. tmux takes over the screen, draws a
-    status bar at the bottom (or top, depending on config), and drops you into a
-    shell — the same shell you'd have gotten without tmux, just running inside a
-    pane now.
-  </Step>
-  <Step title="Notice what didn't change">
-    Type a command, run `ls`, do anything you'd normally do. Nothing about how
-    the shell behaves is different. tmux doesn't intercept your keystrokes
-    except for one specific chord, covered next.
-  </Step>
-  <Step title="Learn the prefix key">
-    Every tmux command that isn't typed at a shell prompt starts with the prefix
-    key: <Cmd>Ctrl-b</Cmd>
-    by default. Press and release it, then press a second key. <Cmd>
-      Ctrl-b
-    </Cmd>{" "}
-    <Cmd>d</Cmd> means "prefix, then d" — two separate keypresses, not a
-    three-finger chord.
-  </Step>
-  <Step title="Detach">
-    Press <Cmd>Ctrl-b</Cmd> then <Cmd>d</Cmd>. Your terminal returns to a normal
-    shell prompt, and prints `[detached (from session intro)]`. The session is
-    still running — you just stepped away from it.
-  </Step>
+<Step title="Start tmux">
+Run `tmux new -s intro` in a terminal. tmux takes over the screen, draws a status bar at the
+bottom (or top, depending on config), and drops you into a shell — the same shell you'd have
+gotten without tmux, just running inside a pane now.
+</Step>
+<Step title="Notice what didn't change">
+Type a command, run `ls`, do anything you'd normally do. Nothing about how the shell behaves is
+different. tmux doesn't intercept your keystrokes except for one specific chord, covered next.
+</Step>
+<Step title="Learn the prefix key">
+Every tmux command that isn't typed at a shell prompt starts with the prefix key: <Cmd>Ctrl-b</Cmd>
+by default. Press and release it, then press a second key. <Cmd>Ctrl-b</Cmd> <Cmd>d</Cmd> means
+"prefix, then d" — two separate keypresses, not a three-finger chord.
+</Step>
+<Step title="Detach">
+Press <Cmd>Ctrl-b</Cmd> then <Cmd>d</Cmd>. Your terminal returns to a normal shell prompt, and
+prints `[detached (from session intro)]`. The session is still running — you just stepped away
+from it.
+</Step>
 </Steps>
 
 <TerminalDemo title="~ — first session, first detach">
-  $ tmux new -s intro # ... press Ctrl-b then d ... [detached (from session
-  intro)] $ tmux ls intro: 1 windows (created Mon Jul 10 09:00:00 2026)
+$ tmux new -s intro
+# ... press Ctrl-b then d ...
+[detached (from session intro)]
+$ tmux ls
+intro: 1 windows (created Mon Jul 10 09:00:00 2026)
 </TerminalDemo>
 
 ## Your first split
@@ -107,29 +92,28 @@ genuinely useful day to day — running an editor and a server side by side, in 
 without switching applications.
 
 <Steps>
-  <Step title="Reattach">
-    `tmux attach -t intro` (or the shorthand `tmux a` if it's your only session)
-    puts you back exactly where you detached.
-  </Step>
-  <Step title="Split vertically">
-    <Cmd>Ctrl-b</Cmd> then <Cmd>%</Cmd> splits the current pane into two, side
-    by side. The `%` looks like a vertical divider if you squint, which is the
-    entire mnemonic.
-  </Step>
-  <Step title="Split horizontally">
-    <Cmd>Ctrl-b</Cmd> then <Cmd>"</Cmd> splits the current pane into two,
-    stacked. `"` looks like two marks stacked on top of each other.
-  </Step>
-  <Step title="Move between panes">
-    <Cmd>Ctrl-b</Cmd> then an arrow key moves focus to the pane in that
-    direction. Whatever pane has focus is the one your keystrokes go to.
-  </Step>
-  <Step title="Zoom a pane">
-    <Cmd>Ctrl-b</Cmd> then <Cmd>z</Cmd> expands the current pane to fill the
-    whole window without changing the layout underneath. Press it again to
-    restore. This is the single most useful pane binding once you have more than
-    two panes open — zoom in to read a full stack trace, zoom back out.
-  </Step>
+<Step title="Reattach">
+`tmux attach -t intro` (or the shorthand `tmux a` if it's your only session) puts you back
+exactly where you detached.
+</Step>
+<Step title="Split vertically">
+<Cmd>Ctrl-b</Cmd> then <Cmd>%</Cmd> splits the current pane into two, side by side. The `%`
+looks like a vertical divider if you squint, which is the entire mnemonic.
+</Step>
+<Step title="Split horizontally">
+<Cmd>Ctrl-b</Cmd> then <Cmd>"</Cmd> splits the current pane into two, stacked. `"` looks like
+two marks stacked on top of each other.
+</Step>
+<Step title="Move between panes">
+<Cmd>Ctrl-b</Cmd> then an arrow key moves focus to the pane in that direction. Whatever pane has
+focus is the one your keystrokes go to.
+</Step>
+<Step title="Zoom a pane">
+<Cmd>Ctrl-b</Cmd> then <Cmd>z</Cmd> expands the current pane to fill the whole window without
+changing the layout underneath. Press it again to restore. This is the single most useful pane
+binding once you have more than two panes open — zoom in to read a full stack trace, zoom back
+out.
+</Step>
 </Steps>
 
 ## Detach and reattach, for real this time
@@ -139,9 +123,12 @@ detach, come back later — from the same terminal, a different terminal, or a d
 over SSH — and reattach:
 
 <TerminalDemo title="~ — the actual workflow">
-  $ tmux new -s build $ npm run build:watch # ... Ctrl-b d, close the laptop, go
-  to lunch ... $ ssh this-machine $ tmux attach -t build # build:watch is still
-  running, output still scrolling
+$ tmux new -s build
+$ npm run build:watch
+# ... Ctrl-b d, close the laptop, go to lunch ...
+$ ssh this-machine
+$ tmux attach -t build
+# build:watch is still running, output still scrolling
 </TerminalDemo>
 
 This is the entire reason tmux exists. A process started in a normal terminal dies when that
@@ -180,39 +167,35 @@ Reload it with `tmux source-file ~/.tmux.conf`, or just press <Cmd>prefix r</Cmd
 binding above is loaded for the first time.
 
 <Callout type="tip" title="Resist the urge to add everything at once">
-  Every line in a tmux config is something you now have to remember you changed.
-  Add one thing when a specific default annoys you, not ten things because a
-  blog post listed them. The config above is deliberately small.
+Every line in a tmux config is something you now have to remember you changed. Add one thing
+when a specific default annoys you, not ten things because a blog post listed them. The config
+above is deliberately small.
 </Callout>
 
 ## The five habits that make it stick
 
 <Steps>
-  <Step title="Name every session at creation">
-    `tmux new -s work`, not bare `tmux`. `tmux ls` showing `work` and `scratch`
-    instead of `0` and `1` is the difference between attaching confidently and
-    guessing. See [tmux new session](/blog/tmux-new-session) for the full naming
-    story.
-  </Step>
-  <Step title="Detach instead of closing">
-    <Cmd>prefix d</Cmd> becomes the default way you end a terminal session, not
-    `exit` or closing the window. It costs the same effort and never loses your
-    place.
-  </Step>
-  <Step title="Name windows, not just sessions">
-    <Cmd>prefix ,</Cmd> and typing `api` takes two seconds and turns a status
-    bar full of `zsh zsh zsh` into something you can actually navigate by
-    glancing at it.
-  </Step>
-  <Step title="Learn prefix z before anything fancier">
-    Zoom is worth more than most plugins. You get a full-screen pane on demand
-    without breaking a carefully arranged layout.
-  </Step>
-  <Step title="Keep prefix ? as your real cheat sheet">
-    It lists every binding your current config actually has — more accurate than
-    any article, because it reflects your own `~/.tmux.conf`, not a generic
-    default.
-  </Step>
+<Step title="Name every session at creation">
+`tmux new -s work`, not bare `tmux`. `tmux ls` showing `work` and `scratch` instead of `0` and
+`1` is the difference between attaching confidently and guessing. See
+[tmux new session](/blog/tmux-new-session) for the full naming story.
+</Step>
+<Step title="Detach instead of closing">
+<Cmd>prefix d</Cmd> becomes the default way you end a terminal session, not `exit` or closing
+the window. It costs the same effort and never loses your place.
+</Step>
+<Step title="Name windows, not just sessions">
+<Cmd>prefix ,</Cmd> and typing `api` takes two seconds and turns a status bar full of `zsh zsh
+zsh` into something you can actually navigate by glancing at it.
+</Step>
+<Step title="Learn prefix z before anything fancier">
+Zoom is worth more than most plugins. You get a full-screen pane on demand without breaking a
+carefully arranged layout.
+</Step>
+<Step title="Keep prefix ? as your real cheat sheet">
+It lists every binding your current config actually has — more accurate than any article,
+because it reflects your own `~/.tmux.conf`, not a generic default.
+</Step>
 </Steps>
 
 ## Where to go from here
@@ -225,29 +208,27 @@ it means either SSHing back in and reattaching, or, if the device in your hand h
 at all, running mtmux alongside it and opening the same session in a browser.
 
 <FAQ>
-  <FAQItem q="What is tmux used for?">
-    Running shells and programs inside sessions that keep running after you
-    disconnect. The most common use is starting a long job over SSH, detaching,
-    and reattaching later without losing output or having the job killed.
-  </FAQItem>
-  <FAQItem q="What is the tmux prefix key?">
-    <Cmd>Ctrl-b</Cmd> by default, pressed and released before the command key —
-    not held together with it. Most people remap it to <Cmd>Ctrl-a</Cmd> because
-    it's easier to reach on a standard keyboard.
-  </FAQItem>
-  <FAQItem q="How do I exit tmux without killing my session?">
-    Detach with <Cmd>prefix d</Cmd>. Typing `exit` or pressing <Cmd>Ctrl-d</Cmd>{" "}
-    in every pane closes the window (and eventually the session) instead —
-    that's the one to avoid if you want to come back to it.
-  </FAQItem>
-  <FAQItem q="How do I split panes in tmux?">
-    <Cmd>prefix %</Cmd> splits vertically (side by side), <Cmd>prefix "</Cmd>{" "}
-    splits horizontally (stacked). Move between panes with <Cmd>prefix</Cmd>{" "}
-    plus an arrow key.
-  </FAQItem>
-  <FAQItem q="Do I need a tmux.conf to use tmux?">
-    No — tmux works fully out of the box. A config file is worth adding once
-    specific defaults start bothering you (the prefix key, window numbering
-    starting at 0), not before.
-  </FAQItem>
+<FAQItem q="What is tmux used for?">
+Running shells and programs inside sessions that keep running after you disconnect. The most
+common use is starting a long job over SSH, detaching, and reattaching later without losing
+output or having the job killed.
+</FAQItem>
+<FAQItem q="What is the tmux prefix key?">
+<Cmd>Ctrl-b</Cmd> by default, pressed and released before the command key — not held together
+with it. Most people remap it to <Cmd>Ctrl-a</Cmd> because it's easier to reach on a standard
+keyboard.
+</FAQItem>
+<FAQItem q="How do I exit tmux without killing my session?">
+Detach with <Cmd>prefix d</Cmd>. Typing `exit` or pressing <Cmd>Ctrl-d</Cmd> in every pane
+closes the window (and eventually the session) instead — that's the one to avoid if you want to
+come back to it.
+</FAQItem>
+<FAQItem q="How do I split panes in tmux?">
+<Cmd>prefix %</Cmd> splits vertically (side by side), <Cmd>prefix "</Cmd> splits horizontally
+(stacked). Move between panes with <Cmd>prefix</Cmd> plus an arrow key.
+</FAQItem>
+<FAQItem q="Do I need a tmux.conf to use tmux?">
+No — tmux works fully out of the box. A config file is worth adding once specific defaults
+start bothering you (the prefix key, window numbering starting at 0), not before.
+</FAQItem>
 </FAQ>

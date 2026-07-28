@@ -28,7 +28,7 @@ render it. Neither is tmux-specific — point either at `tmux attach` and the br
 what your terminal would show. Both are free, open source, and small enough to read in an
 afternoon.
 
-The catch is in the name: _you_ run the server. That means a reverse proxy, TLS, and
+The catch is in the name: *you* run the server. That means a reverse proxy, TLS, and
 authentication are your responsibility, not the tool's. Here's the actual recipe, using ttyd:
 
 ```bash title="install and run ttyd, bound to localhost only"
@@ -75,14 +75,10 @@ That's the whole thing: a session reachable at `https://term.example.com`, passw
 TLS. It's genuinely not much machinery, and it's machinery you fully own — no third-party relay
 sees your terminal at any point.
 
-<Callout
-  type="warning"
-  title="An open inbound port is now part of your threat model"
->
-  This setup requires a port open to the internet (443, via nginx) and a DNS
-  record pointing at your machine. That's the trade: full control, in exchange
-  for being the one who patches nginx, rotates the htpasswd file, and notices if
-  certbot's renewal silently fails.
+<Callout type="warning" title="An open inbound port is now part of your threat model">
+This setup requires a port open to the internet (443, via nginx) and a DNS record pointing at your
+machine. That's the trade: full control, in exchange for being the one who patches nginx, rotates
+the htpasswd file, and notices if certbot's renewal silently fails.
 </Callout>
 
 ## Option 2: tmate's web link
@@ -117,43 +113,11 @@ is built for touch, with the prefix key and modifiers as an on-screen row instea
 shortcut you don't have. Setup is `npm i -g mtmux`, then scan the code it prints — not a proxy config.
 
 <CompareTable
-  columns={[
-    "",
-    "Setup",
-    "Inbound port",
-    "Encryption",
-    "Mobile UI",
-    "Persistent session",
-    "Price",
-  ]}
+  columns={["", "Setup", "Inbound port", "Encryption", "Mobile UI", "Persistent session", "Price"]}
   rows={[
-    [
-      "ttyd / wetty + proxy",
-      "nginx, TLS, htpasswd",
-      "yes, one you open",
-      "TLS to your proxy",
-      "none — desktop keyboard assumed",
-      "yes, if tmux itself persists",
-      "free, open source",
-    ],
-    [
-      "tmate web link",
-      "install tmate, run it",
-      "no — outbound to tmate's relay",
-      "SSH transport; the relay can read the session unless self-hosted",
-      "read-only, no touch input",
-      "ends when tmate exits",
-      "free, open source (self-hostable)",
-    ],
-    [
-      "Purpose-built (mtmux)",
-      "npm i -g mtmux",
-      "none — dials out",
-      "CPace pairing + AES-256-GCM; the broker holds no key",
-      "touch-first, built for phone",
-      "attaches to your existing tmux server",
-      "free for 1 server + 3 devices, Pro $10/mo",
-    ],
+    ["ttyd / wetty + proxy", "nginx, TLS, htpasswd", "yes, one you open", "TLS to your proxy", "none — desktop keyboard assumed", "yes, if tmux itself persists", "free, open source"],
+    ["tmate web link", "install tmate, run it", "no — outbound to tmate's relay", "SSH transport; the relay can read the session unless self-hosted", "read-only, no touch input", "ends when tmate exits", "free, open source (self-hostable)"],
+    ["Purpose-built (mtmux)", "npm i -g mtmux", "none — dials out", "CPace pairing + AES-256-GCM; the broker holds no key", "touch-first, built for phone", "attaches to your existing tmux server", "free for 1 server + 3 devices, Pro $10/mo"],
   ]}
 />
 
@@ -168,34 +132,30 @@ phone specifically, with no inbound port to maintain, that's the gap the purpose
 closes — full trade-offs on the [comparison page](/compare) and setup in the [docs](/docs).
 
 <FAQ>
-  <FAQItem q="Can I view a tmux session in a browser without installing anything extra?">
-    Not directly — tmux itself has no browser output. You need something in
-    between: ttyd/wetty wrapping the command, tmate's hosted web link, or a
-    purpose-built client. All three require installing something on the machine
-    running tmux; none require anything extra to just view from a desktop
-    browser.
-  </FAQItem>
-  <FAQItem q="Is ttyd secure enough to expose to the internet directly?">
-    Not on its own — ttyd has no built-in authentication in its default mode.
-    Bind it to `127.0.0.1` and put a reverse proxy with TLS and auth in front,
-    as in the recipe above, rather than exposing its port directly.
-  </FAQItem>
-  <FAQItem q="Does tmate's web link let me type, or only watch?">
-    By default it's read-only — `show-messages` prints a `ro-` prefixed URL for
-    read-only viewing. tmate also has a read-write SSH session for participants
-    you actually want typing alongside you, but the plain web link is for
-    watching.
-  </FAQItem>
-  <FAQItem q="Does a browser-based tmux client work well on a phone?">
-    It depends which one. ttyd and wetty render a standard terminal that assumes
-    a physical keyboard, so the tmux prefix key and modifiers are awkward on a
-    soft keyboard. That specific problem — and what to do about it — is covered
-    in [tmux from your phone](/blog/tmux-from-phone).
-  </FAQItem>
-  <FAQItem q="What's the difference between tmate and a browser-based tmux viewer?">
-    tmate creates a new, separate tmux session for sharing; it isn't a window
-    into a session you already have running. A browser client that attaches to
-    your existing tmux server — like ttyd pointed at `tmux attach`, or a
-    purpose-built client — shows you the actual session, not a copy.
-  </FAQItem>
+<FAQItem q="Can I view a tmux session in a browser without installing anything extra?">
+Not directly — tmux itself has no browser output. You need something in between: ttyd/wetty
+wrapping the command, tmate's hosted web link, or a purpose-built client. All three require
+installing something on the machine running tmux; none require anything extra to just view from
+a desktop browser.
+</FAQItem>
+<FAQItem q="Is ttyd secure enough to expose to the internet directly?">
+Not on its own — ttyd has no built-in authentication in its default mode. Bind it to
+`127.0.0.1` and put a reverse proxy with TLS and auth in front, as in the recipe above, rather
+than exposing its port directly.
+</FAQItem>
+<FAQItem q="Does tmate's web link let me type, or only watch?">
+By default it's read-only — `show-messages` prints a `ro-` prefixed URL for read-only viewing.
+tmate also has a read-write SSH session for participants you actually want typing alongside you,
+but the plain web link is for watching.
+</FAQItem>
+<FAQItem q="Does a browser-based tmux client work well on a phone?">
+It depends which one. ttyd and wetty render a standard terminal that assumes a physical keyboard,
+so the tmux prefix key and modifiers are awkward on a soft keyboard. That specific problem — and
+what to do about it — is covered in [tmux from your phone](/blog/tmux-from-phone).
+</FAQItem>
+<FAQItem q="What's the difference between tmate and a browser-based tmux viewer?">
+tmate creates a new, separate tmux session for sharing; it isn't a window into a session you
+already have running. A browser client that attaches to your existing tmux server — like ttyd
+pointed at `tmux attach`, or a purpose-built client — shows you the actual session, not a copy.
+</FAQItem>
 </FAQ>

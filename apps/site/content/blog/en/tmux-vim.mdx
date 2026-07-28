@@ -72,14 +72,10 @@ For classic vim 8+, cloning the plugin into your package path (for example
 `~/.vim/pack/plugins/start/vim-tmux-navigator`) is enough — it defines the same Ctrl-h/j/k/l
 mappings itself, no extra keybinding config needed on the vim side.
 
-<Callout
-  type="note"
-  title="Without the plugin, Ctrl-h/j/k/l just move the cursor"
->
-  If you only add the tmux-side config and skip the vim plugin, Ctrl-h/j/k/l
-  inside vim will do whatever vim already binds them to (often nothing, or
-  cursor movement in some modes) instead of crossing into tmux. Both halves are
-  required.
+<Callout type="note" title="Without the plugin, Ctrl-h/j/k/l just move the cursor">
+If you only add the tmux-side config and skip the vim plugin, Ctrl-h/j/k/l inside vim will do
+whatever vim already binds them to (often nothing, or cursor movement in some modes) instead of
+crossing into tmux. Both halves are required.
 </Callout>
 
 ## Fixing Escape lag in Neovim
@@ -95,11 +91,10 @@ set -sg escape-time 10
 ```
 
 <Callout type="tip" title="Why 10, not 0">
-  0 is the most responsive setting and works for most people, but an escape-time
-  of exactly 0 has been reported to break some multi-key sequences that
-  legitimately start with Escape. 10ms is short enough to feel instant to a
-  human and long enough to avoid that edge case — it's the generally recommended
-  middle ground.
+0 is the most responsive setting and works for most people, but an escape-time of exactly 0 has
+been reported to break some multi-key sequences that legitimately start with Escape. 10ms is
+short enough to feel instant to a human and long enough to avoid that edge case — it's the
+generally recommended middle ground.
 </Callout>
 
 If you use `tmux-sensible` (see [tmux plugins](/blog/tmux-plugins)), note that it already sets a
@@ -125,7 +120,9 @@ be more specific.
 Confirm it worked from inside a session — this should print `truecolor`, not come back empty:
 
 <TerminalDemo title="~ — checking truecolor">
-  $ tmux new $ echo $COLORTERM truecolor
+$ tmux new
+$ echo $COLORTERM
+truecolor
 </TerminalDemo>
 
 ## Clipboard: yanking between vim and tmux
@@ -141,7 +138,7 @@ For Neovim specifically, `:set clipboard=unnamedplus` routes yanks and deletes t
 register to the system clipboard directly, using whichever tool Neovim's clipboard provider finds
 (`xclip`, `pbcopy`, `win32yank`, depending on platform). Over SSH, where there's no local
 clipboard tool to shell out to, Neovim 0.10+ can fall back to OSC 52 — an escape sequence that
-asks the _terminal_ to set the clipboard, which works even across an SSH hop as long as the
+asks the *terminal* to set the clipboard, which works even across an SSH hop as long as the
 terminal emulator on your actual desk supports it:
 
 ```lua
@@ -183,34 +180,29 @@ so a long-running build or test watched from inside Neovim is still visible with
 in just to look.
 
 <FAQ>
-  <FAQItem q="How do I move between vim and tmux panes with the same keys?">
-    Install vim-tmux-navigator on both sides: the tmux-side config detects
-    whether the focused pane is running vim and either forwards Ctrl-h/j/k/l to
-    it or moves the tmux pane, and the vim-side plugin defines the matching
-    mappings inside vim itself.
-  </FAQItem>
-  <FAQItem q="Why is Escape slow in Neovim inside tmux?">
-    tmux's default `escape-time` is 500ms — it waits that long after an Escape
-    byte to see if more of a key sequence is coming. Set `set -sg escape-time
-    10` in `~/.tmux.conf` to make it feel instant without breaking multi-key
-    escape sequences.
-  </FAQItem>
-  <FAQItem q="Why do my Neovim colors look wrong inside tmux?">
-    tmux doesn't assume the terminal supports 24-bit color unless told to. Set
-    `default-terminal "tmux-256color"` and `set -as terminal-features ",*:RGB"`
-    in `~/.tmux.conf`, then confirm with `echo $COLORTERM` inside a session — it
-    should print `truecolor`.
-  </FAQItem>
-  <FAQItem q="How do I copy from tmux and paste into vim, or the other way around?">
-    tmux-yank handles tmux copy-mode selections reaching the system clipboard.
-    For vim itself, `:set clipboard=unnamedplus` routes yanks through the system
-    clipboard directly; over SSH, Neovim 0.10+ can use OSC 52 as a fallback when
-    there's no local clipboard tool to call.
-  </FAQItem>
-  <FAQItem q="Do I need tmux if I already use Neovim's built-in terminal?">
-    Only if you need persistence. `:terminal` is fine for a quick local command
-    that can die with the editor. tmux is still the right tool for anything
-    long-running or accessed over SSH, since a tmux session survives the
-    connection dropping and `:terminal` doesn't.
-  </FAQItem>
+<FAQItem q="How do I move between vim and tmux panes with the same keys?">
+Install vim-tmux-navigator on both sides: the tmux-side config detects whether the focused pane
+is running vim and either forwards Ctrl-h/j/k/l to it or moves the tmux pane, and the vim-side
+plugin defines the matching mappings inside vim itself.
+</FAQItem>
+<FAQItem q="Why is Escape slow in Neovim inside tmux?">
+tmux's default `escape-time` is 500ms — it waits that long after an Escape byte to see if more
+of a key sequence is coming. Set `set -sg escape-time 10` in `~/.tmux.conf` to make it feel
+instant without breaking multi-key escape sequences.
+</FAQItem>
+<FAQItem q="Why do my Neovim colors look wrong inside tmux?">
+tmux doesn't assume the terminal supports 24-bit color unless told to. Set `default-terminal
+"tmux-256color"` and `set -as terminal-features ",*:RGB"` in `~/.tmux.conf`, then confirm with
+`echo $COLORTERM` inside a session — it should print `truecolor`.
+</FAQItem>
+<FAQItem q="How do I copy from tmux and paste into vim, or the other way around?">
+tmux-yank handles tmux copy-mode selections reaching the system clipboard. For vim itself, `:set
+clipboard=unnamedplus` routes yanks through the system clipboard directly; over SSH, Neovim 0.10+
+can use OSC 52 as a fallback when there's no local clipboard tool to call.
+</FAQItem>
+<FAQItem q="Do I need tmux if I already use Neovim's built-in terminal?">
+Only if you need persistence. `:terminal` is fine for a quick local command that can die with the
+editor. tmux is still the right tool for anything long-running or accessed over SSH, since a
+tmux session survives the connection dropping and `:terminal` doesn't.
+</FAQItem>
 </FAQ>

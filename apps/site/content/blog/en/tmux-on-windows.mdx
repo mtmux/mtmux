@@ -31,21 +31,9 @@ whichever gaps that layer has.
   columns={["Option", "What it actually is", "Verdict"]}
   rows={[
     ["WSL2", "Real Linux kernel in a lightweight VM", "Use this"],
-    [
-      "Git Bash / MSYS2",
-      "MinGW pty emulation over Win32 console",
-      "Works for basic sessions; panes and resize are flaky",
-    ],
-    [
-      "Cygwin",
-      "POSIX layer translating to Win32 calls",
-      "More complete than Git Bash, still not a real pty",
-    ],
-    [
-      "Windows Terminal alone",
-      "A terminal emulator, not a tmux implementation",
-      "Needs WSL2 or another backend underneath",
-    ],
+    ["Git Bash / MSYS2", "MinGW pty emulation over Win32 console", "Works for basic sessions; panes and resize are flaky"],
+    ["Cygwin", "POSIX layer translating to Win32 calls", "More complete than Git Bash, still not a real pty"],
+    ["Windows Terminal alone", "A terminal emulator, not a tmux implementation", "Needs WSL2 or another backend underneath"],
   ]}
 />
 
@@ -91,16 +79,8 @@ tools do it:
 <CompareTable
   columns={["Tool", "Direction", "Notes"]}
   rows={[
-    [
-      "clip.exe",
-      "Linux → Windows only",
-      "Ships with Windows, already on PATH inside WSL",
-    ],
-    [
-      "win32yank",
-      "Both directions",
-      "Separate binary, needs installing and adding to PATH",
-    ],
+    ["clip.exe", "Linux → Windows only", "Ships with Windows, already on PATH inside WSL"],
+    ["win32yank", "Both directions", "Separate binary, needs installing and adding to PATH"],
   ]}
 />
 
@@ -119,9 +99,10 @@ bind ] run "win32yank.exe -o | tmux load-buffer - ; tmux paste-buffer"
 ```
 
 <TerminalDemo title="WSL2 — verifying clip.exe reaches Windows">
-  $ tmux new -s test $ echo "does this reach the Windows clipboard" | clip.exe #
-  switch to Notepad on the Windows side, Ctrl-V does this reach the Windows
-  clipboard
+$ tmux new -s test
+$ echo "does this reach the Windows clipboard" | clip.exe
+# switch to Notepad on the Windows side, Ctrl-V
+does this reach the Windows clipboard
 </TerminalDemo>
 
 ## The gotcha: sessions dying when the last window closes
@@ -135,18 +116,14 @@ keeps the VM alive, but if you've also enabled `systemd=true` in `/etc/wsl.conf`
 service management, some setups report the VM idling out anyway and taking the tmux server with
 it.
 
-<Callout
-  type="warning"
-  title="If your tmux sessions keep vanishing after enabling systemd"
->
-  Check `%UserProfile%\.wslconfig` for a `[wsl2]` section and set
-  `vmIdleTimeout=-1` to disable the automatic shutdown entirely, or raise it
-  well past however long you're away from the machine. The setting only takes
-  effect after a full WSL restart (`wsl --shutdown` from PowerShell, then
-  reopen).
+<Callout type="warning" title="If your tmux sessions keep vanishing after enabling systemd">
+Check `%UserProfile%\.wslconfig` for a `[wsl2]` section and set `vmIdleTimeout=-1` to disable
+the automatic shutdown entirely, or raise it well past however long you're away from the
+machine. The setting only takes effect after a full WSL restart (`wsl --shutdown` from
+PowerShell, then reopen).
 </Callout>
 
-```ini title="%UserProfile%.wslconfig"
+```ini title="%UserProfile%\.wslconfig"
 [wsl2]
 vmIdleTimeout=-1
 ```
@@ -176,26 +153,23 @@ WSL2 first, that's what mtmux does — it runs inside WSL2 like anything else an
 session out to whatever device you're holding.
 
 <FAQ>
-  <FAQItem q="Can I install tmux directly on Windows without WSL?">
-    Not a real one. tmux depends on Unix pty and process semantics that Win32
-    doesn't provide. Git Bash and Cygwin can run a tmux binary through
-    compatibility layers, but panes and resizing are unreliable compared to
-    WSL2.
-  </FAQItem>
-  <FAQItem q="Does Windows Terminal support tmux?">
-    Windows Terminal is a terminal emulator, not a tmux backend — it renders
-    whatever shell you point it at, including a WSL2 distro running tmux. It has
-    good truecolor and font support, which makes it the recommended front end
-    once tmux itself is running in WSL2.
-  </FAQItem>
-  <FAQItem q="Why does my tmux session in WSL2 disappear after closing all windows?">
-    WSL2 shuts down its lightweight VM a short time after every window connected
-    to it closes, controlled by `vmIdleTimeout` in `.wslconfig` (60 seconds by
-    default). Set `vmIdleTimeout=-1` to stop it from happening.
-  </FAQItem>
-  <FAQItem q="How do I copy from tmux to the Windows clipboard?">
-    Bind your copy-mode-vi copy action to pipe into `clip.exe`, which ships with
-    Windows and is already on WSL2's PATH. For paste support too, install
-    `win32yank` and bind both directions.
-  </FAQItem>
+<FAQItem q="Can I install tmux directly on Windows without WSL?">
+Not a real one. tmux depends on Unix pty and process semantics that Win32 doesn't provide.
+Git Bash and Cygwin can run a tmux binary through compatibility layers, but panes and resizing
+are unreliable compared to WSL2.
+</FAQItem>
+<FAQItem q="Does Windows Terminal support tmux?">
+Windows Terminal is a terminal emulator, not a tmux backend — it renders whatever shell you
+point it at, including a WSL2 distro running tmux. It has good truecolor and font support,
+which makes it the recommended front end once tmux itself is running in WSL2.
+</FAQItem>
+<FAQItem q="Why does my tmux session in WSL2 disappear after closing all windows?">
+WSL2 shuts down its lightweight VM a short time after every window connected to it closes,
+controlled by `vmIdleTimeout` in `.wslconfig` (60 seconds by default). Set
+`vmIdleTimeout=-1` to stop it from happening.
+</FAQItem>
+<FAQItem q="How do I copy from tmux to the Windows clipboard?">
+Bind your copy-mode-vi copy action to pipe into `clip.exe`, which ships with Windows and is
+already on WSL2's PATH. For paste support too, install `win32yank` and bind both directions.
+</FAQItem>
 </FAQ>

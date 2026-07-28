@@ -39,10 +39,7 @@ commands:
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "afplay /System/Library/Sounds/Glass.aiff"
-          }
+          { "type": "command", "command": "afplay /System/Library/Sounds/Glass.aiff" }
         ]
       }
     ],
@@ -72,9 +69,9 @@ notify-send "Claude Code" "Finished responding"
 ```
 
 <Callout type="tip" title="Test a hook without waiting for a real run">
-  Ask Claude something trivial — "what's 2+2" — and watch for the sound or
-  banner. If nothing fires, check you edited the right settings file; a typo'd
-  path fails silently rather than erroring.
+Ask Claude something trivial — "what's 2+2" — and watch for the sound or banner. If nothing
+fires, check you edited the right settings file; a typo'd path fails silently rather than
+erroring.
 </Callout>
 
 ## Stop is not the same signal as Notification
@@ -87,17 +84,16 @@ That covers success, a completed refactor, an answered question, and Claude givi
 explaining why — Claude Code does not distinguish those cases through the `Stop` event alone. It
 means "come look," not "it worked."
 
-`Notification` fires on the events that need you _now_: a tool-permission request, a plan-mode
+`Notification` fires on the events that need you *now*: a tool-permission request, a plan-mode
 exit, an idle timeout waiting on input. Nothing else happens in that pane until you respond. If
 you only wire one hook, wire `Notification` — a Claude Code session that's blocked can sit for
 hours doing nothing, and a `Stop` hook will never fire to tell you that.
 
 <Callout type="tip" title="Put the answer in the banner, not behind it">
-  "Claude Code finished" makes you tab over to find out what finished.
-  "Finished: refactor auth middleware, 4 files changed, tests green" does not.
-  The hook runs a shell command, so it can read the repo first — `git rev-parse
-  --abbrev-ref HEAD`, `git diff --stat`, the last line of a log — and paste that
-  into the notification body instead of a fixed string.
+"Claude Code finished" makes you tab over to find out what finished. "Finished: refactor auth
+middleware, 4 files changed, tests green" does not. The hook runs a shell command, so it can read
+the repo first — `git rev-parse --abbrev-ref HEAD`, `git diff --stat`, the last line of a log —
+and paste that into the notification body instead of a fixed string.
 </Callout>
 
 The same goes for `Notification`. A banner reading "Claude Code needs input" costs you exactly the
@@ -107,53 +103,30 @@ decide from a lock screen whether it can wait until you're back.
 ## The escalation path, and where it stops working
 
 <Steps>
-  <Step title="Terminal bell">
-    Cheapest option: hook a command that prints `\a` and let your terminal
-    emulator's bell setting do the rest. Works only if you're within earshot,
-    and most terminals mute the bell by default now — you'll spend longer
-    re-enabling it than the hook took to write.
-  </Step>
-  <Step title="Desktop notification">
-    `osascript` on macOS, `notify-send` on Linux. Reaches you anywhere in the
-    building, on any desktop or window — genuinely useful for a run you expect
-    to take a few minutes while you make coffee. Still requires the desktop to
-    be unlocked and you to be near it.
-  </Step>
-  <Step title="Push to your phone">
-    The only tier that survives you leaving the house. Claude Code has no native
-    push integration, so this means piping the hook command to something that
-    can deliver one — typically a `curl` to a self-hosted ntfy topic or a
-    Pushover account, each of which is one line inside the hook.
-  </Step>
+<Step title="Terminal bell">
+Cheapest option: hook a command that prints `\a` and let your terminal emulator's bell setting do
+the rest. Works only if you're within earshot, and most terminals mute the bell by default now —
+you'll spend longer re-enabling it than the hook took to write.
+</Step>
+<Step title="Desktop notification">
+`osascript` on macOS, `notify-send` on Linux. Reaches you anywhere in the building, on any
+desktop or window — genuinely useful for a run you expect to take a few minutes while you make
+coffee. Still requires the desktop to be unlocked and you to be near it.
+</Step>
+<Step title="Push to your phone">
+The only tier that survives you leaving the house. Claude Code has no native push integration, so
+this means piping the hook command to something that can deliver one — typically a `curl` to a
+self-hosted ntfy topic or a Pushover account, each of which is one line inside the hook.
+</Step>
 </Steps>
 
 <CompareTable
   columns={["Tier", "Setup", "Reaches you when...", "Needs"]}
   rows={[
-    [
-      "Terminal bell",
-      "one line in settings.json",
-      "you're at the keyboard",
-      "an unmuted bell",
-    ],
-    [
-      "Desktop notification",
-      "osascript / notify-send",
-      "you're in the building",
-      "unlocked screen",
-    ],
-    [
-      "Webhook push",
-      "curl to ntfy/Pushover in the hook",
-      "you have signal, any device",
-      "an account with that service",
-    ],
-    [
-      "Open the session yourself",
-      "npm i -g mtmux, scan the code once",
-      "never — you go to it, from anywhere",
-      "Node 22+ and tmux",
-    ],
+    ["Terminal bell", "one line in settings.json", "you're at the keyboard", "an unmuted bell"],
+    ["Desktop notification", "osascript / notify-send", "you're in the building", "unlocked screen"],
+    ["Webhook push", "curl to ntfy/Pushover in the hook", "you have signal, any device", "an account with that service"],
+    ["Open the session yourself", "npm i -g mtmux, scan the code once", "never — you go to it, from anywhere", "Node 22+ and tmux"],
   ]}
 />
 
@@ -177,33 +150,30 @@ If you also run OpenAI's CLI, the equivalent hook is different in shape and in w
 on — see [Codex CLI notifications](/blog/codex-cli-notifications).
 
 <FAQ>
-  <FAQItem q="What's the difference between the Stop and Notification hooks in Claude Code?">
-    `Stop` fires once when Claude finishes responding, for any reason.
-    `Notification` fires when Claude is waiting on you mid-run — a permission
-    prompt or an idle timeout. Wire `Notification` first: a blocked session
-    produces no `Stop` event until you unblock it.
-  </FAQItem>
-  <FAQItem q="Do Claude Code hooks work on Linux and Windows?">
-    Yes — the hook system itself is cross-platform; only the notification
-    command changes. Use `notify-send` on Linux with a desktop environment, and
-    a Windows Toast command or WSL's `notify-send` equivalent on Windows.
-  </FAQItem>
-  <FAQItem q="Can I limit a hook to specific tools, like only Bash commands?">
-    Yes, via the `matcher` field on tool-scoped events like `PreToolUse` and
-    `PostToolUse` — set it to a tool name instead of an empty string. `Stop` and
-    `Notification` aren't tool-scoped, so their matcher is typically left empty.
-  </FAQItem>
-  <FAQItem q="Will a desktop notification wake my laptop if it's asleep?">
-    No. A sleeping machine isn't running the hook's command in any meaningful
-    sense until it wakes. If you need to know about a run that might outlast
-    your laptop staying awake, the notification needs to originate from
-    somewhere that stays reachable — a push service, not a local `osascript`
-    call.
-  </FAQItem>
-  <FAQItem q="Do I need mtmux to use Claude Code's hooks?">
-    No — the hooks above work standalone with nothing installed beyond Claude
-    Code itself. mtmux doesn't send notifications and isn't a replacement for
-    one; it's what you open *after* a banner arrives, when the machine running
-    the session isn't reachable from the device in your hand.
-  </FAQItem>
+<FAQItem q="What's the difference between the Stop and Notification hooks in Claude Code?">
+`Stop` fires once when Claude finishes responding, for any reason. `Notification` fires when
+Claude is waiting on you mid-run — a permission prompt or an idle timeout. Wire `Notification`
+first: a blocked session produces no `Stop` event until you unblock it.
+</FAQItem>
+<FAQItem q="Do Claude Code hooks work on Linux and Windows?">
+Yes — the hook system itself is cross-platform; only the notification command changes. Use
+`notify-send` on Linux with a desktop environment, and a Windows Toast command or WSL's
+`notify-send` equivalent on Windows.
+</FAQItem>
+<FAQItem q="Can I limit a hook to specific tools, like only Bash commands?">
+Yes, via the `matcher` field on tool-scoped events like `PreToolUse` and `PostToolUse` — set it to
+a tool name instead of an empty string. `Stop` and `Notification` aren't tool-scoped, so their
+matcher is typically left empty.
+</FAQItem>
+<FAQItem q="Will a desktop notification wake my laptop if it's asleep?">
+No. A sleeping machine isn't running the hook's command in any meaningful sense until it wakes.
+If you need to know about a run that might outlast your laptop staying awake, the notification
+needs to originate from somewhere that stays reachable — a push service, not a local
+`osascript` call.
+</FAQItem>
+<FAQItem q="Do I need mtmux to use Claude Code's hooks?">
+No — the hooks above work standalone with nothing installed beyond Claude Code itself. mtmux
+doesn't send notifications and isn't a replacement for one; it's what you open *after* a banner
+arrives, when the machine running the session isn't reachable from the device in your hand.
+</FAQItem>
 </FAQ>

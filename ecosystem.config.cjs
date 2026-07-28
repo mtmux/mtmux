@@ -33,6 +33,13 @@ module.exports = {
       out_file: `${LOGS}/mtmux-api-out.log`,
       error_file: `${LOGS}/mtmux-api-err.log`,
       merge_logs: true,
+      // `env_file` is a PM2 6+ key and the daemon supervising this box is 5.4,
+      // where it is silently ignored — which showed up as the broker booting
+      // with accounts disabled because DATABASE_URL "was unset". Letting Node
+      // read the file removes the dependency on the daemon's version
+      // entirely, and `--env-file-if-exists` keeps a missing .env a non-event
+      // for anyone running this without one.
+      node_args: `--env-file-if-exists=${ENV_FILE}`,
       env_file: ENV_FILE,
       env: {
         ...commonEnv,
@@ -41,6 +48,21 @@ module.exports = {
         // Set explicitly: the broker refuses to boot in production if its CORS
         // list still contains localhost.
         API_CORS_ORIGINS: APP_ORIGIN,
+
+        // Accounts and billing. The *secrets* (DATABASE_URL,
+        // BETTER_AUTH_SECRET, DODO_*) live in .env, loaded above; only the
+        // deployment topology belongs here.
+        //
+        // BETTER_AUTH_URL must be the public https origin, not the loopback
+        // one this process binds: session cookies are issued `Secure` and a
+        // browser would never send them back over http. The broker refuses to
+        // boot in production if this is missing, which is the correct failure
+        // — a silently http-issued cookie is a sign-in that never sticks.
+        BETTER_AUTH_URL: API_ORIGIN,
+        APP_ORIGIN,
+        // `app.` and `api.` are different origins, so the session cookie has
+        // to be scoped to the parent domain to be shared between them.
+        AUTH_COOKIE_DOMAIN: ".mtmux.com",
       },
     },
     {

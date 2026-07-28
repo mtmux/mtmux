@@ -44,9 +44,10 @@ there was nothing to attach to. Run this and you either land back in whatever yo
 get a fresh session — never an error about a missing session name.
 
 <TerminalDemo title="local — attach-or-create">
-  $ ssh build-box -t 'tmux attach || tmux new' # session existed: dropped
-  straight into it $ ssh build-box -t 'tmux attach || tmux new' # first
-  connection ever: new session created instead
+$ ssh build-box -t 'tmux attach || tmux new'
+# session existed: dropped straight into it
+$ ssh build-box -t 'tmux attach || tmux new'
+# first connection ever: new session created instead
 </TerminalDemo>
 
 The `-t` is not optional here. SSH only allocates a pseudo-terminal automatically when you don't
@@ -59,25 +60,15 @@ already there.
 
 If you already run tmux locally — inside iTerm2, or as your default shell wrapper — and then SSH
 into a box that also runs tmux, both are listening for the same prefix key. Press
-
-<Cmd>Ctrl-b</Cmd> and your **local** tmux catches it first; the remote session
-never sees it, which makes it look like none of your remote key bindings work.
+<Cmd>Ctrl-b</Cmd> and your **local** tmux catches it first; the remote session never sees it,
+which makes it look like none of your remote key bindings work.
 
 <CompareTable
   columns={["Fix", "How"]}
   rows={[
-    [
-      "Different prefix per machine",
-      "Set the local prefix to Ctrl-a and leave the remote at the default Ctrl-b — no collision, no extra keystrokes",
-    ],
-    [
-      "Press the prefix twice",
-      "tmux's default bindings already forward it: prefix then C-b sends a literal C-b through to whatever's running, including a nested tmux",
-    ],
-    [
-      "A dedicated forwarding key",
-      "In the outer config, bind an unused key with -n to send-prefix — for example bind-key -n C-g send-prefix — so it reaches the inner session without touching your normal prefix",
-    ],
+    ["Different prefix per machine", "Set the local prefix to Ctrl-a and leave the remote at the default Ctrl-b — no collision, no extra keystrokes"],
+    ["Press the prefix twice", "tmux's default bindings already forward it: prefix then C-b sends a literal C-b through to whatever's running, including a nested tmux"],
+    ["A dedicated forwarding key", "In the outer config, bind an unused key with -n to send-prefix — for example bind-key -n C-g send-prefix — so it reaches the inner session without touching your normal prefix"],
   ]}
 />
 
@@ -128,26 +119,10 @@ dead.
   columns={["", "tmux over SSH", "mosh"]}
   rows={[
     ["Transport", "TCP", "UDP"],
-    [
-      "Survives a changed IP (wifi to cellular)",
-      "No — the TCP connection itself breaks",
-      "Yes — mosh re-establishes the UDP session automatically",
-    ],
-    [
-      "Local echo while the network is slow",
-      "No — waits on a round trip",
-      "Yes — predicts and displays keystrokes locally",
-    ],
-    [
-      "Session persists if the client machine reboots",
-      "Yes, because the session lives on the server",
-      "Only if paired with tmux — mosh itself doesn't multiplex or persist",
-    ],
-    [
-      "Setup",
-      "Nothing — SSH and tmux, both already installed most places",
-      "Requires mosh installed on both ends and a UDP port range open",
-    ],
+    ["Survives a changed IP (wifi to cellular)", "No — the TCP connection itself breaks", "Yes — mosh re-establishes the UDP session automatically"],
+    ["Local echo while the network is slow", "No — waits on a round trip", "Yes — predicts and displays keystrokes locally"],
+    ["Session persists if the client machine reboots", "Yes, because the session lives on the server", "Only if paired with tmux — mosh itself doesn't multiplex or persist"],
+    ["Setup", "Nothing — SSH and tmux, both already installed most places", "Requires mosh installed on both ends and a UDP port range open"],
   ]}
 />
 
@@ -165,34 +140,31 @@ tunnel — no SSH client and no key on the device doing the checking, even thoug
 serving still runs exactly as described above.
 
 <FAQ>
-  <FAQItem q="How do I attach to a tmux session over SSH?">
-    `ssh host -t 'tmux attach || tmux new'` attaches if a session already exists
-    and creates one otherwise. The `-t` forces a pseudo-terminal, required
-    because you're passing SSH a remote command.
-  </FAQItem>
-  <FAQItem q="What causes 'broken pipe' in tmux over SSH?">
-    The underlying TCP connection dying silently — usually a NAT or firewall
-    timing out an idle connection — not tmux itself. The session keeps running
-    on the remote server; reconnect and reattach. `ServerAliveInterval` in
-    `~/.ssh/config` prevents most cases by keeping the connection active.
-  </FAQItem>
-  <FAQItem q="Why doesn't my tmux prefix key work after SSHing into a remote tmux?">
-    You're running tmux locally too, and your local session is catching the
-    prefix before it reaches the remote one. Use a different prefix per machine,
-    or press the prefix twice — tmux's default bindings forward a doubled prefix
-    to whatever's running underneath, including a nested tmux.
-  </FAQItem>
-  <FAQItem q="Should I use mosh instead of tmux over SSH?">
-    They solve different problems. mosh replaces SSH's TCP transport with
-    something that survives network changes and packet loss; tmux gives you a
-    persistent, multiplexed session. Most people who need both use mosh to
-    connect and tmux inside it, rather than picking one.
-  </FAQItem>
-  <FAQItem q="Why does my tmux session shrink when I attach from my phone over SSH?">
-    By default a tmux window sizes itself to the smallest attached client.
-    Attach with `tmux attach -d` to detach other clients first instead of
-    sharing the view, or see [tmux attach session](/blog/tmux-attach-session)
-    for the `aggressive-resize` fix if you want multiple clients to stay
-    attached at different sizes.
-  </FAQItem>
+<FAQItem q="How do I attach to a tmux session over SSH?">
+`ssh host -t 'tmux attach || tmux new'` attaches if a session already exists and creates one
+otherwise. The `-t` forces a pseudo-terminal, required because you're passing SSH a remote
+command.
+</FAQItem>
+<FAQItem q="What causes 'broken pipe' in tmux over SSH?">
+The underlying TCP connection dying silently — usually a NAT or firewall timing out an idle
+connection — not tmux itself. The session keeps running on the remote server; reconnect and
+reattach. `ServerAliveInterval` in `~/.ssh/config` prevents most cases by keeping the connection
+active.
+</FAQItem>
+<FAQItem q="Why doesn't my tmux prefix key work after SSHing into a remote tmux?">
+You're running tmux locally too, and your local session is catching the prefix before it reaches
+the remote one. Use a different prefix per machine, or press the prefix twice — tmux's default
+bindings forward a doubled prefix to whatever's running underneath, including a nested tmux.
+</FAQItem>
+<FAQItem q="Should I use mosh instead of tmux over SSH?">
+They solve different problems. mosh replaces SSH's TCP transport with something that survives
+network changes and packet loss; tmux gives you a persistent, multiplexed session. Most people
+who need both use mosh to connect and tmux inside it, rather than picking one.
+</FAQItem>
+<FAQItem q="Why does my tmux session shrink when I attach from my phone over SSH?">
+By default a tmux window sizes itself to the smallest attached client. Attach with `tmux attach
+-d` to detach other clients first instead of sharing the view, or see
+[tmux attach session](/blog/tmux-attach-session) for the `aggressive-resize` fix if you want
+multiple clients to stay attached at different sizes.
+</FAQItem>
 </FAQ>

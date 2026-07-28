@@ -17,8 +17,8 @@ draft: false
 If you want to show a colleague your terminal for the next ten minutes — pair on a bug, walk
 someone through a deploy, get a second pair of eyes on a stack trace — tmate is the right tool and
 you should stop reading this and go run `tmate`. It is free, it is one command, and nothing here
-beats it at that specific job. This post is for the different question: reaching your _own_
-sessions, continuously, from your _own_ devices, which is a job tmate wasn't built for and doesn't
+beats it at that specific job. This post is for the different question: reaching your *own*
+sessions, continuously, from your *own* devices, which is a job tmate wasn't built for and doesn't
 claim to be.
 
 ## What tmate is actually best at
@@ -64,39 +64,11 @@ job — your own long-running sessions, revisited over days, from a phone, witho
 whole thing up again each time you want to look.
 
 <CompareTable
-  columns={[
-    "",
-    "Built for",
-    "Your existing session?",
-    "Mobile input",
-    "Persists after you close it",
-    "Price",
-  ]}
+  columns={["", "Built for", "Your existing session?", "Mobile input", "Persists after you close it", "Price"]}
   rows={[
-    [
-      "tmate",
-      "sharing with someone else, briefly",
-      "no — forks a new one",
-      "read-only web view, no touch UI",
-      "no — ends when tmate exits",
-      "free, open source",
-    ],
-    [
-      "ttyd/wetty + your own proxy",
-      "self-hosted continuous access",
-      "yes, if pointed at tmux attach",
-      "none — desktop keyboard assumed",
-      "yes, tmux itself persists",
-      "free, open source",
-    ],
-    [
-      "Purpose-built client (mtmux)",
-      "your own sessions, continuously, from your devices",
-      "yes — attaches to your tmux server",
-      "touch-first, built for phone",
-      "yes — attaches, doesn't fork",
-      "free for 1 server + 3 devices, Pro $10/mo",
-    ],
+    ["tmate", "sharing with someone else, briefly", "no — forks a new one", "read-only web view, no touch UI", "no — ends when tmate exits", "free, open source"],
+    ["ttyd/wetty + your own proxy", "self-hosted continuous access", "yes, if pointed at tmux attach", "none — desktop keyboard assumed", "yes, tmux itself persists", "free, open source"],
+    ["Purpose-built client (mtmux)", "your own sessions, continuously, from your devices", "yes — attaches to your tmux server", "touch-first, built for phone", "yes — attaches, doesn't fork", "free for 1 server + 3 devices, Pro $10/mo"],
   ]}
 />
 
@@ -115,10 +87,9 @@ specifically is the requirement, [tmux in a browser](/blog/tmux-in-browser) runs
 wetty, and purpose-built clients side by side with the actual setup for each.
 
 <Callout type="tip" title="Use both, for what each is good at">
-  There's no rule against running tmate for the ten-minute pairing session and
-  something else for your own day-to-day sessions. They don't compete for the
-  same use — the honest answer to "which should I use" is usually "depends what
-  you're doing this afternoon," not a permanent choice.
+There's no rule against running tmate for the ten-minute pairing session and something else for
+your own day-to-day sessions. They don't compete for the same use — the honest answer to "which
+should I use" is usually "depends what you're doing this afternoon," not a permanent choice.
 </Callout>
 
 ## When tmate is still the right call, full stop
@@ -137,33 +108,31 @@ the [comparison page](/compare); the [security page](/security) covers how the e
 encryption and per-device revocation work for the continuous-access side of things.
 
 <FAQ>
-  <FAQItem q="Is tmate secure?">
-    Yes, for its stated model — traffic runs over SSH to tmate's relay (or your
-    own, if self-hosted). The relay itself sees the session unless you run your
-    own; that's a reasonable trade for a tool built around instant, no-account
-    sharing rather than end-to-end encrypted continuous access.
-  </FAQItem>
-  <FAQItem q="Can tmate show my existing tmux session instead of a new one?">
-    Not directly — `tmate` forks its own separate tmux server. You can `tmux
-    attach` to your real session from inside the tmate session as a workaround,
-    but it's an extra step each time, not the default behavior.
-  </FAQItem>
-  <FAQItem q="What's the best free alternative to tmate for sharing a terminal?">
-    For the same job — brief, ad hoc sharing — there isn't an obviously better
-    free option; tmate's one-command setup is hard to beat. If the actual need
-    is different (your own sessions, continuously, from your own devices) the
-    right comparison isn't "which is the better share link," it's which tool
-    covers that different job at all.
-  </FAQItem>
-  <FAQItem q="Does tmate work on mobile?">
-    The read-only web link opens in a mobile browser, but it's not built for
-    touch input — no on-screen modifiers, no mobile-adapted layout. For actually
-    typing from a phone, see [tmux from your phone](/blog/tmux-from-phone).
-  </FAQItem>
-  <FAQItem q="Why would I pay for something tmate does for free?">
-    You wouldn't, for what tmate does — and for one machine and three devices
-    you wouldn't pay at all. tmate doesn't do continuous access to your own
-    existing sessions with mobile-adapted input; that's a different feature set,
-    not a paid version of the same one.
-  </FAQItem>
+<FAQItem q="Is tmate secure?">
+Yes, for its stated model — traffic runs over SSH to tmate's relay (or your own, if
+self-hosted). The relay itself sees the session unless you run your own; that's a reasonable
+trade for a tool built around instant, no-account sharing rather than end-to-end encrypted
+continuous access.
+</FAQItem>
+<FAQItem q="Can tmate show my existing tmux session instead of a new one?">
+Not directly — `tmate` forks its own separate tmux server. You can `tmux attach` to your real
+session from inside the tmate session as a workaround, but it's an extra step each time, not the
+default behavior.
+</FAQItem>
+<FAQItem q="What's the best free alternative to tmate for sharing a terminal?">
+For the same job — brief, ad hoc sharing — there isn't an obviously better free option; tmate's
+one-command setup is hard to beat. If the actual need is different (your own sessions,
+continuously, from your own devices) the right comparison isn't "which is the better share link,"
+it's which tool covers that different job at all.
+</FAQItem>
+<FAQItem q="Does tmate work on mobile?">
+The read-only web link opens in a mobile browser, but it's not built for touch input — no
+on-screen modifiers, no mobile-adapted layout. For actually typing from a phone, see
+[tmux from your phone](/blog/tmux-from-phone).
+</FAQItem>
+<FAQItem q="Why would I pay for something tmate does for free?">
+You wouldn't, for what tmate does — and for one machine and three devices you wouldn't pay at all.
+tmate doesn't do continuous access to your own existing sessions with mobile-adapted input; that's
+a different feature set, not a paid version of the same one.
+</FAQItem>
 </FAQ>

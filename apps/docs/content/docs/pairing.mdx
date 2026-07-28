@@ -160,7 +160,7 @@ forwards opaque blobs. This is structural, not a promise:
   the CLI offers is encrypted under the pairing key before it leaves the
   machine, so the broker never learns it.
 - **Your token stays on your machine.** The browser is never told the relay's
-  long-lived `AUTH_TOKEN`. On the direct path both sides _derive_ a session
+  long-lived `AUTH_TOKEN`. On the direct path both sides *derive* a session
   token from the pairing key; on the tunnel path the browser needs no token at
   all, because the local agent authenticates the loopback socket itself.
 
@@ -175,22 +175,22 @@ CLI. When `mtmux` prints a code the CLI holds the mailbox and the phone claims
 it; with `mtmux pair` it is the other way round. Nothing in the schema names
 which end runs a terminal.
 
-| Step                                 | Message                                                                   | Direction        |
-| ------------------------------------ | ------------------------------------------------------------------------- | ---------------- |
-| One side parks a mailbox             | `POST /v1/pair/new` → `{ mailboxId, slot, expiresAt }`                    | HTTP             |
-| Mailbox socket attaches              | `pair:ready`                                                              | broker → holder  |
-| The other quotes the code            | `POST /v1/pair/claim` `{ slot, share, ad, sid }` → `{ offered, claimId }` | HTTP             |
-| Fan-out to every mailbox on the slot | `pair:peer-share`                                                         | broker → holder  |
-| Holder answers                       | `pair:share`                                                              | holder → broker  |
-| Both prove the same key              | `pair:confirm` / `pair:peer-confirm`                                      | either direction |
-| CLI seals the descriptor             | `pair:establish` → `pair:established`                                     | CLI → browser    |
-| Anything goes wrong                  | `pair:failed` — and the mailbox dies                                      | broker → either  |
+| Step | Message | Direction |
+| --- | --- | --- |
+| One side parks a mailbox | `POST /v1/pair/new` → `{ mailboxId, slot, expiresAt }` | HTTP |
+| Mailbox socket attaches | `pair:ready` | broker → holder |
+| The other quotes the code | `POST /v1/pair/claim` `{ slot, share, ad, sid }` → `{ offered, claimId }` | HTTP |
+| Fan-out to every mailbox on the slot | `pair:peer-share` | broker → holder |
+| Holder answers | `pair:share` | holder → broker |
+| Both prove the same key | `pair:confirm` / `pair:peer-confirm` | either direction |
+| CLI seals the descriptor | `pair:establish` → `pair:established` | CLI → browser |
+| Anything goes wrong | `pair:failed` — and the mailbox dies | broker → either |
 
 `pair:failed` carries one of `expired`, `already-claimed`, `confirmation-failed`,
 `peer-gone`, `rate-limited` or `server-error`. All of them destroy the mailbox.
 
 The `offered` count in the claim response says how many live mailboxes the claim
-reached — never _which_.
+reached — never *which*.
 
 ## Direct or tunnelled
 
@@ -254,11 +254,11 @@ challenge.
 
 ## Revoking
 
-| To revoke                               | Do this                                      |
-| --------------------------------------- | -------------------------------------------- |
-| One device, permanently                 | `mtmux devices revoke <id>`                  |
-| A live socket that device already holds | Restart mtmux after revoking                 |
-| Every LAN-nonce sign-in                 | Restart mtmux — those tokens are memory-only |
+| To revoke | Do this |
+| --- | --- |
+| One device, permanently | `mtmux devices revoke <id>` |
+| A live socket that device already holds | Restart mtmux after revoking |
+| Every LAN-nonce sign-in | Restart mtmux — those tokens are memory-only |
 
 Revoking removes the peer record, so the device is not re-admitted on the next
 start and cannot reconnect. A browser with an already-open socket keeps it until

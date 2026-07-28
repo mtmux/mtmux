@@ -25,12 +25,10 @@ tmux's prefix key, is actually usable on a screen with no physical keyboard.
 ## The actual hard part
 
 A soft keyboard has no key you can hold down while tapping another. <Cmd>Ctrl-b</Cmd> then
-
-<Cmd>x</Cmd> — "prefix, then x" — assumes exactly that: hold Ctrl, tap b,
-release both, tap x. iOS and Android's default keyboards have no persistent Ctrl
-key at all, and even where a Bluetooth keyboard is in play, the
-chord-then-release pattern tmux is built around doesn't map cleanly onto a
-touchscreen's tap-and-release model.
+<Cmd>x</Cmd> — "prefix, then x" — assumes exactly that: hold Ctrl, tap b, release both, tap x.
+iOS and Android's default keyboards have no persistent Ctrl key at all, and even where a
+Bluetooth keyboard is in play, the chord-then-release pattern tmux is built around doesn't map
+cleanly onto a touchscreen's tap-and-release model.
 
 Every serious mobile terminal solves this the same way: an accessory row above the keyboard with
 sticky modifier keys you tap once, then tap the letter, instead of holding anything.
@@ -77,35 +75,11 @@ tunnel rather than waiting on an inbound port you had to forward — the case th
 [agents page](/agents) makes at length for long agent runs.
 
 <CompareTable
-  columns={[
-    "",
-    "Modifier keys",
-    "Setup",
-    "Reaching a machine behind NAT",
-    "Price",
-  ]}
+  columns={["", "Modifier keys", "Setup", "Reaching a machine behind NAT", "Price"]}
   rows={[
-    [
-      "Native SSH app (Termius, Blink)",
-      "dedicated accessory row, mature",
-      "SSH key on the device, reachable host",
-      "your problem — VPN, Tailscale or a jump host",
-      "free tier, paid tiers for extras",
-    ],
-    [
-      "Web terminal (ttyd/wetty)",
-      "raw keyboard — no accessory row unless you build one",
-      "your own reverse proxy, TLS, auth",
-      "an inbound port you open and maintain",
-      "free, open source",
-    ],
-    [
-      "Purpose-built client (mtmux)",
-      "on-screen prefix/modifier row, tap not hold",
-      "npm i -g mtmux, no SSH key on the phone",
-      "the machine dials out — 0 ports to forward",
-      "free for 1 server + 3 devices, Pro $10/mo",
-    ],
+    ["Native SSH app (Termius, Blink)", "dedicated accessory row, mature", "SSH key on the device, reachable host", "your problem — VPN, Tailscale or a jump host", "free tier, paid tiers for extras"],
+    ["Web terminal (ttyd/wetty)", "raw keyboard — no accessory row unless you build one", "your own reverse proxy, TLS, auth", "an inbound port you open and maintain", "free, open source"],
+    ["Purpose-built client (mtmux)", "on-screen prefix/modifier row, tap not hold", "npm i -g mtmux, no SSH key on the phone", "the machine dials out — 0 ports to forward", "free for 1 server + 3 devices, Pro $10/mo"],
   ]}
 />
 
@@ -134,34 +108,31 @@ option are in the [docs](/docs); how the device pairing and encryption work is o
 [security page](/security).
 
 <FAQ>
-  <FAQItem q="How do I press Ctrl-b on an iPhone to use tmux?">
-    You need a terminal app with a modifier accessory row — Termius, Blink, and
-    mobile-first tmux clients all provide one. Tap Ctrl (or the prefix key
-    directly, if the app has a dedicated button), then tap the following key;
-    there's no way to "hold" a key on a stock iOS keyboard.
-  </FAQItem>
-  <FAQItem q="Can tmux run directly on an iPhone, without a server?">
-    No — tmux needs a Unix process tree to manage, which iOS doesn't expose to
-    apps. Every option here is a client reaching tmux running on a Mac, Linux
-    box, or WSL2 machine elsewhere, not tmux running locally on the phone.
-  </FAQItem>
-  <FAQItem q="What's the best terminal app for iPad?">
-    For general-purpose SSH to arbitrary hosts, Termius and Blink are the
-    mature, well-reviewed options. If the specific need is reaching your own
-    tmux sessions with mobile-adapted input, and without managing keys or a VPN,
-    that's a narrower category — see the options table above.
-  </FAQItem>
-  <FAQItem q="Is it safe to keep an SSH private key on my phone?">
-    It's the standard model for native SSH apps, and Termius/Blink both support
-    keychain-backed storage rather than a plaintext file. It's a real attack
-    surface to weigh, though — a lost or compromised phone means a key to
-    revoke, which is why some alternatives pair each device individually and let
-    you revoke one by id instead of rotating a shared key.
-  </FAQItem>
-  <FAQItem q="Does mosh help with mobile tmux over spotty connections?">
-    Yes — Mosh (used by Termius and Blink) tolerates IP changes and dropped
-    packets far better than plain SSH, which matters a lot switching between
-    wifi and cellular. It doesn't solve the modifier key problem on its own;
-    that's a separate, UI-level fix.
-  </FAQItem>
+<FAQItem q="How do I press Ctrl-b on an iPhone to use tmux?">
+You need a terminal app with a modifier accessory row — Termius, Blink, and mobile-first tmux
+clients all provide one. Tap Ctrl (or the prefix key directly, if the app has a dedicated button),
+then tap the following key; there's no way to "hold" a key on a stock iOS keyboard.
+</FAQItem>
+<FAQItem q="Can tmux run directly on an iPhone, without a server?">
+No — tmux needs a Unix process tree to manage, which iOS doesn't expose to apps. Every option
+here is a client reaching tmux running on a Mac, Linux box, or WSL2 machine elsewhere, not tmux
+running locally on the phone.
+</FAQItem>
+<FAQItem q="What's the best terminal app for iPad?">
+For general-purpose SSH to arbitrary hosts, Termius and Blink are the mature, well-reviewed
+options. If the specific need is reaching your own tmux sessions with mobile-adapted input, and
+without managing keys or a VPN, that's a narrower category — see the options table
+above.
+</FAQItem>
+<FAQItem q="Is it safe to keep an SSH private key on my phone?">
+It's the standard model for native SSH apps, and Termius/Blink both support keychain-backed
+storage rather than a plaintext file. It's a real attack surface to weigh, though — a lost or
+compromised phone means a key to revoke, which is why some alternatives pair each device
+individually and let you revoke one by id instead of rotating a shared key.
+</FAQItem>
+<FAQItem q="Does mosh help with mobile tmux over spotty connections?">
+Yes — Mosh (used by Termius and Blink) tolerates IP changes and dropped packets far better than
+plain SSH, which matters a lot switching between wifi and cellular. It doesn't solve the modifier
+key problem on its own; that's a separate, UI-level fix.
+</FAQItem>
 </FAQ>
