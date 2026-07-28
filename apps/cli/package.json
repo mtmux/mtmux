@@ -45,7 +45,7 @@
     "smoke": "node scripts/smoke.mjs",
     "test": "vitest run && pnpm build && pnpm smoke",
     "pack:dryrun": "npm pack --dry-run",
-    "prepublishOnly": "pnpm build",
+    "prepublishOnly": "MTMUX_BUILD_API_URL= pnpm build",
     "test:unit": "vitest run"
   },
   "dependencies": {
