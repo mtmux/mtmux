@@ -50,3 +50,7 @@ logs/
 
 # npm pack output
 *.tgz
+
+# The broker's SQLite database and its WAL sidecars. Runtime state, not source:
+# the schema lives in packages/db/drizzle and is applied at boot.
+data/
