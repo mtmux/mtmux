@@ -7,8 +7,10 @@ import {
   isSessionLocked,
   lockoutUntil,
   readLockRecord,
+  removeFactor,
   setSessionLock,
   unlockWithPin,
+  updateLockSettings,
 } from "./lock-store";
 import {
   KEY_STORE,
@@ -287,5 +289,111 @@ describe("eraseDevice", () => {
     expect(await readRaw(SERVER)).toBeUndefined();
     expect(isEnrolled()).toBe(false);
     expect(isUnlocked()).toBe(false);
+  });
+});
+
+/**
+ * The two holes a locked device could reach through `/settings`, which sat
+ * outside `LockGate` until this was fixed.
+ *
+ * Both assertions matter, and the second is the one that would catch a
+ * regression written in good faith: a check that throws *after* writing has
+ * already happened is worse than no check, because it looks correct in the UI
+ * and leaves the record changed.
+ */
+describe("locked-device mutations", () => {
+  it("refuses to remove a factor, and changes nothing", async () => {
+    await enrollPin("123456");
+    const before = await readLockRecord();
+    const factorId = before!.factors[0]!.id;
+    forget(); // lock, keeping the enrolled state on disk
+
+    await expect(removeFactor(factorId)).rejects.toThrow(/locked/i);
+
+    expect(await readLockRecord()).toEqual(before);
+  });
+
+  it("refuses to change lock settings, and changes nothing", async () => {
+    await enrollPin("123456");
+    const before = await readLockRecord();
+    expect(before!.wipeAfter10).toBe(false);
+    forget();
+
+    await expect(updateLockSettings({ wipeAfter10: true })).rejects.toThrow(
+      /locked/i,
+    );
+
+    expect(await readLockRecord()).toEqual(before);
+  });
+
+  it("still allows both once unlocked", async () => {
+    await enrollPin("123456");
+    forget();
+    await unlockWithPin("123456");
+
+    await updateLockSettings({ wipeAfter10: true });
+    expect((await readLockRecord())!.wipeAfter10).toBe(true);
+  });
+
+  /**
+   * The regression guard for keeping `eraseDevice` master-key-free. It is
+   * called from the failed-unlock wipe path, where by definition no master key
+   * exists — so "gate it like the others" would silently disable the wipe.
+   */
+  it("still erases on the wipe path, where there is no master key", async () => {
+    await saveSessionKeys(SERVER, keys());
+    await enrollPin("123456");
+    await updateLockSettings({ wipeAfter10: true });
+    forget();
+
+    // The throttle bites from the fourth attempt, so reaching ten means
+    // sitting out each lockout. An attacker with the database has all the time
+    // in the world, which is exactly why the wipe exists at all.
+    let skew = 0;
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+
+    let outcome;
+    for (let i = 0; i < 10; i += 1) {
+      outcome = await unlockWithPin("000000");
+      const until = (await readLockRecord())?.lockedUntil;
+      if (until) skew = until - realNow() + 1;
+    }
+
+    expect(outcome).toEqual({ ok: false, reason: "wiped" });
+    expect(await readLockRecord()).toBeNull();
+    expect(await readRaw(SERVER)).toBeUndefined();
+  });
+});
+
+/**
+ * A locked device must not be able to write plaintext keys.
+ *
+ * `/pair` and `/j` are outside `LockGate` on purpose — they are how a locked
+ * device would re-pair — so `saveSessionKeys` is genuinely reachable while
+ * locked. It used to hand back the unsealed record, which meant one re-pair
+ * downgraded the lock to decorative.
+ */
+describe("pairing on a locked device", () => {
+  it("throws rather than writing keys in the clear", async () => {
+    await enrollPin("123456");
+    forget();
+
+    await expect(saveSessionKeys("device-new", keys())).rejects.toThrow(
+      /locked/i,
+    );
+
+    expect(await readRaw("device-new")).toBeUndefined();
+  });
+
+  it("seals normally once unlocked", async () => {
+    await enrollPin("123456");
+    forget();
+    await unlockWithPin("123456");
+
+    await saveSessionKeys("device-new", keys("tok-2"));
+
+    expect(isSealed(await readRaw("device-new"))).toBe(true);
+    expect((await loadSessionKeys("device-new"))!.directToken).toBe("tok-2");
   });
 });

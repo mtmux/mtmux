@@ -1,7 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/ui/components/ui/alert-dialog";
 import { Button } from "@repo/ui/components/ui/button";
+import { Input } from "@repo/ui/components/ui/input";
 import { Label } from "@repo/ui/components/ui/label";
 import { Switch } from "@repo/ui/components/ui/switch";
 import { toast } from "sonner";
@@ -16,7 +27,7 @@ import {
 } from "@/lib/lock-store";
 import { duringCeremony, lockNow } from "@/lib/lock-controller";
 import { enrollPasskeyFactor, prfSupport } from "@/lib/passkey-prf";
-import { isEnrolled } from "@/lib/unlocked";
+import { isEnrolled, isUnlocked } from "@/lib/unlocked";
 import { LockEnrollDialog } from "./lock-enroll-dialog";
 
 const IDLE_OPTIONS = [1, 5, 15, 60, 0] as const;
@@ -32,6 +43,9 @@ export function LockSettings({ className }: { className?: string }) {
   const [record, setRecord] = useState<LockRecord | null>(null);
   const [enrolling, setEnrolling] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmingErase, setConfirmingErase] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [erasing, setErasing] = useState(false);
 
   const refresh = useCallback(async () => {
     setRecord(await readLockRecord());
@@ -78,16 +92,43 @@ export function LockSettings({ className }: { className?: string }) {
     }
   }
 
+  /**
+   * Typed confirmation, not `window.confirm`.
+   *
+   * This is the one irreversible action in the app — there is no recovery by
+   * construction — and a native confirm is one stray Return away from taken.
+   * Requiring the word makes the gesture deliberate, and it is the only gate
+   * left now that `eraseDevice()` itself stays master-key-free: it has to be,
+   * because the failed-unlock wipe path calls it at the exact moment no master
+   * key exists.
+   */
   async function erase() {
-    if (
-      !window.confirm(
-        "Erase every key on this device? Your sessions keep running — this browser just has to pair again.",
-      )
-    ) {
-      return;
-    }
+    if (confirmText.trim().toUpperCase() !== "ERASE") return;
+    setErasing(true);
     await eraseDevice();
     window.location.href = "/start";
+  }
+
+  /**
+   * Defence in depth: render nothing actionable on a locked device.
+   *
+   * `/settings` is behind `LockGate` now, so this should be unreachable. It is
+   * here anyway because "should be unreachable" is exactly what was said about
+   * the case that turned out to be this feature's biggest hole — and because
+   * this component is mounted from `SettingsPanel`, which any future page can
+   * pull in without noticing it needs a gate. `removeFactor` and
+   * `updateLockSettings` throw on their own now; this just means a locked device
+   * is never shown controls that would.
+   */
+  if (isEnrolled() && !isUnlocked()) {
+    return (
+      <section className={className}>
+        <h3 className="mb-1 text-sm font-semibold">Device lock</h3>
+        <p className="text-xs text-muted-foreground">
+          This device is locked. Unlock it to change these settings.
+        </p>
+      </section>
+    );
   }
 
   if (!record || !isEnrolled()) {
@@ -216,11 +257,67 @@ export function LockSettings({ className }: { className?: string }) {
           <Button size="sm" variant="outline" onClick={() => lockNow("manual")}>
             Lock now
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => void erase()}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-destructive"
+            onClick={() => {
+              setConfirmText("");
+              setConfirmingErase(true);
+            }}
+          >
             Erase this device
           </Button>
         </div>
       </div>
+
+      <AlertDialog
+        open={confirmingErase}
+        onOpenChange={(open) => {
+          if (!open && !erasing) setConfirmingErase(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Erase this device?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Every key, descriptor and cached session list in this browser
+              goes, along with the lock itself. There is no recovery — that is
+              by design, and it is affordable because re-pairing is running{" "}
+              <code className="font-mono">mtmux</code> and typing six digits.
+              Your sessions keep running throughout.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="erase-confirm" className="text-xs">
+              Type ERASE to confirm
+            </Label>
+            <Input
+              id="erase-confirm"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoComplete="off"
+              autoCapitalize="characters"
+              placeholder="ERASE"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={erasing} className="h-11">
+              Keep it
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void erase();
+              }}
+              disabled={erasing || confirmText.trim().toUpperCase() !== "ERASE"}
+              className="h-11 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {erasing ? "Erasing…" : "Erase this device"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

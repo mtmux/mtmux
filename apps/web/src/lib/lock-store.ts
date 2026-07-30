@@ -299,9 +299,23 @@ export async function addFactor(
   return factor;
 }
 
+/**
+ * Remove a factor.
+ *
+ * `requireMasterKey()` for the same reason `addFactor` has it: changing who can
+ * open this device is a decision only the person who can already open it may
+ * make. It was missing, and `/settings` — where this is reached — sat outside
+ * `LockGate`, so a locked device could delete the passkey of the person holding
+ * it and leave only the PIN they were trying to guess.
+ *
+ * The key is required and then unused, which is deliberate rather than sloppy:
+ * nothing here is re-encrypted (that is the whole point of wrapping one master
+ * key per factor), so the call is purely the authorisation check.
+ */
 export async function removeFactor(id: string): Promise<void> {
   const record = await readLockRecord();
   if (!record) return;
+  requireMasterKey();
   const factors = record.factors.filter((f) => f.id !== id);
   // Removing the last factor would seal the keys under a master key nothing
   // can unwrap, which is indistinguishable from erasing them.
@@ -406,6 +420,15 @@ export async function unlockWithFactorKey(
   }
 }
 
+/**
+ * Change how the lock behaves.
+ *
+ * Also gated, and it is not a lesser case than `removeFactor`: `wipeAfter10`
+ * is reachable from here, so without the check someone holding a locked device
+ * could switch erase-after-ten-wrong-PINs *on* and then deliberately fail ten
+ * times — turning a lock screen into a destructive button. Turning the idle
+ * timer to "Never" is the quieter version of the same problem.
+ */
 export async function updateLockSettings(
   patch: Partial<
     Pick<LockRecord, "wipeAfter10" | "idleMinutes" | "lockOnBackground">
@@ -413,6 +436,7 @@ export async function updateLockSettings(
 ): Promise<void> {
   const record = await readLockRecord();
   if (!record) return;
+  requireMasterKey();
   await writeLockRecord({ ...record, ...patch });
 }
 

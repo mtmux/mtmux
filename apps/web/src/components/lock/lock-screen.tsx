@@ -1,11 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/ui/components/ui/alert-dialog";
 import { Button } from "@repo/ui/components/ui/button";
+import { Input } from "@repo/ui/components/ui/input";
+import { Label } from "@repo/ui/components/ui/label";
 import { Fingerprint, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { wipe } from "@repo/crypto";
 import {
+  eraseDevice,
   readLockRecord,
   unlockWithFactorKey,
   unlockWithPin,
@@ -29,6 +42,21 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
   const [busy, setBusy] = useState(false);
   const [waitUntil, setWaitUntil] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [confirmingErase, setConfirmingErase] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [erasing, setErasing] = useState(false);
+
+  /**
+   * `eraseDevice()` needs no master key, and must not — the failed-unlock wipe
+   * path calls it at the exact moment there is none. That is why the deliberate
+   * gate is the typed word above rather than anything in the store.
+   */
+  async function handleErase() {
+    if (confirmText.trim().toUpperCase() !== "ERASE") return;
+    setErasing(true);
+    await eraseDevice();
+    window.location.href = "/start";
+  }
 
   useEffect(() => {
     void readLockRecord().then((r) => {
@@ -161,10 +189,81 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
         </Button>
       )}
 
-      <p className="max-w-xs text-center text-xs text-muted-foreground">
-        Forgotten it? There is no reset — run <code>mtmux</code> on the machine
-        and pair this browser again.
-      </p>
+      {/*
+        The escape hatch, and it is load-bearing rather than a courtesy.
+
+        The advice this screen used to give on its own — "run `mtmux` and pair
+        again" — does not work. Pairing on a locked device now *throws* rather
+        than writing plaintext keys (see `sealKeysIfUnlocked`), and even before
+        that it landed you straight back here. So without an erase from this
+        screen, forgetting a PIN is a permanently unusable browser profile.
+
+        Erasing is the honest answer and an affordable one: it destroys only
+        what is in this browser. The sessions on the machine keep running, and
+        re-pairing is six digits.
+      */}
+      <div className="max-w-xs space-y-2 text-center">
+        <p className="text-xs text-muted-foreground">
+          Forgotten it? There is no reset — the PIN is the key, and nothing else
+          can unwrap it.
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy || erasing}
+          className="text-xs text-muted-foreground hover:text-destructive"
+          onClick={() => setConfirmingErase(true)}
+        >
+          Erase this device and start over
+        </Button>
+      </div>
+
+      <AlertDialog
+        open={confirmingErase}
+        onOpenChange={(open) => {
+          if (!open && !erasing) setConfirmingErase(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Erase this device?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This browser forgets every machine it has paired with, and the
+              lock goes with them. Nothing on the machines themselves changes —
+              your sessions keep running, and pairing again is{" "}
+              <code className="font-mono">mtmux</code> and six digits.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="lock-erase-confirm" className="text-xs">
+              Type ERASE to confirm
+            </Label>
+            <Input
+              id="lock-erase-confirm"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoComplete="off"
+              autoCapitalize="characters"
+              placeholder="ERASE"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={erasing} className="h-11">
+              Keep trying
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleErase();
+              }}
+              disabled={erasing || confirmText.trim().toUpperCase() !== "ERASE"}
+              className="h-11 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {erasing ? "Erasing…" : "Erase this device"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

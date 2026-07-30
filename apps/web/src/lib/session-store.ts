@@ -221,13 +221,34 @@ export function fromSealedKeys(sealed: SealedKeys): StoredKeys {
 /**
  * Seal a record if — and only if — this device is both enrolled and unlocked.
  *
- * The awkward third case is enrolled-but-locked, which cannot happen here:
- * writing keys means a pairing just completed, and pairing is only reachable
- * from an unlocked app.
+ * ## The third case is reachable, and it throws
+ *
+ * This used to say the enrolled-but-locked case "cannot happen here: writing
+ * keys means a pairing just completed, and pairing is only reachable from an
+ * unlocked app." That was false. `/pair` and `/j` live in the `(auth)` group,
+ * which is outside `LockGate` — deliberately, because they are how a locked
+ * device would re-pair, and a lock screen in front of them would be a lockout.
+ *
+ * So the case not only can happen, it is exactly what happens when someone with
+ * a locked device does the obvious thing and pairs again. And the old behaviour
+ * was the worst available: return the record *unsealed*, writing this machine's
+ * session keys to IndexedDB in the clear on a device whose entire point is that
+ * they are not. One re-pair silently downgraded the lock to decorative.
+ *
+ * Throwing is right rather than merely safe. There is no correct record to
+ * write: sealing needs a master key nobody has, and writing plaintext defeats
+ * the feature. The caller surfaces it, and the fix the user needs — unlock
+ * first, or erase and start over — is a thing they can actually do. The lock
+ * screen's escape hatch exists for the second half of that sentence.
  */
 function sealKeysIfUnlocked(serverId: string, plain: StoredKeys): KeyRecord {
-  const mk = isEnrolled() ? masterKey() : null;
-  if (!mk) return plain;
+  if (!isEnrolled()) return plain;
+  const mk = masterKey();
+  if (!mk) {
+    throw new Error(
+      "This device is locked. Unlock it before pairing, or erase it and start over.",
+    );
+  }
   return sealJson(mk, toSealedKeys(plain), keysAad(serverId));
 }
 

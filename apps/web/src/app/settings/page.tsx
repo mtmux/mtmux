@@ -6,10 +6,32 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, LayoutGrid, LogOut } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { SettingsPanel } from "@/components/settings/settings-panel";
+import { LockGate } from "@/components/lock/lock-gate";
 import { isHostedBuild } from "@/lib/auth-client";
 import { disconnectDevice } from "@/lib/sign-out";
 
+/**
+ * Behind the lock, and wrapped in place rather than moved.
+ *
+ * This page was a top-level route, so it sat outside the only `LockGate` in the
+ * app — the one in `(terminal)/layout.tsx`. A locked device could walk straight
+ * to `/settings` and reach factor removal, the erase-after-ten-wrong-PINs
+ * toggle and "Erase this device" without ever passing the lock screen.
+ *
+ * Moving it into `(terminal)` would have picked up the gate for free and also
+ * that layout's auth guard — which would destroy the enrolment entry point,
+ * since setting a PIN is something you do from settings on a device that has no
+ * session yet. So the gate is applied here, to this page only.
+ */
 export default function SettingsPage() {
+  return (
+    <LockGate>
+      <SettingsPageInner />
+    </LockGate>
+  );
+}
+
+function SettingsPageInner() {
   const router = useRouter();
   const [leaving, setLeaving] = useState(false);
 
