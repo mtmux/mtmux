@@ -32,6 +32,7 @@ const browserCollections = {
       import("../content/docs/security.mdx?collection=docs"),
     "self-hosting.mdx": () =>
       import("../content/docs/self-hosting.mdx?collection=docs"),
+    "sharing.mdx": () => import("../content/docs/sharing.mdx?collection=docs"),
     "troubleshooting.mdx": () =>
       import("../content/docs/troubleshooting.mdx?collection=docs"),
     "relay/index.mdx": () =>

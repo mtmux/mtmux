@@ -8,6 +8,7 @@ import { ConnectPanel } from "@/components/entry/connect-panel";
 import { InstallMachine } from "@/components/entry/install-machine";
 import { takeBounce } from "@/lib/bounce-guard";
 import { servesRelay } from "@/lib/origin-mode";
+import { env } from "@/env";
 
 /**
  * The front door.
@@ -34,6 +35,14 @@ import { servesRelay } from "@/lib/origin-mode";
  */
 export default function StartPage() {
   const [bounced, setBounced] = useState(false);
+  /**
+   * Whether a pairing broker exists for this build at all.
+   *
+   * Distinct from `servesRelay()` below, which asks a different question — see
+   * `origin-mode.ts`. This one is build-time and decides whether the six-digit
+   * path exists; that one is a runtime probe and only reorders emphasis.
+   */
+  const hasBroker = Boolean(env.NEXT_PUBLIC_API_URL);
   const [localOrigin, setLocalOrigin] = useState(false);
   const [showInstall, setShowInstall] = useState(false);
 
@@ -69,7 +78,28 @@ export default function StartPage() {
         </div>
       )}
 
-      <ConnectPanel variant="full" />
+      {/*
+        A build with no broker has no six-digit path at all, so leading with a
+        code field there would be leading with a dead error and no input. That
+        is a real configuration — `NEXT_PUBLIC_API_URL` is legitimately absent —
+        and the honest front door for it is the token.
+      */}
+      {hasBroker ? (
+        <ConnectPanel variant="full" />
+      ) : (
+        <div className="space-y-4 text-center">
+          <h1 className="text-xl font-semibold tracking-tight">
+            Connect to your terminal
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            This build runs entirely on your own machine, so there are no
+            six-digit codes. Use the token <code>mtmux start</code> printed.
+          </p>
+          <Button asChild className="h-11 w-full">
+            <Link href="/login">Connect with a token</Link>
+          </Button>
+        </div>
+      )}
 
       <div className="space-y-3 border-t border-border pt-5 text-sm">
         <div>
@@ -104,12 +134,14 @@ export default function StartPage() {
             action="Sign in"
             lead={!localOrigin}
           />
-          <EntryLink
-            href="/login"
-            label="Self-hosting with a token?"
-            action="Use a token"
-            lead={localOrigin}
-          />
+          {hasBroker && (
+            <EntryLink
+              href="/login"
+              label="Self-hosting with a token?"
+              action="Use a token"
+              lead={localOrigin}
+            />
+          )}
         </div>
       </div>
     </div>

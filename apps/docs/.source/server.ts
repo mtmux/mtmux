@@ -1,12 +1,13 @@
 // @ts-nocheck
-import * as __fd_glob_23 from "../content/docs/web-app/terminal.mdx?collection=docs";
-import * as __fd_glob_22 from "../content/docs/web-app/sessions.mdx?collection=docs";
-import * as __fd_glob_21 from "../content/docs/web-app/mobile.mdx?collection=docs";
-import * as __fd_glob_20 from "../content/docs/web-app/index.mdx?collection=docs";
-import * as __fd_glob_19 from "../content/docs/web-app/files.mdx?collection=docs";
-import * as __fd_glob_18 from "../content/docs/relay/protocol.mdx?collection=docs";
-import * as __fd_glob_17 from "../content/docs/relay/index.mdx?collection=docs";
-import * as __fd_glob_16 from "../content/docs/troubleshooting.mdx?collection=docs";
+import * as __fd_glob_24 from "../content/docs/web-app/terminal.mdx?collection=docs";
+import * as __fd_glob_23 from "../content/docs/web-app/sessions.mdx?collection=docs";
+import * as __fd_glob_22 from "../content/docs/web-app/mobile.mdx?collection=docs";
+import * as __fd_glob_21 from "../content/docs/web-app/index.mdx?collection=docs";
+import * as __fd_glob_20 from "../content/docs/web-app/files.mdx?collection=docs";
+import * as __fd_glob_19 from "../content/docs/relay/protocol.mdx?collection=docs";
+import * as __fd_glob_18 from "../content/docs/relay/index.mdx?collection=docs";
+import * as __fd_glob_17 from "../content/docs/troubleshooting.mdx?collection=docs";
+import * as __fd_glob_16 from "../content/docs/sharing.mdx?collection=docs";
 import * as __fd_glob_15 from "../content/docs/self-hosting.mdx?collection=docs";
 import * as __fd_glob_14 from "../content/docs/security.mdx?collection=docs";
 import * as __fd_glob_13 from "../content/docs/sealed-tunnel.mdx?collection=docs";
@@ -55,13 +56,14 @@ export const docs = await create.docs(
     "sealed-tunnel.mdx": __fd_glob_13,
     "security.mdx": __fd_glob_14,
     "self-hosting.mdx": __fd_glob_15,
-    "troubleshooting.mdx": __fd_glob_16,
-    "relay/index.mdx": __fd_glob_17,
-    "relay/protocol.mdx": __fd_glob_18,
-    "web-app/files.mdx": __fd_glob_19,
-    "web-app/index.mdx": __fd_glob_20,
-    "web-app/mobile.mdx": __fd_glob_21,
-    "web-app/sessions.mdx": __fd_glob_22,
-    "web-app/terminal.mdx": __fd_glob_23,
+    "sharing.mdx": __fd_glob_16,
+    "troubleshooting.mdx": __fd_glob_17,
+    "relay/index.mdx": __fd_glob_18,
+    "relay/protocol.mdx": __fd_glob_19,
+    "web-app/files.mdx": __fd_glob_20,
+    "web-app/index.mdx": __fd_glob_21,
+    "web-app/mobile.mdx": __fd_glob_22,
+    "web-app/sessions.mdx": __fd_glob_23,
+    "web-app/terminal.mdx": __fd_glob_24,
   },
 );

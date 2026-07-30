@@ -624,6 +624,13 @@ function requestHarness() {
       return requestId;
     },
 
+    /** Let the POST settle, then open the socket the client just created. */
+    async open() {
+      await flush();
+      (io.ws as unknown as { onopen?: () => void }).onopen?.();
+      await flush();
+    },
+
     /** The machine answering: it publishes its key, having seen a commitment. */
     ack() {
       io.deliver({
@@ -678,9 +685,7 @@ describe("requestAccess", () => {
       fetchImpl: h.fetchImpl,
       socketImpl: h.socketImpl,
     });
-    await flush();
-    (h.io.ws as unknown as { onopen?: () => void }).onopen?.();
-    await flush();
+    await h.open();
 
     // This is the security property, asserted directly rather than inferred
     // from a passing handshake. A reveal at this point would let the machine
@@ -689,7 +694,10 @@ describe("requestAccess", () => {
     expect(h.io.find("pair:reveal")).toBeUndefined();
 
     h.ack();
-    await flush();
+    // Waiting on the *update* rather than a fixed number of microtask flushes:
+    // the ack handler awaits real HKDF, so a bare `flush()` is a bet on how
+    // many turns that takes — one this suite lost exactly once, under load.
+    await rec.waitFor("confirm");
 
     expect(h.io.find("pair:reveal")).toBeDefined();
   });
@@ -706,17 +714,12 @@ describe("requestAccess", () => {
       fetchImpl: h.fetchImpl,
       socketImpl: h.socketImpl,
     });
-    await flush();
-    (h.io.ws as unknown as { onopen?: () => void }).onopen?.();
-    await flush();
+    await h.open();
     h.ack();
-    await flush();
-
-    const confirm = rec.updates.find((u) => u.phase === "confirm");
-    expect(confirm).toBeDefined();
+    const confirm = await rec.waitFor("confirm");
 
     const { sas, commitmentOk } = await h.approve();
-    await flush();
+    await rec.waitFor("paired");
 
     // The commitment the browser sent really does open to the key it later
     // revealed — which is what the machine checks before showing its digits.
@@ -743,18 +746,14 @@ describe("requestAccess", () => {
       fetchImpl: h.fetchImpl,
       socketImpl: h.socketImpl,
     });
-    await flush();
-    (h.io.ws as unknown as { onopen?: () => void }).onopen?.();
-    await flush();
+    await h.open();
 
     h.io.deliver({
       type: "pair:denied",
       requestId: h.requestId,
       reason: "no-tty",
     });
-    await flush();
-
-    const failed = rec.updates.find((u) => u.phase === "failed") as {
+    const failed = (await rec.waitFor("failed")) as {
       message: string;
       reason?: string;
     };

@@ -74,11 +74,24 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  /*
+   * The font variables go on <html>, not <body>.
+   *
+   * `--font-sans` is defined at `:root` and expands to
+   * `var(--font-plex-sans), ui-sans-serif, …`. A custom property is substituted
+   * using the value it has on the element that *declares* it — so with
+   * `--font-plex-sans` set on <body>, the substitution inside `--font-sans`
+   * happens at `:root`, finds nothing, and falls through to the system stack.
+   * The page renders, in the wrong typeface, with no error anywhere. Declaring
+   * them on <html> puts both in the same scope.
+   */
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${plexSans.variable} ${plexMono.variable} ${martianMono.variable} bg-background text-foreground overscroll-none`}
-      >
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${plexSans.variable} ${plexMono.variable} ${martianMono.variable}`}
+    >
+      <body className="bg-background text-foreground overscroll-none">
         {/*
           Dark by default rather than following the OS.
 

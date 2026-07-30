@@ -50,13 +50,33 @@ describe("the SAS both screens show", () => {
   });
 
   it("spreads across the range rather than clustering", () => {
+    const draws = 300;
     const seen = new Set<string>();
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < draws; i++) {
       const x = exchange(`req-${i}`);
       seen.add(deriveSas(x.browserIkm, x.transcript));
     }
-    // Collisions in 300 draws over 10^6 are vanishingly unlikely.
-    expect(seen.size).toBe(300);
+
+    /*
+     * A tolerance, not `toBe(draws)`.
+     *
+     * This used to demand every draw be unique, on the grounds that collisions
+     * in 300 draws over 10^6 are "vanishingly unlikely". They are not: the
+     * birthday probability is 1 - exp(-300·299 / 2·10^6) ≈ **4.4%**, so the
+     * assertion failed roughly one run in twenty-three. A security-critical
+     * suite that cries wolf once a fortnight is a suite people learn to re-run.
+     *
+     * What the test is actually for is clustering — a derivation that collapsed
+     * the range, or dropped entropy, or returned a constant. Any of those shows
+     * up as dozens of collisions, not one. Five is far beyond chance
+     * (P ≈ 10^-5) and far below any real defect.
+     */
+    expect(seen.size).toBeGreaterThanOrEqual(draws - 5);
+
+    // And the digits really do use the whole range, which a modulo bug or a
+    // truncated derivation would not.
+    const leading = new Set([...seen].map((sas) => sas[0]));
+    expect(leading.size).toBeGreaterThanOrEqual(9);
   });
 
   it("groups for reading aloud", () => {

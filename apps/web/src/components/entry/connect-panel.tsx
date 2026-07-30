@@ -98,6 +98,26 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
   );
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Either shape: six typed digits, or the QR's slot + 128-bit secret.
+    // `parseCode` validates both and rejects anything else, so a junk fragment
+    // still lands on the manual form rather than starting a doomed handshake.
+    const raw = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+    const fromFragment = parseCode(raw) ? raw : null;
+
+    // Out of the address bar first, before anything can fail or return early.
+    // A live code sitting in the URL bar is a live code whether or not *this*
+    // build can use it — and the obvious next move for someone who lands here
+    // without a broker is to open the same URL somewhere that has one.
+    if (fromFragment) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+    }
+
     if (!apiBase) {
       setState({
         phase: "failed",
@@ -106,22 +126,8 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
       });
       return;
     }
-    if (typeof window === "undefined") return;
 
-    // Either shape: six typed digits, or the QR's slot + 128-bit secret.
-    // `parseCode` validates both and rejects anything else, so a junk fragment
-    // still lands on the manual form rather than starting a doomed handshake.
-    const raw = decodeURIComponent(window.location.hash.replace(/^#/, ""));
-    const fromFragment = parseCode(raw) ? raw : null;
     if (!fromFragment) return;
-
-    // Out of the address bar before the handshake starts, so a screenshot, a
-    // shared tab, or the back button cannot resurrect a live code.
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + window.location.search,
-    );
     join(fromFragment);
 
     return () => handleRef.current?.cancel();
