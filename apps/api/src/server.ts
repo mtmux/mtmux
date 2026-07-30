@@ -181,6 +181,7 @@ type Route =
   | { kind: "pair"; id: string }
   | { kind: "claim"; id: string }
   | { kind: "agent" }
+  | { kind: "request"; id: string }
   | { kind: "tunnel"; id: string };
 
 /** Map a websocket path to a broker route, or null if it is not one of ours. */
@@ -190,6 +191,8 @@ export function routeSocketPath(pathname: string): Route | null {
   if (pair?.[1]) return { kind: "pair", id: pair[1] };
   const claim = /^\/v1\/claim\/([\w-]{8,64})$/.exec(pathname);
   if (claim?.[1]) return { kind: "claim", id: claim[1] };
+  const request = /^\/v1\/request\/([\w-]{8,64})$/.exec(pathname);
+  if (request?.[1]) return { kind: "request", id: request[1] };
   const tunnel = /^\/v1\/tunnel\/([\w-]{8,64})$/.exec(pathname);
   if (tunnel?.[1]) return { kind: "tunnel", id: tunnel[1] };
   return null;
@@ -207,6 +210,8 @@ function attach(
       return broker.attachClaimSocket(route.id, socket);
     case "agent":
       return broker.attachAgentSocket(socket);
+    case "request":
+      return broker.attachRequestSocket(route.id, socket);
     case "tunnel":
       return broker.attachTunnelSocket(route.id, socket);
   }
@@ -226,7 +231,19 @@ export async function startApiServer(
   // Null when DATABASE_URL is unset or the file will not open, in which case
   // `createAccounts` hands back a stub and the broker keeps brokering. An
   // accounts failure must never be a pairing failure.
-  const accounts = createAccounts({ db: openAccountsDb() });
+  // Late-bound on purpose: accounts owns the session (so it knows *who* is
+  // asking and which machines they own) and the broker owns the machine's
+  // socket (so it knows how to reach it). Neither can be built after the
+  // other, so the one call between them is deferred rather than the wiring
+  // being flattened into a module that would have to know both.
+  const brokerRef: { current: Broker | null } = { current: null };
+  const accounts = createAccounts({
+    db: openAccountsDb(),
+    pairRequest: (deviceId, body) =>
+      brokerRef.current
+        ? brokerRef.current.pairRequest(deviceId, body)
+        : { status: 503, body: { error: "Not ready" } },
+  });
 
   const broker = createBroker({
     // These were configurable in name only: without them `createBroker` fell
@@ -252,6 +269,8 @@ export async function startApiServer(
         accounts.recordUsage(userId, bytes, seconds),
     },
   });
+
+  brokerRef.current = broker;
 
   const server = http.createServer((req, res) => {
     void handleApiRequest(broker, req, res, accounts).catch((err: unknown) => {

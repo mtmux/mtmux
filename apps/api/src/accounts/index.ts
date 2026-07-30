@@ -36,7 +36,7 @@ import { createAuth } from "./auth.js";
 import { accountsConfig, type AccountsConfig } from "./config.js";
 import { applyCors, clientIp, readRawBody, sendJson } from "./http.js";
 import { handlePublicRoute } from "./public.js";
-import { handleAccountRoute } from "./routes.js";
+import { handleAccountRoute, type RouteDeps } from "./routes.js";
 import { createServerRegistry } from "./servers.js";
 import type { Accounts, AuthedUser, Decision } from "./types.js";
 
@@ -71,7 +71,11 @@ function owns(pathname: string): boolean {
     pathname === "/v1/servers" ||
     pathname.startsWith("/v1/servers/") ||
     pathname === "/v1/billing" ||
-    pathname.startsWith("/v1/billing/")
+    pathname.startsWith("/v1/billing/") ||
+    // Authenticated, so it belongs here rather than with the anonymous pairing
+    // routes the broker owns — it is the session that says which machines the
+    // caller may ask for.
+    pathname === "/v1/pair/request"
   );
 }
 
@@ -112,16 +116,19 @@ export type CreateAccountsOptions = {
   /** Null disables accounts. See `openAccountsDb`. */
   db: Db | null;
   config?: AccountsConfig;
+  /** See `RouteDeps.pairRequest`. Absent means the route answers 503. */
+  pairRequest?: RouteDeps["pairRequest"];
 };
 
 export function createAccounts({
   db,
   config = accountsConfig,
+  pairRequest,
 }: CreateAccountsOptions): Accounts {
   if (!db) return createStub();
 
   try {
-    return createLiveAccounts(db, config);
+    return createLiveAccounts(db, config, pairRequest);
   } catch (err) {
     // Almost certainly a configuration error — a bad base URL, a plugin that
     // refused its options. Logged loudly, but it still must not stop the
@@ -134,7 +141,11 @@ export function createAccounts({
   }
 }
 
-function createLiveAccounts(db: Db, config: AccountsConfig): Accounts {
+function createLiveAccounts(
+  db: Db,
+  config: AccountsConfig,
+  pairRequest?: RouteDeps["pairRequest"],
+): Accounts {
   const entitlements = createEntitlements(db);
   const billing = createBilling(db, config, entitlements);
   const registry = createServerRegistry(db, config.onlineWindowSeconds);
@@ -157,7 +168,14 @@ function createLiveAccounts(db: Db, config: AccountsConfig): Accounts {
   // note on `lookupsPerMinute` and the one on `lookupAccount`.
   const lookups = createRateLimiter(config.lookupsPerMinute);
 
-  const routeDeps = { db, config, registry, entitlements, billing };
+  const routeDeps = {
+    db,
+    config,
+    registry,
+    entitlements,
+    billing,
+    pairRequest,
+  };
 
   async function authenticate(
     req: IncomingMessage,

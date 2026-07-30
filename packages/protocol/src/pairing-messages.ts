@@ -273,10 +273,92 @@ export const TunnelReadyMessage = z.object({
   tunnelId: TunnelIdSchema,
 });
 
+// ---------------------------------------------------------------------------
+// Requested access: a dashboard asking a machine to let it in
+// ---------------------------------------------------------------------------
+
+/**
+ * The other direction of pairing, for when nobody is standing at the machine.
+ *
+ * A typed code assumes the person wanting in can read a screen the machine is
+ * showing. Signing in on a new phone breaks that assumption: you own the
+ * machine, you can see it listed, and there is nothing you can type. So the
+ * browser asks, and a human at the machine approves by comparing six digits.
+ *
+ * These ride the CLI's existing `/v1/agent` socket, which is already
+ * authenticated by the machine's Ed25519 device key — so the broker knows which
+ * machine it is forwarding to without the browser ever naming a network route.
+ *
+ * The ordering below is the security property; see `sas.ts`. The browser
+ * commits to its ephemeral key before it has seen the CLI's, which is what
+ * stops the broker grinding for a key whose SAS matches.
+ */
+
+/** Opaque per-request handle, minted by the broker. */
+export const RequestIdSchema = z.string().min(8).max(64);
+
+/** X25519 ephemeral public key, and the SHA-256 commitment to one. */
+const ephemeralKey = hex(32);
+const commitment = hex(32);
+
+/** Broker → CLI: a browser is asking, and here is what it committed to. */
+export const PairRequestMessage = z.object({
+  type: z.literal("pair:request"),
+  requestId: RequestIdSchema,
+  commitment,
+  /** Shown to the human deciding. Never trusted for anything else. */
+  deviceLabel: z.string().max(120),
+  accountEmail: z.string().max(320),
+});
+
+/** CLI → broker → browser: the machine's own ephemeral key. */
+export const PairRequestAckMessage = z.object({
+  type: z.literal("pair:request-ack"),
+  requestId: RequestIdSchema,
+  cliPublicKey: ephemeralKey,
+});
+
+/**
+ * Browser → broker → CLI: the key the commitment was over.
+ *
+ * Sent only after the CLI's key has arrived. The CLI checks this against the
+ * commitment it was given first, and a mismatch ends the request.
+ */
+export const PairRevealMessage = z.object({
+  type: z.literal("pair:reveal"),
+  requestId: RequestIdSchema,
+  browserPublicKey: ephemeralKey,
+});
+
+/** CLI → broker → browser: approved, with the descriptor sealed under c2s. */
+export const PairApprovedMessage = z.object({
+  type: z.literal("pair:approved"),
+  requestId: RequestIdSchema,
+  sealedDescriptor: blob(4096),
+});
+
+/** CLI → broker → browser, or broker on its own: the request is over. */
+export const PairDeniedMessage = z.object({
+  type: z.literal("pair:denied"),
+  requestId: RequestIdSchema,
+  reason: z.enum([
+    "refused",
+    "commitment-failed",
+    "no-tty",
+    "timeout",
+    "unknown-request",
+    "agent-gone",
+    "too-many-requests",
+  ]),
+});
+
 export const TunnelClientMessage = z.discriminatedUnion("type", [
   TunnelRegisterMessage,
   TunnelStreamCloseMessage,
   TunnelFrameMessage,
+  PairRequestAckMessage,
+  PairApprovedMessage,
+  PairDeniedMessage,
 ]);
 
 export const TunnelServerMessage = z.discriminatedUnion("type", [
@@ -286,6 +368,19 @@ export const TunnelServerMessage = z.discriminatedUnion("type", [
   TunnelStreamCloseMessage,
   TunnelFrameMessage,
   TunnelClosedMessage,
+  PairRequestMessage,
+  PairRevealMessage,
+]);
+
+/** What the browser sends and receives on `/v1/request/:requestId`. */
+export const RequestClientMessage = z.discriminatedUnion("type", [
+  PairRevealMessage,
+]);
+
+export const RequestServerMessage = z.discriminatedUnion("type", [
+  PairRequestAckMessage,
+  PairApprovedMessage,
+  PairDeniedMessage,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -342,6 +437,22 @@ export const DiscoverResponse = z.object({
  * its ciphertext — publishing the shape here is safe and keeps both ends
  * honest about it.
  */
+/**
+ * `POST /v1/pair/request` — a signed-in browser asking one of its own machines
+ * for access.
+ *
+ * Authenticated by the session cookie, and the broker checks the server belongs
+ * to that account before forwarding anything. Note what is *not* here: no
+ * network address, no route, nothing that would let a caller aim the request at
+ * a machine it does not own. The commitment is opaque to the broker.
+ */
+export const PairRequestBody = z.object({
+  serverId: z.string().min(8).max(64),
+  commitment: hex(32),
+  /** How the machine should describe the asker to the human at the keyboard. */
+  deviceLabel: z.string().max(120),
+});
+
 export const SealedDescriptor = z.object({
   /** Direct URLs the browser should race, best first. */
   candidates: z.array(z.string().url().max(512)).max(8),
@@ -379,6 +490,14 @@ export type TunnelStreamOpenMessage = z.infer<typeof TunnelStreamOpenMessage>;
 export type TunnelStreamCloseMessage = z.infer<typeof TunnelStreamCloseMessage>;
 export type TunnelFrameMessage = z.infer<typeof TunnelFrameMessage>;
 export type TunnelClosedMessage = z.infer<typeof TunnelClosedMessage>;
+export type RequestClientMessage = z.infer<typeof RequestClientMessage>;
+export type RequestServerMessage = z.infer<typeof RequestServerMessage>;
+export type PairRequestMessage = z.infer<typeof PairRequestMessage>;
+export type PairRequestAckMessage = z.infer<typeof PairRequestAckMessage>;
+export type PairRevealMessage = z.infer<typeof PairRevealMessage>;
+export type PairApprovedMessage = z.infer<typeof PairApprovedMessage>;
+export type PairDeniedMessage = z.infer<typeof PairDeniedMessage>;
+export type PairRequestBody = z.infer<typeof PairRequestBody>;
 export type PairNewResponse = z.infer<typeof PairNewResponse>;
 export type PairClaimRequest = z.infer<typeof PairClaimRequest>;
 export type PairClaimResponse = z.infer<typeof PairClaimResponse>;
@@ -413,3 +532,7 @@ export const tryDeserializeTunnelClientMessage = (raw: string) =>
   tryParse(TunnelClientMessage, raw);
 export const tryDeserializeTunnelServerMessage = (raw: string) =>
   tryParse(TunnelServerMessage, raw);
+export const tryDeserializeRequestClientMessage = (raw: string) =>
+  tryParse(RequestClientMessage, raw);
+export const tryDeserializeRequestServerMessage = (raw: string) =>
+  tryParse(RequestServerMessage, raw);

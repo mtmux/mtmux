@@ -3,8 +3,10 @@ import { createLogger } from "@repo/logger";
 import {
   PairClaimRequest,
   tryDeserializePairingClientMessage,
+  tryDeserializeRequestClientMessage,
   tryDeserializeTunnelClientMessage,
   type PairingServerMessage,
+  type RequestServerMessage,
   type TunnelServerMessage,
 } from "@repo/protocol";
 import {
@@ -32,6 +34,17 @@ const SLOT_DRAWS = 8;
 
 /** Bucket key for limits that are deliberately not per-caller. */
 const GLOBAL_KEY = "*";
+
+/**
+ * How long a requested pairing may sit undecided.
+ *
+ * Long enough to walk to the machine and read six digits; short enough that a
+ * request nobody answers does not hold a slot on that machine indefinitely.
+ */
+const REQUEST_TTL_MS = 120_000;
+
+/** A request is four messages; more than this is a bug or an abuse. */
+const MAX_PENDING_REQUEST = 8;
 
 /**
  * Bucket key for the per-slot claim limit.
@@ -166,6 +179,65 @@ export function createBroker(deps: BrokerDeps = {}) {
     string,
     { share: string; ad: string; sid: string }
   >();
+
+  /**
+   * Requested pairings in flight, keyed by request id.
+   *
+   * Deliberately as thin as a mailbox: which tunnel to forward to, where to
+   * send the reply, and a deadline. No commitment is retained after forwarding,
+   * no ephemeral key is stored, and — this is the invariant — the mapping from
+   * a request to the account or server that made it is never written to a log.
+   */
+  const requests = new Map<
+    string,
+    {
+      readonly id: string;
+      readonly deviceId: string;
+      readonly expiresAt: number;
+      /** Set once the browser opens `/v1/request/:id`. */
+      browser: ((message: RequestServerMessage) => void) | null;
+      pending: RequestServerMessage[];
+    }
+  >();
+
+  /** One undecided request per machine, so approval cannot be spammed. */
+  const pendingByDevice = new Map<string, string>();
+
+  function liveRequest(requestId: string) {
+    const request = requests.get(requestId);
+    if (!request) return null;
+    if (request.expiresAt <= now()) {
+      dropRequest(requestId);
+      return null;
+    }
+    return request;
+  }
+
+  function dropRequest(requestId: string): void {
+    const request = requests.get(requestId);
+    if (!request) return;
+    requests.delete(requestId);
+    if (pendingByDevice.get(request.deviceId) === requestId) {
+      pendingByDevice.delete(request.deviceId);
+    }
+  }
+
+  /** Deliver to the browser, buffering until its socket attaches. */
+  function toBrowser(
+    request: {
+      browser: ((m: RequestServerMessage) => void) | null;
+      pending: RequestServerMessage[];
+    },
+    message: RequestServerMessage,
+  ): void {
+    if (request.browser) {
+      request.browser(message);
+      return;
+    }
+    if (request.pending.length < MAX_PENDING_REQUEST) {
+      request.pending.push(message);
+    }
+  }
 
   function pairSink(socket: Socket) {
     return (message: PairingServerMessage) => {
@@ -337,6 +409,64 @@ export function createBroker(deps: BrokerDeps = {}) {
       // which is a free enumeration oracle; the claimant only ever needed to
       // know whether to bother opening a socket.
       body: { claimId: claim.id, waiting: targets.length > 0 },
+    };
+  }
+
+  /**
+   * A signed-in browser asks one of its own machines to let it in.
+   *
+   * The caller is authenticated by `server.ts` before this runs, and passes the
+   * device id it already resolved from the account's server list — so a caller
+   * cannot aim a request at a machine it does not own, and this function never
+   * has to be trusted with that check.
+   *
+   * Logged as a count and an outcome. Writing down which account asked which
+   * machine would be exactly the record the broker exists not to keep.
+   */
+  function pairRequest(
+    deviceId: string,
+    body: { commitment: string; deviceLabel: string; accountEmail: string },
+  ): HttpResult {
+    const tunnel = tunnels.byDevice(deviceId, now());
+    if (!tunnel) {
+      return {
+        status: 409,
+        body: { error: "That machine is not online right now." },
+      };
+    }
+
+    // One at a time. Otherwise a compromised session could bury a real request
+    // under a hundred prompts, and approval fatigue does the attacker's work.
+    const existing = pendingByDevice.get(deviceId);
+    if (existing && liveRequest(existing)) {
+      return {
+        status: 409,
+        body: { error: "That machine already has a request waiting." },
+      };
+    }
+
+    const requestId = `req-${bytesToHex(randomBytes(12))}`;
+    requests.set(requestId, {
+      id: requestId,
+      deviceId,
+      expiresAt: now() + REQUEST_TTL_MS,
+      browser: null,
+      pending: [],
+    });
+    pendingByDevice.set(deviceId, requestId);
+
+    tunnel.agent({
+      type: "pair:request",
+      requestId,
+      commitment: body.commitment,
+      deviceLabel: body.deviceLabel,
+      accountEmail: body.accountEmail,
+    });
+
+    logger.info("Access request forwarded");
+    return {
+      status: 200,
+      body: { requestId, expiresAt: now() + REQUEST_TTL_MS },
     };
   }
 
@@ -715,6 +845,23 @@ export function createBroker(deps: BrokerDeps = {}) {
           return;
         }
 
+        if (
+          msg.type === "pair:request-ack" ||
+          msg.type === "pair:approved" ||
+          msg.type === "pair:denied"
+        ) {
+          const request = liveRequest(msg.requestId);
+          // Only the machine the request was sent to may answer it. Without
+          // this, any registered agent could approve another machine's request.
+          if (!request || request.deviceId !== tunnel.deviceId) return;
+
+          toBrowser(request, msg);
+          // An approval or a refusal ends the request either way — a denial
+          // burns it, so a refused prompt cannot simply be asked again.
+          if (msg.type !== "pair:request-ack") dropRequest(msg.requestId);
+          return;
+        }
+
         // A second tunnel:register on a live socket.
         socket.close(1008, "Already registered");
       },
@@ -725,6 +872,84 @@ export function createBroker(deps: BrokerDeps = {}) {
         const tunnel = tunnels.get(tunnelId, now());
         if (tunnel) void settle(tunnel);
         tunnels.close(tunnelId, "agent-gone");
+      },
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // WS /v1/request/:requestId — the browser that asked for access
+  // -------------------------------------------------------------------------
+
+  function attachRequestSocket(
+    requestId: string,
+    socket: Socket,
+  ): SocketHandle | null {
+    const request = liveRequest(requestId);
+    if (!request) {
+      socket.send(
+        JSON.stringify({
+          type: "pair:denied",
+          requestId,
+          reason: "unknown-request",
+        }),
+      );
+      socket.close(1008, "Unknown or expired request");
+      return null;
+    }
+    if (request.browser) {
+      // One listener per request: a second would be a second chance to observe
+      // the machine's reply.
+      socket.close(1008, "Request already attached");
+      return null;
+    }
+
+    request.browser = (message) => socket.send(JSON.stringify(message));
+    // The CLI can answer before the browser's socket is up, so flush first.
+    for (const message of request.pending.splice(0)) request.browser(message);
+
+    return {
+      message(raw) {
+        const parsed = tryDeserializeRequestClientMessage(raw);
+        if (!parsed.ok) {
+          socket.close(1008, "Malformed message");
+          return;
+        }
+        const msg = parsed.message;
+        const live = liveRequest(requestId);
+        if (!live) {
+          socket.send(
+            JSON.stringify({
+              type: "pair:denied",
+              requestId,
+              reason: "timeout",
+            }),
+          );
+          socket.close(1000, "Expired");
+          return;
+        }
+
+        // pair:reveal — the key the commitment was over. Forwarded verbatim;
+        // the broker cannot check it and must not pretend to.
+        const tunnel = tunnels.byDevice(live.deviceId, now());
+        if (!tunnel) {
+          socket.send(
+            JSON.stringify({
+              type: "pair:denied",
+              requestId,
+              reason: "agent-gone",
+            }),
+          );
+          dropRequest(requestId);
+          return;
+        }
+        tunnel.agent(msg);
+      },
+
+      close() {
+        // The browser walked away; the machine should stop prompting for it.
+        const live = requests.get(requestId);
+        if (live) live.browser = null;
+        dropRequest(requestId);
       },
     };
   }
@@ -771,7 +996,16 @@ export function createBroker(deps: BrokerDeps = {}) {
         }
         const msg = parsed.message;
 
-        if (msg.type === "tunnel:register") {
+        // Registration, and the three replies only a machine may send. This
+        // socket is the *browser's* end of a tunnel: it has proved nothing
+        // about which device it is, so it must never be able to approve a
+        // request or answer for an agent.
+        if (
+          msg.type === "tunnel:register" ||
+          msg.type === "pair:request-ack" ||
+          msg.type === "pair:approved" ||
+          msg.type === "pair:denied"
+        ) {
           socket.close(1008, "Unexpected message");
           return;
         }
@@ -818,9 +1052,15 @@ export function createBroker(deps: BrokerDeps = {}) {
     }
   }
 
+  /** Drop requests nobody decided, so a machine is not blocked forever. */
+  function sweepRequests(): void {
+    for (const requestId of [...requests.keys()]) liveRequest(requestId);
+  }
+
   function sweepAll(): void {
     store.sweep(now());
     sweepClaimPayloads();
+    sweepRequests();
     tunnels.sweep(now());
   }
 
@@ -831,6 +1071,7 @@ export function createBroker(deps: BrokerDeps = {}) {
   return {
     pairNew,
     pairClaim,
+    pairRequest,
     discover,
     health,
     /** Whether this address may open another socket. See `upgradeLimiter`. */
@@ -838,6 +1079,7 @@ export function createBroker(deps: BrokerDeps = {}) {
     attachMailboxSocket,
     attachClaimSocket,
     attachAgentSocket,
+    attachRequestSocket,
     attachTunnelSocket,
     stats: () => ({
       ...store.stats(),

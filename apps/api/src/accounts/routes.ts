@@ -13,6 +13,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import type { Db } from "@repo/db";
+import { deviceIdFor, hexToBytes } from "@repo/crypto";
+import { PairRequestBody } from "@repo/protocol";
 
 import type { Billing } from "../billing/index.js";
 import { CheckoutRequest } from "../billing/index.js";
@@ -55,6 +57,18 @@ export type RouteDeps = {
   registry: ServerRegistry;
   entitlements: Entitlements;
   billing: Billing;
+  /**
+   * Hand a requested pairing to the broker, which owns the machine's socket.
+   *
+   * Split this way because the two halves know different things: only this
+   * module can say who is asking and whether they own the machine, and only
+   * the broker can reach it. The device id is resolved here so the broker is
+   * never in a position to be told which machine to forward to.
+   */
+  pairRequest?: (
+    deviceId: string,
+    body: { commitment: string; deviceLabel: string; accountEmail: string },
+  ) => { status: number; body: unknown };
 };
 
 export type RouteContext = {
@@ -93,6 +107,38 @@ export async function handleAccountRoute(
     sendJson(res, 200, {
       servers: await deps.registry.list(user.id),
     });
+    return true;
+  }
+
+  if (pathname === "/v1/pair/request" && method === "POST") {
+    const body = await readBody(req, PairRequestBody);
+    if (!body.ok) {
+      sendJson(res, body.status, { error: body.error });
+      return true;
+    }
+    if (!deps.pairRequest) {
+      sendJson(res, 503, { error: "Requested pairing is unavailable." });
+      return true;
+    }
+
+    // The ownership check, and the only one that matters here. A machine the
+    // caller does not own is reported exactly as one that does not exist, so
+    // this cannot be used to discover other people's server ids.
+    const owned = await deps.registry.list(user.id);
+    const server = owned.find((s) => s.id === body.data.serverId);
+    if (!server) {
+      sendJson(res, 404, { error: "No such machine on this account." });
+      return true;
+    }
+
+    const result = deps.pairRequest(deviceIdFor(hexToBytes(server.publicKey)), {
+      commitment: body.data.commitment,
+      deviceLabel: body.data.deviceLabel,
+      // Shown on the machine so the person approving can see whose account
+      // is asking. It is their own address; it tells them nothing new.
+      accountEmail: user.email,
+    });
+    sendJson(res, result.status, result.body as Parameters<typeof sendJson>[2]);
     return true;
   }
 
