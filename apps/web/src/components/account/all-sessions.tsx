@@ -47,11 +47,17 @@ import { ShareDialog } from "./share-dialog";
  * machine — never from a broker endpoint. See the header of
  * `lib/session-census.ts` for why that is not negotiable.
  *
- * Two rules the UI has to keep: a machine that cannot be reached shows its last
- * known sessions, dated and greyed, with a Retry — never a spinner that never
- * ends; and a machine this browser has never paired with is simply not here,
- * because it has no sessions we could honestly show. `ServerList` is where that
- * machine gets its "pair this device" invitation.
+ * Two rules the UI has to keep.
+ *
+ * A machine that cannot be reached shows its last known sessions, dated and
+ * greyed, with a Retry — never a spinner that never ends.
+ *
+ * And a machine this browser has never paired with **is listed, but is never
+ * probed**. It has no sessions we could honestly show, so its row is an
+ * invitation to pair rather than a session list. Leaving it out entirely — as
+ * this used to, and as the previous version of this comment described — meant a
+ * user with ten registered machines and a fresh phone opened the dashboard to
+ * an empty list with nothing on it to act on.
  */
 
 type RawServer = { publicKey?: unknown; name?: unknown; online?: unknown };
@@ -336,8 +342,49 @@ function MachineGroup({
   lockTick: number;
   onRetry: () => void;
 }) {
-  const stale = row.source === "cache" && !row.pending;
-  const reachable = !stale;
+  /**
+   * A machine on the account that this browser holds no keys for.
+   *
+   * It needs its own branch rather than falling through to the stale one:
+   * unprobed and unreachable look identical in a `CensusRow` (both are
+   * `source: "cache"`, not pending, with no sessions), but "last seen never,
+   * press Retry" is a lie about a machine that is very likely online and simply
+   * has not met this device.
+   */
+  const unpaired = row.paired === false;
+  const stale = !unpaired && row.source === "cache" && !row.pending;
+  const reachable = !stale && !unpaired;
+
+  if (unpaired) {
+    return (
+      <li className="rounded-lg border border-dashed border-border bg-card text-card-foreground">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              row.online ? "bg-success" : "bg-muted-foreground/40",
+            )}
+            aria-hidden
+          />
+          <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
+            {row.name}
+          </h3>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+            {row.online ? "online" : "offline"}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-3">
+          <p className="min-w-0 flex-1 text-sm text-muted-foreground">
+            This browser has no keys for {row.name}, so it cannot see what is
+            running there yet.
+          </p>
+          <Button asChild variant="outline" size="sm" className="h-9 shrink-0">
+            <a href="#your-machines">Pair this device</a>
+          </Button>
+        </div>
+      </li>
+    );
+  }
 
   return (
     <li className="rounded-lg border border-border bg-card text-card-foreground">

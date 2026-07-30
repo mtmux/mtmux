@@ -78,6 +78,15 @@ export type CensusTarget = {
   name: string;
   /** The broker's hint, when signed in. Advisory; the probe is the truth. */
   online?: boolean;
+  /**
+   * Whether this browser holds keys for the machine.
+   *
+   * False means it is on the account but not on this device, so it is listed
+   * as something to pair with and **never probed** — there is no key to
+   * authenticate with and nothing a socket could ask. Absent is treated as
+   * true, so a caller constructing targets by hand keeps the old behaviour.
+   */
+  paired?: boolean;
 };
 
 export type CensusSnapshot = {
@@ -189,6 +198,23 @@ export async function runCensus(
   // out of the queue before we spend anything.
   const queue: CensusTarget[] = [];
   for (const target of targets) {
+    // An unpaired machine is listed so the user can act on it, and never
+    // probed: this browser holds no key for it, so there is no socket to open
+    // and nothing a probe could ask. It skips the cache read too — there can be
+    // no cached sessions for a machine that has never been talked to.
+    if (target.paired === false) {
+      emit({
+        ...target,
+        sessions: [],
+        capabilities: null,
+        observedAt: null,
+        source: "cache",
+        pending: false,
+        error: null,
+      });
+      continue;
+    }
+
     const open = live?.get(target.serverId);
     if (open) {
       emit({
@@ -349,16 +375,31 @@ export type BrokerServer = {
 };
 
 /**
- * The machines worth probing, newest pairing first.
+ * Every machine worth *listing*, paired ones first.
  *
- * The list starts from IndexedDB — the machines this *browser* holds keys for —
- * and the account is only ever an enrichment on top, supplying a human name and
- * an online hint. That ordering is invariant #5 in one function: signed out,
- * the account half is simply absent and the dashboard still works.
+ * The list starts from IndexedDB — the machines this browser holds keys for —
+ * and the account is an enrichment on top, supplying a human name and an online
+ * hint. That ordering is invariant #5 in one function: signed out, the account
+ * half is simply absent and the dashboard still works.
  *
- * A machine the account knows about but this device has never paired with is
- * deliberately not here. It has no sessions we could show, and `ServerList`
- * already offers the honest action for it ("pair this device").
+ * ## Unpaired machines are listed, and never probed
+ *
+ * This used to return `[]` the moment `paired` was empty, and to drop account
+ * machines this browser had no keys for. The reasoning was that they have no
+ * sessions to show — which is true, and was the wrong conclusion. It meant a
+ * user with ten registered machines and a fresh phone opened the dashboard to
+ * an empty list, with nothing on screen to act on and no hint that their
+ * machines existed at all. The most common state for a new device rendered as
+ * "you have nothing".
+ *
+ * So they are included with `paired: false`, and `runCensus` skips them
+ * entirely: no socket, no cache read, no timeout budget spent. A row for one is
+ * an invitation to pair, not a session list — the honest thing to show, rather
+ * than nothing.
+ *
+ * The self-hosted path is unchanged by construction: `fetchServers` is only
+ * passed on a hosted build (see `all-sessions.tsx`), so without it this returns
+ * exactly the paired set it always did.
  */
 export async function collectTargets(options?: {
   listPaired?: () => Promise<string[]>;
@@ -370,7 +411,6 @@ export async function collectTargets(options?: {
   const readLabel = options?.readLabel ?? readPairedLabel;
 
   const paired = await listPaired();
-  if (paired.length === 0) return [];
 
   let account: BrokerServer[] | null = null;
   if (options?.fetchServers) {
@@ -382,8 +422,9 @@ export async function collectTargets(options?: {
     }
   }
   const byId = new Map((account ?? []).map((s) => [s.serverId, s]));
+  const pairedSet = new Set(paired);
 
-  return Promise.all(
+  const pairedTargets = await Promise.all(
     paired.map(async (serverId) => {
       const known = byId.get(serverId);
       const label = known?.name ?? (await readLabel(serverId));
@@ -391,9 +432,26 @@ export async function collectTargets(options?: {
         serverId,
         name: label || "Unnamed machine",
         online: known?.online,
+        paired: true,
       } satisfies CensusTarget;
     }),
   );
+
+  // Paired first: they are the ones with something to say, and a list that
+  // opens with rows you cannot use is a worse list.
+  const unpaired = (account ?? [])
+    .filter((s) => !pairedSet.has(s.serverId))
+    .map(
+      (s) =>
+        ({
+          serverId: s.serverId,
+          name: s.name || "Unnamed machine",
+          online: s.online,
+          paired: false,
+        }) satisfies CensusTarget,
+    );
+
+  return [...pairedTargets, ...unpaired];
 }
 
 // ---------------------------------------------------------------------------

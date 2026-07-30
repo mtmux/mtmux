@@ -18,9 +18,10 @@ import { AlertCircle, RefreshCw, Server, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, apiFetch } from "@/lib/auth-client";
 import { connectToServer, pairedServerKeys } from "./connect-to-server";
-import { CopyCommand } from "./copy-command";
 import { toEpochMs } from "./format";
+import { RequestAccessDialog } from "./request-access-dialog";
 import { ServerRow, type RegisteredServer } from "./server-row";
+import { InstallMachine } from "@/components/entry/install-machine";
 
 type Load =
   | { state: "loading" }
@@ -54,6 +55,14 @@ export function ServerList() {
   );
   const [deleting, setDeleting] = useState(false);
   const [upgrade, setUpgrade] = useState<string | null>(null);
+  /**
+   * The machine whose access request is in flight, or null.
+   *
+   * One piece of state for the whole list, not one dialog per row: the broker
+   * enforces a single live request per device, so N mounted dialogs would be N
+   * ways to race each other into a 409.
+   */
+  const [requesting, setRequesting] = useState<RegisteredServer | null>(null);
   /**
    * Machines this browser holds keys for.
    *
@@ -102,6 +111,20 @@ export function ServerList() {
     return () => clearInterval(id);
   }, []);
 
+  /**
+   * Three outcomes, and only one of them used to work.
+   *
+   * Paired takes the local path: the keys and descriptor are already here, so
+   * this is a lookup and a mirror write with nothing asked of the broker.
+   *
+   * Unpaired and online now opens the request dialog — the thing the button has
+   * always been labelled "Pair this device" and never done. It used to run the
+   * same local lookup, fail, and tell you to go and use the other computer.
+   *
+   * Unpaired and offline keeps the notice, because there is nothing to ask: the
+   * request is delivered over the machine's own tunnel, so a machine that is not
+   * connected cannot be asked anything.
+   */
   async function handleConnect(server: RegisteredServer) {
     setConnecting(server.id);
     setNotices((prev) => ({ ...prev, [server.id]: "" }));
@@ -109,6 +132,10 @@ export function ServerList() {
       const result = await connectToServer(server.publicKey);
       if (result.ok) {
         window.location.assign(result.href);
+        return;
+      }
+      if (server.online) {
+        setRequesting(server);
         return;
       }
       setNotices((prev) => ({ ...prev, [server.id]: result.reason }));
@@ -226,6 +253,20 @@ export function ServerList() {
         </ul>
       )}
 
+      <RequestAccessDialog
+        server={requesting}
+        onOpenChange={(open) => {
+          if (!open) setRequesting(null);
+        }}
+        onPaired={() => {
+          // Re-read which machines this browser holds keys for, so the row
+          // flips from "Pair this device" to "Open" without a reload.
+          void pairedServerKeys(
+            load.state === "ready" ? load.servers.map((s) => s.publicKey) : [],
+          ).then(setPairedKeys);
+        }}
+      />
+
       <AlertDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => {
@@ -322,11 +363,7 @@ function EmptyState() {
         Install mtmux on a machine you want to reach, then run these two
         commands on it. It shows up here within a few seconds.
       </p>
-      <div className="mx-auto mt-6 max-w-sm space-y-3 text-left">
-        <CopyCommand command="npm install -g mtmux" />
-        <CopyCommand command="mtmux login" />
-        <CopyCommand command="mtmux" />
-      </div>
+      <InstallMachine withLogin className="mx-auto mt-6 max-w-sm" />
     </div>
   );
 }

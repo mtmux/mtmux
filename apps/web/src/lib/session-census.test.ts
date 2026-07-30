@@ -383,8 +383,8 @@ describe("collectTargets", () => {
     });
 
     expect(found).toEqual([
-      { serverId: "aa11", name: "label-aa11", online: undefined },
-      { serverId: "bb22", name: "label-bb22", online: undefined },
+      { serverId: "aa11", name: "label-aa11", online: undefined, paired: true },
+      { serverId: "bb22", name: "label-bb22", online: undefined, paired: true },
     ]);
   });
 
@@ -398,11 +398,33 @@ describe("collectTargets", () => {
       ],
     });
 
-    // The account may know about machines this browser cannot open. They have
-    // no sessions to show, so they are not rows here.
+    // A machine the account knows about but this device has no keys for is
+    // listed anyway, marked unpaired — so it can be acted on. It used to be
+    // dropped, which is how a fresh phone showed an empty list.
     expect(found).toEqual([
-      { serverId: "aa11", name: "Build box", online: true },
+      { serverId: "aa11", name: "Build box", online: true, paired: true },
+      {
+        serverId: "zz99",
+        name: "Never paired here",
+        online: true,
+        paired: false,
+      },
     ]);
+  });
+
+  it("lists every account machine on a browser with no pairings at all", async () => {
+    // The state every new device starts in. This returned [] before.
+    const found = await collectTargets({
+      listPaired: async () => [],
+      fetchServers: async () => [
+        { serverId: "aa11", name: "One", online: true },
+        { serverId: "bb22", name: "Two", online: false },
+        { serverId: "cc33", name: "Three", online: true },
+      ],
+    });
+
+    expect(found).toHaveLength(3);
+    expect(found.every((t) => t.paired === false)).toBe(true);
   });
 
   it("falls back to the pairing's own label when the broker is unreachable", async () => {
@@ -415,21 +437,49 @@ describe("collectTargets", () => {
     });
 
     expect(found).toEqual([
-      { serverId: "aa11", name: "gagan@thinkpad", online: undefined },
+      {
+        serverId: "aa11",
+        name: "gagan@thinkpad",
+        online: undefined,
+        paired: true,
+      },
     ]);
   });
 
-  it("never calls the broker when this browser has no pairings", async () => {
-    let called = false;
-    const found = await collectTargets({
-      listPaired: async () => [],
-      fetchServers: async () => {
-        called = true;
-        return [];
-      },
+  it("returns nothing when there are no pairings and no account", async () => {
+    // The self-hosted shape: `fetchServers` is not passed at all, so there is
+    // no broker call to make and nothing to list.
+    expect(await collectTargets({ listPaired: async () => [] })).toEqual([]);
+  });
+});
+
+describe("unpaired targets", () => {
+  it("are listed but never probed", async () => {
+    const probed: string[] = [];
+    const probe: CensusProbe = async (target) => {
+      probed.push(target.serverId);
+      return snapshot([target.serverId]);
+    };
+    const cache = memoryCache();
+
+    const rows = await runCensus({
+      targets: [
+        { serverId: "aa11", name: "Paired", paired: true },
+        { serverId: "zz99", name: "Not here", paired: false },
+      ],
+      probe,
+      cache,
     });
-    expect(found).toEqual([]);
-    expect(called).toBe(false);
+
+    expect(rows.map((r) => r.serverId)).toEqual(["aa11", "zz99"]);
+    // No socket, and no timeout budget spent on a machine we hold no key for.
+    expect(probed).toEqual(["aa11"]);
+
+    const unpaired = rows.find((r) => r.serverId === "zz99")!;
+    expect(unpaired.sessions).toEqual([]);
+    expect(unpaired.pending).toBe(false);
+    expect(unpaired.error).toBeNull();
+    expect(unpaired.observedAt).toBeNull();
   });
 });
 

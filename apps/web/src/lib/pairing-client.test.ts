@@ -10,12 +10,19 @@ import {
   utf8ToBytes,
   bytesToBase64Url,
   FrameSealer,
+  newEphemeralKey,
+  sasSharedSecret,
+  sasTranscript,
+  deriveSas,
+  verifySasCommitment,
   type SessionKeys,
 } from "@repo/crypto";
 import { MAX_PEERS_PER_SLOT, type SealedDescriptor } from "@repo/protocol";
 import {
   joinPairing,
+  requestAccess,
   startPairing,
+  type AccessRequestUpdate,
   type PairingUpdate,
 } from "@/lib/pairing-client";
 
@@ -66,13 +73,18 @@ function fakeSocket() {
   };
 }
 
-/** Records `onUpdate` and lets a test await a particular phase. */
-function recorder() {
-  const updates: PairingUpdate[] = [];
-  const waiters: { phase: string; resolve: (u: PairingUpdate) => void }[] = [];
+/**
+ * Records `onUpdate` and lets a test await a particular phase.
+ *
+ * Generic over the update type so the code flow and the request flow — which
+ * share the shape but not the phases — can use the same harness.
+ */
+function recorder<U extends { phase: string }>() {
+  const updates: U[] = [];
+  const waiters: { phase: string; resolve: (u: U) => void }[] = [];
   return {
     updates,
-    onUpdate(update: PairingUpdate) {
+    onUpdate(update: U) {
       updates.push(update);
       for (let i = waiters.length - 1; i >= 0; i--) {
         if (waiters[i]!.phase === update.phase) {
@@ -80,12 +92,10 @@ function recorder() {
         }
       }
     },
-    waitFor(phase: PairingUpdate["phase"]) {
+    waitFor(phase: U["phase"]) {
       const seen = updates.find((u) => u.phase === phase);
       if (seen) return Promise.resolve(seen);
-      return new Promise<PairingUpdate>((resolve) =>
-        waiters.push({ phase, resolve }),
-      );
+      return new Promise<U>((resolve) => waiters.push({ phase, resolve }));
     },
     last: () => updates[updates.length - 1],
   };
@@ -209,7 +219,7 @@ function join(
 describe("joinPairing", () => {
   it("rejects anything that is not six digits before contacting the broker", async () => {
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, "12345");
     const failed = await rec.waitFor("failed");
     expect(failed).toMatchObject({ phase: "failed" });
@@ -218,7 +228,7 @@ describe("joinPairing", () => {
 
   it("accepts spaced and dashed codes", async () => {
     const h = claimHarness({ answering: 0 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, "49 27-16");
     await rec.waitFor("failed");
     expect(h.claim?.slot).toBe("49");
@@ -226,7 +236,7 @@ describe("joinPairing", () => {
 
   it("never puts the four-digit secret in the claim", async () => {
     const h = claimHarness({ answering: 0 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     await rec.waitFor("failed");
     expect(JSON.stringify(h.claim)).not.toContain("2716");
@@ -236,7 +246,7 @@ describe("joinPairing", () => {
   it("pairs with the terminal and opens the sealed descriptor", async () => {
     const secret = "2716";
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
 
@@ -256,7 +266,7 @@ describe("joinPairing", () => {
   it("keeps the terminal whose tag verifies and closes every decoy", async () => {
     const secret = "2716";
     const h = claimHarness({ answering: 2 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
 
@@ -281,7 +291,7 @@ describe("joinPairing", () => {
     // a code, so a broker exceeding it is the one thing a claimant can detect
     // on its own — and the only safe response is to stop.
     const h = claimHarness({ answering: MAX_PEERS_PER_SLOT + 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     await flush();
 
@@ -300,7 +310,7 @@ describe("joinPairing", () => {
 
   it("fails once every offered mailbox has been ruled out", async () => {
     const h = claimHarness({ answering: 2 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     await flush();
     h.cliAnswers("peer-0", "0000");
@@ -316,7 +326,7 @@ describe("joinPairing", () => {
   it("refuses a tampered confirmation tag", async () => {
     const secret = "2716";
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
 
@@ -346,7 +356,7 @@ describe("joinPairing", () => {
 
   it("refuses a share that is not a valid group element", async () => {
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     await flush();
     h.io.deliver({
@@ -363,7 +373,7 @@ describe("joinPairing", () => {
   it("ignores a second share for a conversation already under way", async () => {
     const secret = "2716";
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
 
@@ -387,7 +397,7 @@ describe("joinPairing", () => {
 
   it("reports a code nobody is waiting for", async () => {
     const h = claimHarness({ answering: 0 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     const failed = (await rec.waitFor("failed")) as Extract<
       PairingUpdate,
@@ -398,7 +408,7 @@ describe("joinPairing", () => {
 
   it("reports being rate limited", async () => {
     const h = claimHarness({ answering: 1, status: 429 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     const failed = (await rec.waitFor("failed")) as Extract<
       PairingUpdate,
@@ -409,7 +419,7 @@ describe("joinPairing", () => {
 
   it("surfaces a lost broker connection", async () => {
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}2716`);
     await flush();
     h.io.drop();
@@ -423,7 +433,7 @@ describe("joinPairing", () => {
   it("stops reacting once cancelled", async () => {
     const secret = "2716";
     const h = claimHarness({ answering: 1 });
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     const handle = join(h, rec, `${SLOT}${secret}`);
     await flush();
     handle.cancel();
@@ -453,7 +463,7 @@ describe("startPairing", () => {
 
   it("shows a six-digit code whose first two digits are the broker's slot", async () => {
     const h = newHarness(Date.now() + 180_000);
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     startPairing({
       apiBase: API,
       onUpdate: rec.onUpdate,
@@ -472,7 +482,7 @@ describe("startPairing", () => {
     const fromPost = Date.now() + 180_000;
     const fromSocket = fromPost - 5_000;
     const h = newHarness(fromPost);
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     startPairing({
       apiBase: API,
       onUpdate: rec.onUpdate,
@@ -503,7 +513,7 @@ describe("startPairing", () => {
 
   it("pairs with a terminal that claims its code", async () => {
     const h = newHarness(Date.now() + 180_000);
-    const rec = recorder();
+    const rec = recorder<PairingUpdate>();
     startPairing({
       apiBase: API,
       onUpdate: rec.onUpdate,
@@ -572,5 +582,185 @@ describe("startPairing", () => {
     >;
     expect(paired.descriptor).toEqual(DESCRIPTOR);
     expect(paired.keys.directToken).toBe(keys.directToken);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestAccess — the browser asking a machine it already owns
+// ---------------------------------------------------------------------------
+
+/**
+ * The mirror image of the code flow: nobody types anything, and what makes it
+ * safe is the *ordering*. The browser commits to an ephemeral key it already
+ * holds, and only reveals that key once the machine's is in hand — so the
+ * machine cannot choose its key after seeing the browser's and steer the six
+ * digits both screens will show to a value it picked.
+ *
+ * The CLI stand-in below runs the real `@repo/crypto` maths on the other side,
+ * so a transcript assembled in the wrong order produces two different SAS
+ * values here rather than passing.
+ */
+function requestHarness() {
+  const io = fakeSocket();
+  const cli = newEphemeralKey();
+  let requestId = "";
+
+  const fetchImpl = ((url: string) => {
+    expect(url).toContain("/v1/pair/request");
+    requestId = "req-abcdefgh";
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ requestId }),
+    } as unknown as Response);
+  }) as unknown as typeof fetch;
+
+  return {
+    io,
+    cli,
+    fetchImpl,
+    socketImpl: () => io.ws,
+    get requestId() {
+      return requestId;
+    },
+
+    /** The machine answering: it publishes its key, having seen a commitment. */
+    ack() {
+      io.deliver({
+        type: "pair:request-ack",
+        requestId,
+        cliPublicKey: bytesToHex(cli.publicKey),
+      });
+    },
+
+    /** What the machine's own screen would show, computed independently. */
+    async approve() {
+      const reveal = io.find("pair:reveal")!;
+      const browserPublicKey = hexToBytes(reveal.browserPublicKey!);
+      const commitment = hexToBytes(io.find("pair:commit")!.commitment!);
+      const ikm = sasSharedSecret(cli.secret, browserPublicKey);
+      const transcript = sasTranscript(
+        requestId,
+        commitment,
+        browserPublicKey,
+        cli.publicKey,
+      );
+      const keys = deriveSessionKeys(ikm, transcript);
+      const sealer = new FrameSealer(keys.s2c, "s2c");
+      const sealed = await sealer.seal(utf8ToBytes(JSON.stringify(DESCRIPTOR)));
+      io.deliver({
+        type: "pair:approved",
+        requestId,
+        sealedDescriptor: bytesToBase64Url(sealed),
+      });
+      return {
+        sas: deriveSas(ikm, transcript),
+        commitmentOk: verifySasCommitment(
+          commitment,
+          browserPublicKey,
+          requestId,
+        ),
+      };
+    },
+  };
+}
+
+describe("requestAccess", () => {
+  it("never reveals its key before the machine has published one", async () => {
+    const h = requestHarness();
+    const rec = recorder<AccessRequestUpdate>();
+
+    requestAccess({
+      apiBase: API,
+      serverId: "srv-1",
+      deviceLabel: "Chrome on macOS",
+      onUpdate: rec.onUpdate,
+      fetchImpl: h.fetchImpl,
+      socketImpl: h.socketImpl,
+    });
+    await flush();
+    (h.io.ws as unknown as { onopen?: () => void }).onopen?.();
+    await flush();
+
+    // This is the security property, asserted directly rather than inferred
+    // from a passing handshake. A reveal at this point would let the machine
+    // pick its key afterwards and steer the digits to anything it liked.
+    expect(h.io.find("pair:commit")).toBeDefined();
+    expect(h.io.find("pair:reveal")).toBeUndefined();
+
+    h.ack();
+    await flush();
+
+    expect(h.io.find("pair:reveal")).toBeDefined();
+  });
+
+  it("shows the same six digits the machine computes, and pairs", async () => {
+    const h = requestHarness();
+    const rec = recorder<AccessRequestUpdate>();
+
+    requestAccess({
+      apiBase: API,
+      serverId: "srv-1",
+      deviceLabel: "Chrome on macOS",
+      onUpdate: rec.onUpdate,
+      fetchImpl: h.fetchImpl,
+      socketImpl: h.socketImpl,
+    });
+    await flush();
+    (h.io.ws as unknown as { onopen?: () => void }).onopen?.();
+    await flush();
+    h.ack();
+    await flush();
+
+    const confirm = rec.updates.find((u) => u.phase === "confirm");
+    expect(confirm).toBeDefined();
+
+    const { sas, commitmentOk } = await h.approve();
+    await flush();
+
+    // The commitment the browser sent really does open to the key it later
+    // revealed — which is what the machine checks before showing its digits.
+    expect(commitmentOk).toBe(true);
+    expect((confirm as { sas: string }).sas).toBe(sas);
+    expect(sas).toMatch(/^\d{6}$/);
+
+    const paired = rec.updates.find((u) => u.phase === "paired");
+    expect(paired).toBeDefined();
+    expect((paired as { descriptor: SealedDescriptor }).descriptor).toEqual(
+      DESCRIPTOR,
+    );
+  });
+
+  it("carries the denial reason, so the UI can offer the right way out", async () => {
+    const h = requestHarness();
+    const rec = recorder<AccessRequestUpdate>();
+
+    requestAccess({
+      apiBase: API,
+      serverId: "srv-1",
+      deviceLabel: "Chrome on macOS",
+      onUpdate: rec.onUpdate,
+      fetchImpl: h.fetchImpl,
+      socketImpl: h.socketImpl,
+    });
+    await flush();
+    (h.io.ws as unknown as { onopen?: () => void }).onopen?.();
+    await flush();
+
+    h.io.deliver({
+      type: "pair:denied",
+      requestId: h.requestId,
+      reason: "no-tty",
+    });
+    await flush();
+
+    const failed = rec.updates.find((u) => u.phase === "failed") as {
+      message: string;
+      reason?: string;
+    };
+    expect(failed.reason).toBe("no-tty");
+    // The prose must not name a command — which recovery applies depends on the
+    // machine's CLI version, and only the caller knows that.
+    expect(failed.message).not.toMatch(/mtmux approve/);
   });
 });

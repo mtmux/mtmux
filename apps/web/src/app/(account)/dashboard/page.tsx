@@ -43,7 +43,10 @@ export default function DashboardPage() {
           </header>
           <AllSessions />
 
-          <header className="mt-10 mb-5">
+          {/* The anchor an unpaired row in the list above points at — that row
+              can offer the action but must not own the dialog, since the broker
+              allows one live request per device. */}
+          <header className="mt-10 mb-5" id="your-machines">
             <h2 className="text-lg font-semibold tracking-tight text-foreground">
               Your machines
             </h2>

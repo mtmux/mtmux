@@ -592,7 +592,13 @@ export type AccessRequestUpdate =
   /** The machine answered; show these digits and tell the user to compare. */
   | { phase: "confirm"; sas: string }
   | { phase: "paired"; keys: SessionKeys; descriptor: SealedDescriptor }
-  | { phase: "failed"; message: string };
+  /**
+   * `reason` is the broker's raw code, carried alongside the prose so the UI
+   * can branch without pattern-matching on a sentence. `no-tty` in particular
+   * deserves a different offer from every other failure — it is the only one
+   * where the machine is fine and simply has nobody in front of it.
+   */
+  | { phase: "failed"; message: string; reason?: string };
 
 export type RequestAccessOptions = {
   apiBase: string;
@@ -621,11 +627,11 @@ export function requestAccess(opts: RequestAccessOptions): PairingHandle {
   let cancelled = false;
   let settled = false;
 
-  function fail(message: string) {
+  function fail(message: string, reason?: string) {
     if (settled || cancelled) return;
     settled = true;
     socket?.close();
-    opts.onUpdate({ phase: "failed", message });
+    opts.onUpdate({ phase: "failed", message, reason });
   }
 
   let pending: { keys: SessionKeys } | null = null;
@@ -691,7 +697,7 @@ export function requestAccess(opts: RequestAccessOptions): PairingHandle {
       const msg = parsed.message;
 
       if (msg.type === "pair:denied") {
-        fail(describeDenial(msg.reason));
+        fail(describeDenial(msg.reason), msg.reason);
         return;
       }
 
@@ -762,8 +768,12 @@ function describeDenial(reason: string): string {
       return "The request was refused on that machine.";
     case "commitment-failed":
       return "That machine could not verify this browser. Nothing was shared.";
+    // Deliberately names no command. This used to say "Run `mtmux approve` on
+    // it", which was a command that did not exist — and even now that it does,
+    // it only exists on new enough CLIs. The caller offers the recovery,
+    // because only the caller knows which ones apply to this machine.
     case "no-tty":
-      return "Nobody is at that machine to approve. Run `mtmux approve` on it.";
+      return "Nobody is at that machine to approve the request.";
     case "timeout":
       return "Nobody answered on that machine.";
     case "agent-gone":
