@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@repo/ui/components/app-shell";
+import { Button } from "@repo/ui/components/ui/button";
 import { cn } from "@repo/ui/lib/utils";
 import { ThemeToggle } from "@repo/ui/components/theme-toggle";
 import { ConnectionStatus } from "@repo/ui/components/connection-status";
@@ -47,7 +49,9 @@ import {
 } from "@/lib/session-store";
 import { sealedTransport, type TransportFactory } from "@/lib/transport";
 import { env } from "@/env";
-import { Terminal } from "lucide-react";
+import { LayoutGrid, Loader2, Terminal } from "lucide-react";
+import { markBounced } from "@/lib/bounce-guard";
+import { isHostedBuild } from "@/lib/auth-client";
 import {
   LAST_SESSION_KEY,
   readSelfHostedToken,
@@ -58,8 +62,8 @@ import {
  * The gate is outside the layout body on purpose.
  *
  * While locked, `loadSessionKeys()` cannot decrypt and returns null — which the
- * auth guard below reads, correctly, as "no session" and bounces to /login. Put
- * the gate inside and a locked device would round-trip through the login page
+ * auth guard below reads, correctly, as "no session" and bounces to /start. Put
+ * the gate inside and a locked device would round-trip through the entry pages
  * instead of showing the lock screen. Outside, the inner component's effects
  * never run at all until the device is open.
  */
@@ -75,9 +79,24 @@ export default function TerminalLayout({
   );
 }
 
+/**
+ * Three states, not two.
+ *
+ * `token: string | null` conflated "still looking" with "there is nothing" —
+ * and since looking means an async IndexedDB read, every cold load rendered the
+ * `null` branch first. That branch returned `null`, so the first thing anyone
+ * saw on app.mtmux.com was a blank white screen for as long as the read took.
+ * A spinner is not a nicety here; it is the difference between a page that is
+ * working and a page that is broken, and they looked identical.
+ */
+type Auth =
+  | { phase: "checking" }
+  | { phase: "none" }
+  | { phase: "ready"; token: string };
+
 function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [token, setToken] = useState<string | null>(null);
+  const [auth, setAuth] = useState<Auth>({ phase: "checking" });
   // Set only for a session paired through the broker that fell back to the
   // tunnel; the direct path uses a plain socket like everything else.
   const [transport, setTransport] = useState<TransportFactory | undefined>();
@@ -100,32 +119,46 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const storedToken = readSelfHostedToken();
     if (storedToken) {
-      setToken(storedToken);
+      setAuth({ phase: "ready", token: storedToken });
       return;
     }
 
     let cancelled = false;
 
+    /**
+     * Give up, and send them somewhere they can actually do something.
+     *
+     * `/start` rather than `/login`: `/login` asks for the self-hosted 64-hex
+     * relay token, which a hosted visitor has no way to obtain. `replace`
+     * rather than `push`, so the back button does not walk straight back into
+     * the page that just bounced them.
+     */
+    const giveUp = () => {
+      setAuth({ phase: "none" });
+      markBounced();
+      router.replace("/start");
+    };
+
     void (async () => {
       // `loadDescriptor` reads a tab-scoped mirror, which a fresh tab has not
       // filled yet — so an empty one means "not loaded", not "never paired".
       // Falling back to the durable record before giving up is what stops every
-      // reload bouncing through /login and straight back again.
+      // reload bouncing through an entry page and straight back again.
       const session = loadDescriptor() ?? (await hydrateDescriptor());
       if (cancelled) return;
       if (!session) {
-        router.push("/login");
+        giveUp();
         return;
       }
 
       const keys = await loadSessionKeys(serverIdFor(session.descriptor));
       if (cancelled) return;
       if (!keys) {
-        router.push("/login");
+        giveUp();
         return;
       }
 
-      setToken(keys.directToken);
+      setAuth({ phase: "ready", token: keys.directToken });
       if (!session.preferredCandidate && env.NEXT_PUBLIC_API_URL) {
         // No direct candidate won, so everything rides the sealed tunnel.
         const url = `${env.NEXT_PUBLIC_API_URL.replace(/^http/, "ws")}/v1/tunnel/${session.descriptor.tunnelId}`;
@@ -228,10 +261,30 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
 
   // Called for its effect: this is where the socket is opened and registered.
   // Children reach it through `getRelayClient()`, not through a return value.
+  const token = auth.phase === "ready" ? auth.token : null;
   useWebSocket(token ? resolveRelayWsUrl() : "", token ?? "", transport);
 
-  if (!token) {
-    return null; // Redirecting to login
+  if (auth.phase !== "ready") {
+    // Same markup as `RequireSession`'s pending branch, and for the same
+    // reason: a screen-reader user gets told what is happening, and a sighted
+    // one can tell "checking" apart from "crashed".
+    return (
+      <div
+        className="flex min-h-[100dvh] items-center justify-center bg-background"
+        role="status"
+        aria-live="polite"
+      >
+        <Loader2
+          className="h-5 w-5 animate-spin text-muted-foreground"
+          aria-hidden
+        />
+        <span className="sr-only">
+          {auth.phase === "checking"
+            ? "Checking this device for a session"
+            : "Taking you to the connect page"}
+        </span>
+      </div>
+    );
   }
 
   const connectionStatusType =
@@ -277,6 +330,23 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
         {/* #5: ThemeToggle hidden on mobile — moved to settings panel (#12) */}
         {!isMobile && (
           <div className="ml-auto flex items-center gap-1">
+            {/* The terminal and the dashboard were two islands with no bridge
+                in either direction. This is the desktop half; the mobile half
+                is the Account section in the settings panel, and there is a
+                "Go to" group in the command palette for both. */}
+            {isHostedBuild && (
+              <Button
+                asChild
+                variant="ghost"
+                size="sm"
+                className="h-8 text-muted-foreground hover:text-foreground"
+              >
+                <Link href="/dashboard">
+                  <LayoutGrid className="mr-1.5 h-4 w-4" aria-hidden />
+                  Machines
+                </Link>
+              </Button>
+            )}
             <ThemeToggle />
           </div>
         )}

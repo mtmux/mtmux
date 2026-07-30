@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { hydrateLockState } from "@/lib/lock-store";
 import { isEnrolled, isUnlocked, subscribeLock } from "@/lib/unlocked";
 import { useLockLifecycle } from "@/hooks/use-lock-lifecycle";
@@ -34,10 +35,26 @@ export function LockGate({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Until the lock record has been read, render nothing rather than the
-  // terminal: a flash of the shell before the lock screen appears would defeat
-  // the feature on every cold load.
-  if (!ready) return null;
+  // Until the lock record has been read, do not render the children: a flash of
+  // the shell before the lock screen appears would defeat the feature on every
+  // cold load. But render *something* — this used to be `null`, which on a slow
+  // IndexedDB open is indistinguishable from a page that failed to load, and it
+  // stacks with the auth guard's own check to produce a blank screen twice over.
+  if (!ready) {
+    return (
+      <div
+        className="flex min-h-[100dvh] items-center justify-center bg-background"
+        role="status"
+        aria-live="polite"
+      >
+        <Loader2
+          className="h-5 w-5 animate-spin text-muted-foreground"
+          aria-hidden
+        />
+        <span className="sr-only">Checking whether this device is locked</span>
+      </div>
+    );
+  }
 
   if (isEnrolled() && !isUnlocked()) {
     return <LockScreen onUnlocked={() => force((n) => n + 1)} />;

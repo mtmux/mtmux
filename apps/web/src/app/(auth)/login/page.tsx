@@ -1,18 +1,11 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@repo/ui/components/ui/button";
 import { Input } from "@repo/ui/components/ui/input";
 import { Label } from "@repo/ui/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@repo/ui/components/ui/card";
-import { Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { RelayClient } from "@/lib/ws-client";
 import { resolveRelayWsUrl } from "@/lib/relay-url";
@@ -25,6 +18,17 @@ import {
   writeStored,
 } from "@/lib/storage-keys";
 
+/**
+ * The self-hosted path: paste the relay token `mtmux start` printed.
+ *
+ * This is **not** the front door, and it used to be — `/` sent every visitor
+ * with no session here, including the majority who have a six-digit code and no
+ * token at all. Typing six digits into this form opened a socket to
+ * `/_relay` on whatever origin served the page, which on app.mtmux.com is
+ * nothing, and hung until it timed out. `/start` is the front door now; this
+ * page is reached from a link there, or directly by the CLI's own `#token=`
+ * and `#n=` handoffs.
+ */
 export default function LoginPage() {
   const router = useRouter();
   const [token, setToken] = useState("");
@@ -47,7 +51,7 @@ export default function LoginPage() {
         clearStored(TOKEN_KEY);
         setIsLoading(false);
         toast.error(
-          "Connection timed out. Check the relay server and try again.",
+          "No relay answered on this origin. If you have a six-digit code, use Connect with a code instead.",
         );
       }, 5000);
 
@@ -152,36 +156,58 @@ export default function LoginPage() {
   }, []);
 
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-            <Terminal className="h-6 w-6 text-primary" />
-          </div>
-          <CardTitle className="text-xl">mtmux</CardTitle>
-          <CardDescription>
-            Enter your authentication token to connect
-          </CardDescription>
-        </CardHeader>
-        <form onSubmit={onSubmit}>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="token">Token</Label>
-              <Input
-                id="token"
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="Enter token..."
-                autoFocus
-              />
-            </div>
-            <Button className="w-full" type="submit" disabled={isLoading}>
-              {isLoading ? "Connecting..." : "Connect"}
-            </Button>
-          </CardContent>
-        </form>
-      </Card>
+    <div className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center gap-6 px-4 py-10">
+      <div className="space-y-1 text-center">
+        <h1 className="text-xl font-semibold tracking-tight">
+          Connect with a token
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          The self-hosted path. Use the long token <code>mtmux start</code>{" "}
+          printed on the machine itself.
+        </p>
+      </div>
+
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="token">Relay token</Label>
+          <Input
+            id="token"
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="64 hex characters"
+            autoComplete="off"
+            autoFocus
+          />
+        </div>
+        <Button
+          className="h-11 w-full"
+          type="submit"
+          disabled={isLoading}
+          aria-busy={isLoading}
+        >
+          {isLoading ? "Connecting…" : "Connect"}
+        </Button>
+      </form>
+
+      {/* The way out. This page used to have none, which is how someone who
+          arrived here with six digits and no token got stuck. */}
+      <div className="space-y-2 border-t border-border pt-5 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Have a six-digit code?</span>
+          <Button asChild variant="outline" size="sm" className="h-9 shrink-0">
+            <Link href="/start">Connect with a code</Link>
+          </Button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">
+            Already have an account?
+          </span>
+          <Button asChild variant="ghost" size="sm" className="h-9 shrink-0">
+            <Link href="/signin">Sign in</Link>
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

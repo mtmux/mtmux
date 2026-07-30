@@ -46,7 +46,7 @@ export function AccountHeader() {
     <header className="sticky top-0 z-30 border-b border-border bg-background/85 pt-[env(safe-area-inset-top)] backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="mx-auto flex h-14 w-full max-w-3xl items-center gap-2 px-4">
         <Link
-          href={signedIn ? "/dashboard" : "/"}
+          href={signedIn ? "/dashboard" : "/start"}
           className="flex items-center gap-2 rounded-md py-2 pr-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10">

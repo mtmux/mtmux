@@ -87,7 +87,7 @@ export function LockSettings({ className }: { className?: string }) {
       return;
     }
     await eraseDevice();
-    window.location.href = "/login";
+    window.location.href = "/start";
   }
 
   if (!record || !isEnrolled()) {

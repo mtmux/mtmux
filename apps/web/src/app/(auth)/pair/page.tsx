@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@repo/ui/components/ui/button";
 import {
@@ -18,13 +19,8 @@ import {
   type PairingHandle,
   type PairingUpdate,
 } from "@/lib/pairing-client";
-import { raceCandidates } from "@/lib/candidate-race";
 import { markJustPaired } from "@/lib/lock-controller";
-import {
-  saveDescriptor,
-  saveSessionKeys,
-  serverIdFor,
-} from "@/lib/session-store";
+import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
 
 type State =
   | { phase: "requesting" }
@@ -68,27 +64,12 @@ export default function PairPage() {
       }
 
       // Paired. Race the direct candidates before falling back to the tunnel,
-      // then hand off to the terminal.
+      // then hand off to the terminal. Shared with /j and the dashboard's
+      // request-access dialog, so all three write the same record.
       setState({ phase: "connecting" });
       void (async () => {
-        // The probe authenticates with the token both ends derived, so a
-        // candidate only wins if it really is the machine we just paired with.
-        const { winner } = await raceCandidates(
-          update.descriptor.candidates,
-          update.keys.directToken,
-        );
-        await saveSessionKeys(serverIdFor(update.descriptor), update.keys);
-        saveDescriptor({
-          descriptor: update.descriptor,
-          preferredCandidate: winner ?? undefined,
-          directToken: update.keys.directToken,
-          pairedAt: Date.now(),
-        });
-        toast.success(
-          winner
-            ? `Connected to ${update.descriptor.label} directly`
-            : `Connected to ${update.descriptor.label} over the relay`,
-        );
+        const { winner } = await persistPairing(update);
+        toast.success(pairedMessage(update.descriptor, winner));
         // Offer the device lock once, here and nowhere else — see
         // `takeEnrollmentPrompt`.
         markJustPaired();
@@ -142,8 +123,8 @@ export default function PairPage() {
   }
 
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
+    <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 px-4 py-10">
+      <Card className="w-full">
         <CardHeader className="text-center">
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
             <Terminal className="h-6 w-6 text-primary" />
@@ -235,6 +216,18 @@ export default function PairPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* This page had no way out at all, which mattered most here: someone
+          lands on it, realises their terminal is already showing a code, and
+          the correct move is the opposite direction. */}
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="text-muted-foreground">
+          Terminal already showing a code?
+        </span>
+        <Button asChild variant="outline" size="sm" className="h-9 shrink-0">
+          <Link href="/start">Enter it instead</Link>
+        </Button>
+      </div>
     </div>
   );
 }

@@ -49,7 +49,8 @@ const DB_NAME = "mtmux";
  */
 const DB_VERSION = 3;
 export const KEY_STORE = "session-keys";
-const DESCRIPTOR_STORE = "descriptors";
+/** Durable connection descriptors, keyed by device id. See the note above. */
+export const DESCRIPTOR_STORE = "descriptors";
 /** Wrapped master key and factor records for the device lock. See lock-store.ts. */
 export const LOCK_STORE = "lock";
 /** Cached per-server session lists for the dashboard. See session-census.ts. */
@@ -367,15 +368,35 @@ export function loadDescriptor(): PairedSession | null {
  * Refill the mirror from IndexedDB, so a reload does not force a re-pair.
  *
  * Call this once before anything reads `loadDescriptor()` in a fresh tab. It is
- * a no-op when the mirror is already populated, so calling it on every route is
- * cheap. The most recent pairing wins when a browser has several paired
- * machines: there is one active session at a time and it is the one the user
- * last chose.
+ * a no-op when the mirror is already populated *and still usable*, so calling it
+ * on every route is cheap. The most recent pairing wins when a browser has
+ * several paired machines: there is one active session at a time and it is the
+ * one the user last chose.
+ *
+ * ## Why the mirror is checked rather than trusted
+ *
+ * This used to return the sessionStorage mirror on sight. The terminal's auth
+ * guard requires the *keys*, not just the descriptor — so a mirror that
+ * outlived its IndexedDB keys satisfied this function and failed the guard,
+ * which bounced to an entry page, which called this function, which returned
+ * the mirror, which… The address bar ping-ponged until the tab was killed.
+ *
+ * That is not hypothetical: Safari's ITP evicts IndexedDB after seven days
+ * without a visit and leaves sessionStorage alone, which produces exactly this
+ * pair of states. Validating here makes the two sides agree on one definition
+ * of "usable"; `bounce-guard.ts` is the backstop for any future disagreement.
  */
 export async function hydrateDescriptor(): Promise<PairedSession | null> {
   if (typeof window === "undefined") return null;
   const mirrored = loadDescriptor();
-  if (mirrored) return mirrored;
+  if (mirrored) {
+    const keys = await loadSessionKeys(serverIdFor(mirrored.descriptor));
+    if (keys) return mirrored;
+    // A stale mirror. Drop it, then fall through — another machine's durable
+    // record may still be perfectly good, and re-pairing when one exists would
+    // be a worse answer than looking.
+    clearDescriptorMirror();
+  }
 
   try {
     const db = await openDb();

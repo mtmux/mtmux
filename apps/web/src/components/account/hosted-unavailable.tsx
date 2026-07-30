@@ -39,8 +39,11 @@ export function HostedUnavailable() {
             directly. Hosted accounts only add a shared list of your machines
             across networks.
           </p>
+          {/* `/start`, not `/`: someone who landed on an account page in a
+              self-hosted build very likely has no session either, and `/`
+              would bounce them straight back out again. */}
           <Button asChild variant="outline" className="h-11 w-full">
-            <Link href="/">Back to the terminal</Link>
+            <Link href="/start">Connect to a machine</Link>
           </Button>
         </CardContent>
       </Card>

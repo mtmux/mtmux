@@ -120,7 +120,10 @@ export function useWebSocket(
             .getState()
             .push("error", msg.reason || "Authentication failed");
           clearStored(TOKEN_KEY);
-          window.location.href = "/login";
+          // `/start`, not `/login`: the credential that just failed may have
+          // been a derived pairing token, in which case a form asking for a
+          // 64-hex relay token is not a way back in.
+          window.location.href = "/start";
           break;
         case "server:info":
           connectionStore.setServerInfo("", msg.hostname);

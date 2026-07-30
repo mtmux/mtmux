@@ -64,7 +64,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
         }
         if (outcome.reason === "wiped") {
           toast.error("Too many attempts. This device has been erased.");
-          window.location.href = "/login";
+          window.location.href = "/start";
           return;
         }
         if (outcome.reason === "no-lock") {

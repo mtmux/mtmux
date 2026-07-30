@@ -19,9 +19,13 @@ import {
   Pause,
   History,
   Bookmark,
+  LayoutGrid,
+  PlugZap,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useCommandStore } from "@/stores/command-store";
 import { getRelayClient } from "@/hooks/use-websocket";
+import { isHostedBuild } from "@/lib/auth-client";
 
 export function CommandPalette() {
   const { paletteOpen, setPaletteOpen, history, snippets, addToHistory } =
@@ -76,7 +80,13 @@ export function CommandPalette() {
 
   const handleSelect = useCallback(
     (value: string) => {
-      if (value.startsWith("action:")) {
+      if (value.startsWith("goto:")) {
+        // A real navigation, not `router.push`: these leave the terminal group
+        // entirely, and the palette's own open state is the only thing worth
+        // preserving across the boundary — which is to say, nothing.
+        setPaletteOpen(false);
+        window.location.assign(value.replace("goto:", ""));
+      } else if (value.startsWith("action:")) {
         sendQuickAction(value.replace("action:", ""));
       } else if (value.startsWith("history:") || value.startsWith("snippet:")) {
         const cmd = value.split(":").slice(1).join(":");
@@ -86,7 +96,7 @@ export function CommandPalette() {
         executeCommand(value);
       }
     },
-    [executeCommand, sendQuickAction],
+    [executeCommand, sendQuickAction, setPaletteOpen],
   );
 
   const pinnedSnippets = snippets.filter((s) => s.pinned);
@@ -96,9 +106,7 @@ export function CommandPalette() {
     <CommandDialog open={paletteOpen} onOpenChange={setPaletteOpen}>
       <CommandInput placeholder="Type a command or search..." />
       <CommandList>
-        <CommandEmpty>
-          Press Enter to execute as shell command
-        </CommandEmpty>
+        <CommandEmpty>Press Enter to execute as shell command</CommandEmpty>
 
         <CommandGroup heading="Quick Actions">
           <CommandItem value="action:interrupt" onSelect={handleSelect}>
@@ -123,6 +131,27 @@ export function CommandPalette() {
           </CommandItem>
         </CommandGroup>
 
+        {/* The keyboard route between the terminal and everything around it.
+            The desktop header and the mobile settings panel cover the other
+            two; this is the one that works without either being visible. */}
+        <CommandSeparator />
+        <CommandGroup heading="Go to">
+          <CommandItem value="goto:/settings" onSelect={handleSelect}>
+            <SlidersHorizontal className="h-4 w-4" />
+            Settings
+          </CommandItem>
+          {isHostedBuild && (
+            <CommandItem value="goto:/dashboard" onSelect={handleSelect}>
+              <LayoutGrid className="h-4 w-4" />
+              Your machines
+            </CommandItem>
+          )}
+          <CommandItem value="goto:/start" onSelect={handleSelect}>
+            <PlugZap className="h-4 w-4" />
+            Connect another machine
+          </CommandItem>
+        </CommandGroup>
+
         {pinnedSnippets.length > 0 && (
           <>
             <CommandSeparator />
@@ -135,7 +164,9 @@ export function CommandPalette() {
                 >
                   <Bookmark className="h-4 w-4 text-yellow-500" />
                   <span className="flex-1">{snippet.name}</span>
-                  <span className="text-xs text-muted-foreground">{snippet.command}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {snippet.command}
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -154,7 +185,9 @@ export function CommandPalette() {
                 >
                   <Send className="h-4 w-4" />
                   <span className="flex-1">{snippet.name}</span>
-                  <span className="text-xs text-muted-foreground">{snippet.command}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {snippet.command}
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>

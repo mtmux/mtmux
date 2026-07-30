@@ -13,6 +13,7 @@ import {
 import { TOKEN_KEY, clearStored, readStored } from "./storage-keys";
 import {
   CENSUS_STORE,
+  DESCRIPTOR_STORE,
   KEY_STORE,
   LOCK_STORE,
   fromSealedKeys,
@@ -503,9 +504,13 @@ export async function eraseDevice(): Promise<void> {
   setEnrolled(false);
   try {
     const db = await openDb();
+    // DESCRIPTOR_STORE belongs here and was missing: erasing the keys but
+    // leaving the descriptors behind left the device holding a list of every
+    // machine it had ever paired with — labels, tunnel ids and LAN addresses —
+    // after being told it had been erased.
     await txMulti(
       db,
-      [KEY_STORE, LOCK_STORE, CENSUS_STORE],
+      [KEY_STORE, DESCRIPTOR_STORE, LOCK_STORE, CENSUS_STORE],
       "readwrite",
       (stores) => {
         for (const store of Object.values(stores)) store.clear();

@@ -1,5 +1,8 @@
 "use client";
 
+import Link from "next/link";
+import { LayoutGrid } from "lucide-react";
+import { Button } from "@repo/ui/components/ui/button";
 import { Separator } from "@repo/ui/components/ui/separator";
 import { Label } from "@repo/ui/components/ui/label";
 import { Input } from "@repo/ui/components/ui/input";
@@ -11,6 +14,7 @@ import { terminalThemes } from "@repo/ui/terminal-themes";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { LockSettings } from "@/components/lock/lock-settings";
+import { isHostedBuild } from "@/lib/auth-client";
 
 /** Raw buttons here need the same focus ring the shared Button component has. */
 const focusRing =
@@ -248,6 +252,28 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
         <Separator />
 
         <LockSettings />
+
+        {/* On a phone this panel *is* the settings page — the desktop header
+            with its dashboard link is hidden below 768px — so without this
+            section the terminal and the account are two islands with no bridge
+            on the device most people use. */}
+        {isHostedBuild && (
+          <>
+            <Separator />
+            <section>
+              <h3 className="mb-1 text-sm font-semibold">Account</h3>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Your registered machines, security and billing.
+              </p>
+              <Button asChild variant="outline" className="h-11 w-full">
+                <Link href="/dashboard">
+                  <LayoutGrid className="mr-2 h-4 w-4" aria-hidden />
+                  Your machines
+                </Link>
+              </Button>
+            </section>
+          </>
+        )}
       </div>
     </ScrollArea>
   );

@@ -705,7 +705,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
 
       <p className="mt-4 text-center text-sm text-muted-foreground">
         <Link
-          href={next === "/dashboard" ? "/" : "/"}
+          href="/start"
           className="underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           Back to mtmux
