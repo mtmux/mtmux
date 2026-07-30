@@ -1,13 +1,42 @@
 import type { Metadata, Viewport } from "next";
-import { JetBrains_Mono, Inter } from "next/font/google";
+import { IBM_Plex_Mono, IBM_Plex_Sans, Martian_Mono } from "next/font/google";
 import { ThemeProvider } from "@repo/ui/providers/theme-provider";
 import { ToastProvider } from "@repo/ui/providers/toast-provider";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
-const jetbrainsMono = JetBrains_Mono({
+/*
+ * The same three faces the marketing site uses, replacing Inter + JetBrains
+ * Mono. Someone who arrives from mtmux.com should not feel they have landed on
+ * a different product.
+ *
+ * The variable names matter: `globals.css` maps `--font-plex-sans` and friends
+ * into `--font-sans`/`--font-mono`/`--font-display`. Naming a face
+ * `--font-mono` directly — as the old JetBrains declaration did — sets that
+ * variable on <body> and silently overrides the whole @theme mapping.
+ */
+
+/** Display face: geometric monospace, headings only. */
+const martianMono = Martian_Mono({
   subsets: ["latin"],
-  variable: "--font-mono",
+  weight: ["400", "500", "600"],
+  variable: "--font-martian-mono",
+  display: "swap",
+});
+
+/** Reading face: UI labels and prose. */
+const plexSans = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-sans",
+  display: "swap",
+});
+
+/** Terminal face: code, shell output, keycaps, pairing digits. */
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -32,9 +61,11 @@ export const viewport: Viewport = {
   // keyboard opens, so `h-[100dvh]` keeps its full height and the whole footer
   // stack — command bar included — slides underneath the keyboard.
   interactiveWidget: "resizes-content",
+  // Matches --surface-base in each scheme, so the iOS status bar and the
+  // Android chrome do not sit against a colour the app never uses.
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#1a1b26" },
+    { media: "(prefers-color-scheme: light)", color: "#fcfdfb" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0b0a" },
   ],
 };
 
@@ -46,9 +77,17 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${inter.className} ${jetbrainsMono.variable} bg-background text-foreground overscroll-none`}
+        className={`${plexSans.variable} ${plexMono.variable} ${martianMono.variable} bg-background text-foreground overscroll-none`}
       >
-        <ThemeProvider>
+        {/*
+          Dark by default rather than following the OS.
+
+          This is a terminal. The canonical mtmux look is the dark one — it is
+          what the site shows, what the screenshots show, and what a shell looks
+          like. Light mode is fully supported and one tap away; it is just not
+          the thing to show someone who has expressed no preference.
+        */}
+        <ThemeProvider defaultTheme="dark">
           {children}
           <ToastProvider />
         </ThemeProvider>

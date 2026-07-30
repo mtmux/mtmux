@@ -1,14 +1,31 @@
+/**
+ * Who this product is, in one place.
+ *
+ * ## What was here before
+ *
+ * A module named after the product that called it `ccremote`, pointed at
+ * `ccremote.dev`, credited someone else's GitHub repo, and duplicated six
+ * colour values as strings. Nothing imported it, which is the only reason none
+ * of that had surfaced in the UI.
+ *
+ * ## What is deliberately not here
+ *
+ * **Colours.** They were the worst part: a second, stale copy of values that
+ * live in `globals.css`, in a format no stylesheet can consume, guaranteed to
+ * drift the first time the palette moved — which it since has, twice. The
+ * token layer is the single source of colour truth. Anything that needs the
+ * brand green uses `text-brand` / `bg-brand-fill`, never a string from here.
+ */
+
 export const brand = {
-  name: "ccremote",
-  tagline: "Your Claude. Your terminal. Anywhere.",
+  name: "mtmux",
+  tagline: "tmux in your browser. One command, any device.",
   description:
-    "Self-hosted browser terminal for Claude Code. Connect to tmux sessions from any device — desktop, tablet, phone.",
-  url: "https://ccremote.dev",
-  github: "https://github.com/nicholasgriffintn/ccremote",
-  primary: "oklch(0.66 0.20 35)",
-  primaryForeground: "oklch(0.98 0.01 80)",
-  accent: "oklch(0.92 0.04 80)",
-  accentForeground: "oklch(0.20 0.02 30)",
-  backgroundDark: "oklch(0.12 0.02 30)",
-  backgroundLight: "oklch(0.99 0.005 80)",
+    "Run one command on your machine, scan a code, and your tmux sessions are on your phone. No port forwarding, no account, no SSH key on the device.",
+  url: "https://mtmux.com",
+  app: "https://app.mtmux.com",
+  docs: "https://docs.mtmux.com",
+  install: "npm install -g mtmux",
 } as const;
+
+export type Brand = typeof brand;
