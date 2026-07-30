@@ -18,13 +18,14 @@
  * the point: every one of these failures produces a page that loads and looks
  * fine until someone tries to pair.
  */
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const API_ORIGIN = process.env.API_ORIGIN || "https://api.mtmux.com";
 const STATIC_DIR = path.join(REPO, "apps/web/.next/static/chunks");
+const TARGETS = ["mtmux-api", "mtmux-app"];
 
 function run(cmd, env = {}) {
   console.log(`$ ${cmd}`);
@@ -33,6 +34,82 @@ function run(cmd, env = {}) {
     cwd: REPO,
     env: { ...process.env, ...env },
   });
+}
+
+/**
+ * `pm2 jlist` prints a "PM2 is out-of-date" banner — and, when PM2+ is linked,
+ * an activation line — on stdout *before* the JSON. So this cannot be a plain
+ * JSON.parse; it has to slice from the first bracket.
+ */
+function pm2List() {
+  const out = execFileSync("pm2", ["jlist"], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const start = out.indexOf("[{");
+  if (start === -1) {
+    throw new Error(
+      `pm2 jlist returned no process array:\n${out.slice(0, 400)}`,
+    );
+  }
+  return JSON.parse(out.slice(start));
+}
+
+/**
+ * Reload every pm2 id belonging to TARGETS, one call per id, then prove each
+ * one actually restarted.
+ *
+ * Both halves matter. `pm2 reload mtmux-api mtmux-app` acts on the first match
+ * only, and `mtmux-app` runs as two ids — which is how a previous deploy left
+ * one process serving a .next tree the build had already replaced, 404ing its
+ * own chunks until each id was reloaded by hand. And pm2 exits 0 for a reload
+ * that silently did nothing, so the exit code is not evidence; a pid that
+ * changed, or an uptime that moved forward, is.
+ */
+function reloadTargets() {
+  const before = pm2List().filter((p) => TARGETS.includes(p.name));
+  if (before.length === 0) {
+    console.error(
+      `✗ none of ${TARGETS.join(", ")} are known to pm2. Nothing was reloaded.`,
+    );
+    process.exit(1);
+  }
+
+  for (const proc of before) {
+    console.log(`$ pm2 reload ${proc.pm_id}  (${proc.name})`);
+    execFileSync("pm2", ["reload", String(proc.pm_id), "--update-env"], {
+      stdio: "inherit",
+    });
+  }
+
+  const after = new Map(pm2List().map((p) => [p.pm_id, p]));
+  const stale = [];
+  for (const proc of before) {
+    const now = after.get(proc.pm_id);
+    if (!now || now.pm2_env.status !== "online") {
+      stale.push(
+        `${proc.name}#${proc.pm_id} is ${now?.pm2_env.status ?? "gone"}`,
+      );
+      continue;
+    }
+    const restarted =
+      now.pid !== proc.pid || now.pm2_env.pm_uptime > proc.pm2_env.pm_uptime;
+    if (!restarted) {
+      stale.push(`${proc.name}#${proc.pm_id} did not restart (pid ${now.pid})`);
+      continue;
+    }
+    console.log(`  ✓ ${proc.name}#${proc.pm_id} restarted (pid ${now.pid})`);
+  }
+
+  if (stale.length > 0) {
+    console.error(
+      `✗ these processes are still serving the old build:\n` +
+        stale.map((s) => `    ${s}`).join("\n") +
+        `\n  Their .next tree has been replaced underneath them, so they will\n` +
+        `  404 their own chunks. Reload them by pm2 id before walking away.`,
+    );
+    process.exit(1);
+  }
 }
 
 console.log(`→ build (API_ORIGIN=${API_ORIGIN})`);
@@ -62,6 +139,6 @@ console.log("→ stage the standalone tree");
 run("pnpm prepare:standalone");
 
 console.log("→ reload");
-run("pm2 reload mtmux-api mtmux-app --update-env");
+reloadTargets();
 
 console.log(`\n✓ deployed. Verify:  curl -s ${API_ORIGIN}/health`);
