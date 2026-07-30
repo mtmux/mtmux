@@ -432,6 +432,15 @@ export const PairClaimResponse = z.object({
    */
   waiting: z.boolean(),
   /**
+   * Compatibility only, and clamped to 0 or 1.
+   *
+   * Clients up to mtmux 0.4.0 parse this response strictly and require this
+   * field, so dropping it would break `mtmux pair` on every install already out
+   * there. Clamped it says exactly what `waiting` says. Nothing new should read
+   * it, and it can go once 0.4.x is no longer in the wild.
+   */
+  offered: z.number().int().min(0).max(1).optional(),
+  /**
    * Handle for `WS /v1/claim/:claimId`, where the CLI collects the replies.
    *
    * The claim is a POST (per plan) but the answer is inherently many-valued

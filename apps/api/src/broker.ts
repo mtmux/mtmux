@@ -413,7 +413,18 @@ export function createBroker(deps: BrokerDeps = {}) {
       // unauthenticated caller exactly how many pairings were live on a slot,
       // which is a free enumeration oracle; the claimant only ever needed to
       // know whether to bother opening a socket.
-      body: { claimId: claim.id, waiting: targets.length > 0 },
+      //
+      // `offered` is kept, clamped to 0 or 1, purely for clients that predate
+      // `waiting`: mtmux <= 0.4.0 runs a strict schema parse on this response
+      // and a missing field would make `mtmux pair` throw outright. Clamped, it
+      // carries exactly what `waiting` carries and no more — an old client
+      // seeds "one peer to rule out", which is right in the common case and at
+      // worst gives up one peer early on a slot collision.
+      body: {
+        claimId: claim.id,
+        waiting: targets.length > 0,
+        offered: targets.length > 0 ? 1 : 0,
+      },
     };
   }
 

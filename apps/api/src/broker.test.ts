@@ -13,7 +13,11 @@ import {
   generateDeviceKey,
   signChallenge,
 } from "@repo/crypto";
-import type { PairingServerMessage, TunnelServerMessage } from "@repo/protocol";
+import {
+  PairClaimResponse,
+  type PairingServerMessage,
+  type TunnelServerMessage,
+} from "@repo/protocol";
 import { createBroker, type Socket } from "./broker.js";
 import {
   createMailboxStore,
@@ -136,19 +140,26 @@ describe("POST /v1/pair/claim", () => {
   it("reports only whether anything waits, never how many", () => {
     // A live count on a slot is a free enumeration oracle for anyone who can
     // POST, so the response is deliberately a boolean.
-    const broker = createBroker();
-    const { slot, mailboxId } = broker.pairNew(IP).body as {
-      slot: string;
-      mailboxId: string;
-    };
-    broker.attachMailboxSocket(mailboxId, fakeSocket().socket);
-
-    const body = broker.pairClaim(IP, claimBody(slot)).body as Record<
+    const h = harness();
+    h.openSlot("49", MAX_MAILBOXES_PER_SLOT);
+    const body = h.broker.pairClaim(IP, claimBody("49")).body as Record<
       string,
       unknown
     >;
     expect(body.waiting).toBe(true);
-    expect(body).not.toHaveProperty("offered");
+    // Two mailboxes answered, but the response says only "something is here".
+    // `offered` survives clamped for clients that predate `waiting`; it must
+    // never again report how many pairings are live on a slot.
+    expect(body.offered).toBe(1);
+  });
+
+  it("keeps the compatibility field readable by an old client", () => {
+    // mtmux <= 0.4.0 parses this response strictly and requires `offered`.
+    // Dropping it would make `mtmux pair` throw on every existing install.
+    const broker = createBroker();
+    const empty = broker.pairClaim(IP, claimBody("49")).body;
+    expect(PairClaimResponse.safeParse(empty).success).toBe(true);
+    expect((empty as { offered: number }).offered).toBe(0);
   });
 
   it("fans a claim out to every live mailbox sharing the slot", () => {
