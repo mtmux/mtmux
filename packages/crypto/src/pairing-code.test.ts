@@ -8,6 +8,11 @@ import {
   parseCode,
   isValidSlot,
   isValidSecret,
+  isValidLongSecret,
+  generateLongSecret,
+  formatLongCode,
+  LONG_SECRET_BYTES,
+  LONG_SECRET_CHARS,
   SECRET_COUNT,
   SLOT_COUNT,
 } from "./pairing-code";
@@ -126,5 +131,71 @@ describe("parsing what a human actually types", () => {
       const secret = generateSecret();
       expect(parseCode(formatCode(slot, secret))).toEqual({ slot, secret });
     }
+  });
+});
+
+describe("the long secret the QR carries", () => {
+  it("is 22 base64url characters, and always exactly that", () => {
+    for (let i = 0; i < 200; i++) {
+      const secret = generateLongSecret();
+      expect(secret).toHaveLength(LONG_SECRET_CHARS);
+      expect(isValidLongSecret(secret)).toBe(true);
+      // Unpadded: '=' would have to be escaped in a URL fragment.
+      expect(secret).not.toContain("=");
+    }
+  });
+
+  it("carries the full 128 bits", () => {
+    // Not a distribution test — that is what a CSPRNG is for. This pins the
+    // width, because silently generating fewer bytes here would weaken the
+    // path most people use while every other test kept passing.
+    expect(LONG_SECRET_BYTES).toBe(16);
+    expect(LONG_SECRET_CHARS).toBe(Math.ceil((LONG_SECRET_BYTES * 4) / 3));
+
+    const seen = new Set<string>();
+    for (let i = 0; i < 500; i++) seen.add(generateLongSecret());
+    expect(seen.size).toBe(500);
+  });
+
+  it("rejects anything that is not the exact shape", () => {
+    for (const bad of [
+      "",
+      "short",
+      "A".repeat(LONG_SECRET_CHARS - 1),
+      "A".repeat(LONG_SECRET_CHARS + 1),
+      // '+' and '/' are base64, not base64url — they would need escaping.
+      `${"A".repeat(LONG_SECRET_CHARS - 1)}+`,
+      `${"A".repeat(LONG_SECRET_CHARS - 1)}/`,
+    ]) {
+      expect(isValidLongSecret(bad)).toBe(false);
+    }
+  });
+
+  it("round-trips through parseCode alongside the typed form", () => {
+    for (let i = 0; i < 200; i++) {
+      const slot = generateSlot();
+      const secret = generateLongSecret();
+      expect(parseCode(formatLongCode(slot, secret))).toEqual({ slot, secret });
+    }
+  });
+
+  it("never mangles a secret containing a dash", () => {
+    // The whole reason the long form skips `normalizeCode`: '-' is a base64url
+    // character, and stripping it as punctuation would corrupt roughly one
+    // secret in eight while looking like a wrong code.
+    const secret = `-${"A".repeat(LONG_SECRET_CHARS - 2)}-`;
+    expect(isValidLongSecret(secret)).toBe(true);
+    expect(parseCode(`49${secret}`)).toEqual({ slot: "49", secret });
+  });
+
+  it("still rejects the shapes that are neither form", () => {
+    for (const bad of ["49", "4".repeat(23), `49${"A".repeat(21)}`]) {
+      expect(parseCode(bad)).toBeNull();
+    }
+  });
+
+  it("refuses to format a malformed long code", () => {
+    expect(() => formatLongCode("4", generateLongSecret())).toThrow();
+    expect(() => formatLongCode("49", "too-short")).toThrow();
   });
 });

@@ -14,7 +14,7 @@ import {
 } from "@repo/ui/components/ui/card";
 import { RefreshCw, Terminal } from "lucide-react";
 import { toast } from "sonner";
-import { normalizeCode } from "@repo/crypto";
+import { normalizeCode, parseCode } from "@repo/crypto";
 import { env } from "@/env";
 import {
   joinPairing,
@@ -123,9 +123,11 @@ export default function JoinPage() {
     }
     if (typeof window === "undefined") return;
 
-    const fromFragment = normalizeCode(
-      decodeURIComponent(window.location.hash.replace(/^#/, "")),
-    );
+    // Either shape: six typed digits, or the QR's slot + 128-bit secret.
+    // `parseCode` validates both and rejects anything else, so a junk fragment
+    // still lands on the manual form rather than starting a doomed handshake.
+    const raw = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+    const fromFragment = parseCode(raw) ? raw : null;
     if (!fromFragment) return;
 
     // Out of the address bar before the handshake starts, so a screenshot, a

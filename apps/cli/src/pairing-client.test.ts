@@ -190,7 +190,7 @@ describe("code validation", () => {
 
   it("accepts spaced and dashed codes", async () => {
     const s = scenario({ browserSecrets: [] });
-    // offered === 0 short-circuits, which is enough to prove the code parsed.
+    // Nothing waiting short-circuits, which is enough to prove the code parsed.
     await expect(
       pairWithCode({
         code: "49 27-16",

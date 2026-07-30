@@ -13,6 +13,7 @@ import {
   SCALAR_BYTES,
 } from "./cpace";
 import { bytesToHex, hexToBytes, utf8ToBytes, randomBytes } from "./bytes";
+import { generateLongSecret } from "./pairing-code";
 
 /**
  * Vectors from draft-irtf-cfrg-cpace-13, Appendix B.3 (CPACE-RISTR255-SHA512).
@@ -164,6 +165,28 @@ describe("CPace end-to-end behaviour", () => {
     const iskB = b.finish(a.share, { ...ad, isInitiator: false });
     expect(bytesToHex(iskA)).toBe(bytesToHex(iskB));
     expect(iskA.length).toBe(64);
+  });
+
+  it("agrees on a key under a 128-bit password, unchanged", () => {
+    // The QR carries 22 base64url characters instead of four digits. CPace
+    // takes the password as opaque bytes, so nothing in this file, `kdf.ts` or
+    // `frames.ts` has to know which form is in use — this test is what pins
+    // that, so the long form cannot quietly stop working.
+    const pw = utf8ToBytes(generateLongSecret());
+    const a = cpaceStart(pw, ci, sid);
+    const b = cpaceStart(pw, ci, sid);
+    const iskA = a.finish(b.share, { ...ad, isInitiator: true });
+    const iskB = b.finish(a.share, { ...ad, isInitiator: false });
+    expect(bytesToHex(iskA)).toBe(bytesToHex(iskB));
+    expect(iskA.length).toBe(64);
+  });
+
+  it("produces unrelated keys when two long passwords differ", () => {
+    const a = cpaceStart(utf8ToBytes(generateLongSecret()), ci, sid);
+    const b = cpaceStart(utf8ToBytes(generateLongSecret()), ci, sid);
+    expect(
+      bytesToHex(a.finish(b.share, { ...ad, isInitiator: true })),
+    ).not.toBe(bytesToHex(b.finish(a.share, { ...ad, isInitiator: false })));
   });
 
   it("produces unrelated keys when the passwords differ by one digit", () => {

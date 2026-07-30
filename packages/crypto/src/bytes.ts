@@ -91,7 +91,15 @@ export function base64UrlToBytes(text: string): Uint8Array {
   return out.subarray(0, pos);
 }
 
-/** Overwrite key material in place. Best-effort — JS gives no real guarantees. */
-export function wipe(bytes: Uint8Array): void {
-  bytes.fill(0);
+/**
+ * Overwrite key material in place. Best-effort — JS gives no real guarantees,
+ * and it can do nothing at all for a string (see ./envelope).
+ *
+ * Variadic and null-tolerant because the callers are teardown paths — locking
+ * the device, an aborted enrollment, a failed unwrap — where half the buffers
+ * may never have been assigned. `wipe(a, b, c)` on the way out is only
+ * reliably written if it never needs a guard around each argument.
+ */
+export function wipe(...arrays: (Uint8Array | null | undefined)[]): void {
+  for (const bytes of arrays) bytes?.fill(0);
 }

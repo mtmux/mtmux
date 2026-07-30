@@ -18,6 +18,7 @@ import {
   localRelayConnector,
   type TunnelAgent,
 } from "../tunnel-agent.js";
+import { generateLongSecret, generateSecret } from "@repo/crypto";
 import {
   hostPairing,
   PairingError,
@@ -267,10 +268,21 @@ async function startHosted(opts: {
    */
   let unattendedExpiries = 0;
 
-  // One armed code at a time, re-minted after each successful pairing: a code
-  // is single-use, and leaving a spent one on screen is worse than no code.
+  /**
+   * Arm one pair of codes: six digits to type, and 128 bits to scan.
+   *
+   * Two mailboxes rather than one, because a mailbox commits to a single CPace
+   * password the moment it answers a claim — so a four-digit secret and a
+   * 128-bit one cannot share it. They are parked together and raced: whichever
+   * is claimed first wins and the other is cancelled, which destroys its
+   * mailbox immediately rather than leaving a live code nobody is watching.
+   *
+   * The point of the pair is that scanning a QR is not typing. Nobody reads the
+   * long secret off a screen, so there is no reason for the path almost
+   * everyone uses to carry the same 19.9 bits as the fallback.
+   */
   const arm = async (): Promise<PairingInvite> => {
-    const pairing: HostedPairing = await hostPairing({
+    const hostOpts = () => ({
       apiBase: opts.base,
       buildDescriptor: () => ({
         candidates: opts.tunnelOnly ? [] : buildCandidates(opts.port, null),
@@ -282,62 +294,92 @@ async function startHosted(opts: {
       seal: sealDescriptor,
     });
 
-    void pairing.paired
-      .then(async (result) => {
-        // Registration BEFORE the agent will admit the keys, and this order is
-        // load-bearing now that the tunnel agent no longer injects the
-        // machine's own token. Admitting the keys first opens a window in
-        // which the browser can win the race, send its `auth` frame down the
-        // tunnel, and be refused because the relay has never been told about
-        // that token. A failure here must therefore *not* admit the keys.
-        const grant = opts.buildGrant?.(result.keys.directToken);
-        const registered = await registerDirectToken(
-          opts.port,
-          opts.cfg.token,
-          result.keys.directToken,
-          grant,
-        );
-        // A scoped pairing that could not be registered must not be admitted:
-        // the alternative is a browser that authenticates against a relay
-        // which has never heard of its token, and so falls through to nothing.
-        if (grant && !registered) {
-          console.log(
-            kleur.red("  ✗ Could not register the share. Nothing was shared."),
-          );
-          return;
-        }
-        agent.addSessionKeys(result.keys);
-        if (grant) await grantsStore.add(grant);
-        await configStore.addPeer({
-          deviceId: result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,
-          publicKey: result.peerPublicKey ?? "",
-          label: result.peerLabel,
-          pairedAt: Date.now(),
-          lastSeenAt: Date.now(),
-          directToken: result.keys.directToken,
-        });
-        opts.onPaired(result.peerLabel);
-        unattendedExpiries = 0;
-        opts.onRearm(await arm());
-      })
-      .catch((err: unknown) => {
-        const decision = rearmDecision(err, unattendedExpiries);
-        unattendedExpiries = decision.expiries;
-        if (!decision.rearm) {
-          opts.onIdle?.();
-          return;
-        }
+    const [typed, scanned] = await Promise.all([
+      hostPairing({ ...hostOpts(), secret: generateSecret() }),
+      hostPairing({ ...hostOpts(), secret: generateLongSecret() }),
+    ]);
 
-        // A failed handshake burns the code by design. Offer a fresh one
-        // rather than leaving the server unreachable to the next device.
-        void arm()
-          .then(opts.onRearm)
-          .catch(() => {});
-      });
+    // Exactly one of the two may settle the round.
+    let decided = false;
+    let failures = 0;
+
+    const wire = (self: HostedPairing, other: HostedPairing) => {
+      void self.paired
+        .then(async (result) => {
+          if (decided) return;
+          decided = true;
+          // The round is over, so the sibling code must stop being claimable.
+          other.cancel();
+          // Registration BEFORE the agent will admit the keys, and this order is
+          // load-bearing now that the tunnel agent no longer injects the
+          // machine's own token. Admitting the keys first opens a window in
+          // which the browser can win the race, send its `auth` frame down the
+          // tunnel, and be refused because the relay has never been told about
+          // that token. A failure here must therefore *not* admit the keys.
+          const grant = opts.buildGrant?.(result.keys.directToken);
+          const registered = await registerDirectToken(
+            opts.port,
+            opts.cfg.token,
+            result.keys.directToken,
+            grant,
+          );
+          // A scoped pairing that could not be registered must not be admitted:
+          // the alternative is a browser that authenticates against a relay
+          // which has never heard of its token, and so falls through to nothing.
+          if (grant && !registered) {
+            console.log(
+              kleur.red(
+                "  ✗ Could not register the share. Nothing was shared.",
+              ),
+            );
+            return;
+          }
+          agent.addSessionKeys(result.keys);
+          if (grant) await grantsStore.add(grant);
+          await configStore.addPeer({
+            deviceId:
+              result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,
+            publicKey: result.peerPublicKey ?? "",
+            label: result.peerLabel,
+            pairedAt: Date.now(),
+            lastSeenAt: Date.now(),
+            directToken: result.keys.directToken,
+          });
+          opts.onPaired(result.peerLabel);
+          unattendedExpiries = 0;
+          opts.onRearm(await arm());
+        })
+        .catch((err: unknown) => {
+          if (decided) return;
+          // Both codes must be spent before the round is. Otherwise cancelling
+          // the loser would itself look like a failure and re-arm on top of a
+          // pairing that had just succeeded.
+          failures += 1;
+          if (failures < 2) return;
+          decided = true;
+
+          const decision = rearmDecision(err, unattendedExpiries);
+          unattendedExpiries = decision.expiries;
+          if (!decision.rearm) {
+            opts.onIdle?.();
+            return;
+          }
+
+          // A failed handshake burns the code by design. Offer a fresh one
+          // rather than leaving the server unreachable to the next device.
+          void arm()
+            .then(opts.onRearm)
+            .catch(() => {});
+        });
+    };
+
+    wire(typed, scanned);
+    wire(scanned, typed);
 
     return {
-      code: pairing.code,
-      url: joinUrl(appOrigin, pairing.code),
+      code: typed.code,
+      // The QR carries the long secret; only `code` is meant to be read aloud.
+      url: joinUrl(appOrigin, scanned.code),
       host: appOrigin.replace(/^https?:\/\//, ""),
     };
   };

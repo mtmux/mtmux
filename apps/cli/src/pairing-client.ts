@@ -194,7 +194,11 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
 // ---------------------------------------------------------------------------
 
 export type HostedPairing = {
-  /** The six digits to display, and to encode in the QR. */
+  /**
+   * Slot and secret concatenated: six digits for the default four-digit
+   * secret, or slot + 22 base64url characters when `secret` was a long one.
+   * `mtmux start` shows the first and puts the second in the QR.
+   */
   code: string;
   slot: string;
   expiresAt: number;
@@ -208,6 +212,14 @@ export type HostOptions = {
   apiBase?: string;
   /** Injected by tests, and by anything that is not talking to a real broker. */
   transport?: MailboxTransport;
+  /**
+   * The PAKE password to park this mailbox under. Defaults to four digits.
+   *
+   * `mtmux start` supplies a 128-bit one for the mailbox behind the QR, since
+   * nothing has to read that off a screen. A mailbox commits to one password
+   * when it answers, so the two forms need a mailbox each.
+   */
+  secret?: string;
   /** Built once the key is known, so the CLI can seal it for this peer. */
   buildDescriptor: () => SealedDescriptor;
   seal: (
@@ -239,9 +251,10 @@ export type HostOptions = {
  *     });
  */
 export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
-  // Generated here and only here. It is never transmitted, hashed or logged —
-  // the broker mints the slot, and that is all it is ever told.
-  const secret = generateSecret();
+  // Generated here by default, and wherever it comes from it is never
+  // transmitted, hashed or logged — the broker mints the slot, and that is all
+  // it is ever told.
+  const secret = opts.secret ?? generateSecret();
 
   if (!opts.transport && !opts.apiBase) {
     throw new PairingError("hostPairing needs an apiBase or a transport.");
