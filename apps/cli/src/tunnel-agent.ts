@@ -8,11 +8,19 @@ import {
   hexToBytes,
   signChallenge,
   utf8ToBytes,
+  deriveSas,
+  deriveSessionKeys,
+  newEphemeralKey,
+  sasSharedSecret,
+  sasTranscript,
+  verifySasCommitment,
   type DeviceKeyPair,
+  type EphemeralKeyPair,
   type SessionKeys,
 } from "@repo/crypto";
 import {
   tryDeserializeTunnelServerMessage,
+  type PairDeniedMessage,
   type TunnelServerMessage,
 } from "@repo/protocol";
 
@@ -71,6 +79,16 @@ export type TunnelAgentOptions = {
   connectLocal: () => LocalSocket;
   onTunnelReady?: (tunnelId: string) => void;
   onStatus?: (status: AgentStatus, detail?: string) => void;
+  /**
+   * Decide a request from a signed-in browser to pair with this machine.
+   *
+   * Absent means refuse, which is the safe default: a machine with nobody to
+   * ask must not let anyone in on the strength of an account session alone.
+   * The SAS is already derived when this is called — the implementation's job
+   * is to show it to a human and report what they said, and to seal the
+   * descriptor if they said yes.
+   */
+  onAccessRequest?: (request: AccessRequest) => Promise<AccessDecision>;
   /** Injected for tests; real runs use exponential backoff with jitter. */
   scheduleRetry?: (attempt: number, run: () => void) => void;
 };
@@ -80,6 +98,22 @@ export type AgentStatus =
   | "registered"
   | "disconnected"
   | "stopped";
+
+/** What the human at this machine is being asked to approve. */
+export type AccessRequest = {
+  requestId: string;
+  /** Six digits, to be compared against what the browser is showing. */
+  sas: string;
+  /** Self-reported by the browser. Shown, never trusted. */
+  deviceLabel: string;
+  accountEmail: string;
+  /** Already derived, so the caller only has to seal with them. */
+  keys: SessionKeys;
+};
+
+export type AccessDecision =
+  | { approved: true; sealedDescriptor: string }
+  | { approved: false; reason?: "refused" | "no-tty" };
 
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
@@ -113,6 +147,14 @@ export type TunnelAgent = {
   readonly status: AgentStatus;
 };
 
+/** A requested pairing between the ack and the reveal. */
+type PendingAccess = {
+  commitment: Uint8Array;
+  deviceLabel: string;
+  accountEmail: string;
+  ephemeral: EphemeralKeyPair;
+};
+
 /** Everything one browser↔relay stream needs. */
 type Stream = {
   local: LocalSocket;
@@ -142,6 +184,14 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
   let stopped = false;
 
   const streams = new Map<string, Stream>();
+  /**
+   * Requests waiting for the browser to reveal the key it committed to.
+   *
+   * Holds the commitment and our own ephemeral key, and nothing else — the
+   * derived keys do not exist until the reveal arrives, so a request abandoned
+   * halfway leaves no key material behind.
+   */
+  const accessRequests = new Map<string, PendingAccess>();
   /** Key schedules of every pairing this process has completed. */
   const keyring: SessionKeys[] = [];
 
@@ -321,12 +371,112 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
         return;
       }
 
+      case "pair:request": {
+        // Answer with our ephemeral key straight away, having seen nothing of
+        // theirs. That ordering is the whole point: the browser committed to
+        // its key before this, so neither side — and crucially not the broker
+        // in between — can choose a key after seeing the other's.
+        const ephemeral = newEphemeralKey();
+        accessRequests.set(message.requestId, {
+          commitment: hexToBytes(message.commitment),
+          deviceLabel: message.deviceLabel,
+          accountEmail: message.accountEmail,
+          ephemeral,
+        });
+        send({
+          type: "pair:request-ack",
+          requestId: message.requestId,
+          cliPublicKey: bytesToHex(ephemeral.publicKey),
+        });
+        return;
+      }
+
+      case "pair:reveal": {
+        const pending = accessRequests.get(message.requestId);
+        if (!pending) return;
+        // One shot per request, whatever happens next.
+        accessRequests.delete(message.requestId);
+        void decideAccess(message.requestId, pending, message.browserPublicKey);
+        return;
+      }
+
       case "tunnel:closed": {
         setStatus("disconnected", message.reason);
         teardownStreams();
         broker?.close();
         return;
       }
+    }
+  }
+
+  /**
+   * Check the commitment, derive the SAS, and ask.
+   *
+   * A refusal and a failed commitment are reported differently on the wire but
+   * both end the request — the broker burns it either way, so neither can be
+   * retried without the browser starting over.
+   */
+  async function decideAccess(
+    requestId: string,
+    pending: PendingAccess,
+    browserPublicKeyHex: string,
+  ): Promise<void> {
+    const deny = (reason: PairDeniedMessage["reason"]) =>
+      send({ type: "pair:denied", requestId, reason });
+
+    let keys: SessionKeys;
+    let sas: string;
+    try {
+      const browserPublicKey = hexToBytes(browserPublicKeyHex);
+      // The revealed key must be the one that was committed to. A broker
+      // splicing in its own key fails here rather than silently succeeding.
+      if (
+        !verifySasCommitment(pending.commitment, browserPublicKey, requestId)
+      ) {
+        deny("commitment-failed");
+        return;
+      }
+
+      const ikm = sasSharedSecret(pending.ephemeral.secret, browserPublicKey);
+      const transcript = sasTranscript(
+        requestId,
+        pending.commitment,
+        browserPublicKey,
+        pending.ephemeral.publicKey,
+      );
+      keys = deriveSessionKeys(ikm, transcript);
+      sas = deriveSas(ikm, transcript);
+    } catch {
+      // A malformed or degenerate key. Nothing to show a human.
+      deny("commitment-failed");
+      return;
+    }
+
+    // No handler means nobody can be asked, and nobody being asked means no.
+    if (!opts.onAccessRequest) {
+      deny("no-tty");
+      return;
+    }
+
+    try {
+      const decision = await opts.onAccessRequest({
+        requestId,
+        sas,
+        deviceLabel: pending.deviceLabel,
+        accountEmail: pending.accountEmail,
+        keys,
+      });
+      if (!decision.approved) {
+        deny(decision.reason ?? "refused");
+        return;
+      }
+      send({
+        type: "pair:approved",
+        requestId,
+        sealedDescriptor: decision.sealedDescriptor,
+      });
+    } catch {
+      deny("refused");
     }
   }
 

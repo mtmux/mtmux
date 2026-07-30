@@ -1334,3 +1334,197 @@ describe("tunnel identity", () => {
     ).not.toBeNull();
   });
 });
+
+/**
+ * Requested pairing: the dashboard asking a machine to let it in.
+ *
+ * The broker's job here is narrow — forward opaque blobs between an
+ * account-authenticated browser and a device-authenticated machine, and never
+ * be in a position to answer for either. These pin the parts of that which are
+ * the broker's responsibility rather than the crypto's.
+ */
+describe("POST /v1/pair/request", () => {
+  /** A registered agent, and the socket the broker talks to it on. */
+  function machine(broker: ReturnType<typeof createBroker>) {
+    const s = fakeSocket();
+    const handle = broker.attachAgentSocket(s.socket);
+    const challenge = s.ofType<{ challenge: string }>("tunnel:challenge")[0]!;
+    const key = generateDeviceKey();
+    handle.message(
+      JSON.stringify({
+        type: "tunnel:register",
+        deviceId: key.deviceId,
+        publicKey: bytesToHex(key.publicKey),
+        challenge: challenge.challenge,
+        signature: bytesToHex(
+          signChallenge(key.secretKey, hexToBytes(challenge.challenge)),
+        ),
+      }),
+    );
+    return { socket: s, handle, key };
+  }
+
+  const ask = (broker: ReturnType<typeof createBroker>, deviceId: string) =>
+    broker.pairRequest(deviceId, {
+      deviceLabel: "iPhone · Safari",
+      accountEmail: "someone@example.com",
+    });
+
+  const COMMITMENT = "a".repeat(64);
+
+  it("refuses when the machine is not online", () => {
+    const broker = createBroker();
+    expect(ask(broker, "0".repeat(16)).status).toBe(409);
+  });
+
+  it("tells the machine nothing until the browser has committed", () => {
+    // The commitment covers the request id, so it cannot ride the POST. The
+    // machine must not be prompted before there is a commitment to bind it.
+    const broker = createBroker();
+    const m = machine(broker);
+    const { requestId } = ask(broker, m.key.deviceId).body as {
+      requestId: string;
+    };
+    expect(m.socket.ofType("pair:request")).toHaveLength(0);
+
+    const browser = fakeSocket();
+    const handle = broker.attachRequestSocket(requestId, browser.socket)!;
+    handle.message(
+      JSON.stringify({
+        type: "pair:commit",
+        requestId,
+        commitment: COMMITMENT,
+      }),
+    );
+
+    const forwarded = m.socket.ofType<{ commitment: string }>("pair:request");
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]!.commitment).toBe(COMMITMENT);
+  });
+
+  it("forwards a commitment only once", () => {
+    // A second commitment would be a second chance to choose a key after
+    // seeing the machine's, which is exactly what committing exists to stop.
+    const broker = createBroker();
+    const m = machine(broker);
+    const { requestId } = ask(broker, m.key.deviceId).body as {
+      requestId: string;
+    };
+    const browser = fakeSocket();
+    const handle = broker.attachRequestSocket(requestId, browser.socket)!;
+    const commit = JSON.stringify({
+      type: "pair:commit",
+      requestId,
+      commitment: COMMITMENT,
+    });
+    handle.message(commit);
+    handle.message(
+      JSON.stringify({ ...JSON.parse(commit), commitment: "b".repeat(64) }),
+    );
+
+    expect(m.socket.ofType("pair:request")).toHaveLength(1);
+  });
+
+  it("allows one undecided request per machine", () => {
+    // Otherwise a compromised session buries a real prompt under a hundred
+    // others, and approval fatigue does the attacker's work.
+    const broker = createBroker();
+    const m = machine(broker);
+    expect(ask(broker, m.key.deviceId).status).toBe(200);
+    expect(ask(broker, m.key.deviceId).status).toBe(409);
+  });
+
+  it("lets a refusal be asked again, but not retried", () => {
+    const broker = createBroker();
+    const m = machine(broker);
+    const { requestId } = ask(broker, m.key.deviceId).body as {
+      requestId: string;
+    };
+    const browser = fakeSocket();
+    broker.attachRequestSocket(requestId, browser.socket);
+
+    m.handle.message(
+      JSON.stringify({ type: "pair:denied", requestId, reason: "refused" }),
+    );
+    expect(browser.ofType("pair:denied")).toHaveLength(1);
+
+    // The denial burned it: the same request cannot be answered twice.
+    m.handle.message(
+      JSON.stringify({
+        type: "pair:approved",
+        requestId,
+        sealedDescriptor: "AQID",
+      }),
+    );
+    expect(browser.ofType("pair:approved")).toHaveLength(0);
+
+    // But the machine is free for a fresh request.
+    expect(ask(broker, m.key.deviceId).status).toBe(200);
+  });
+
+  it("refuses to let one machine answer another's request", () => {
+    const broker = createBroker();
+    const target = machine(broker);
+    const other = machine(broker);
+    const { requestId } = ask(broker, target.key.deviceId).body as {
+      requestId: string;
+    };
+    const browser = fakeSocket();
+    broker.attachRequestSocket(requestId, browser.socket);
+
+    other.handle.message(
+      JSON.stringify({
+        type: "pair:approved",
+        requestId,
+        sealedDescriptor: "AQID",
+      }),
+    );
+    expect(browser.ofType("pair:approved")).toHaveLength(0);
+  });
+
+  it("buffers the machine's reply until the browser's socket attaches", () => {
+    const broker = createBroker();
+    const m = machine(broker);
+    const { requestId } = ask(broker, m.key.deviceId).body as {
+      requestId: string;
+    };
+
+    m.handle.message(
+      JSON.stringify({
+        type: "pair:request-ack",
+        requestId,
+        cliPublicKey: "c".repeat(64),
+      }),
+    );
+
+    const browser = fakeSocket();
+    broker.attachRequestSocket(requestId, browser.socket);
+    expect(browser.ofType("pair:request-ack")).toHaveLength(1);
+  });
+
+  it("closes a second listener on one request", () => {
+    const broker = createBroker();
+    const m = machine(broker);
+    const { requestId } = ask(broker, m.key.deviceId).body as {
+      requestId: string;
+    };
+    const first = fakeSocket();
+    broker.attachRequestSocket(requestId, first.socket);
+    const second = fakeSocket();
+    expect(broker.attachRequestSocket(requestId, second.socket)).toBeNull();
+    expect(second.closed).not.toBeNull();
+  });
+
+  it("never writes down which account asked which machine", () => {
+    const broker = createBroker();
+    const m = machine(broker);
+    const result = ask(broker, m.key.deviceId);
+    // The response carries a handle and a deadline; the request record the
+    // broker keeps is not otherwise observable, and health reports nothing.
+    expect(Object.keys(result.body as object).sort()).toEqual([
+      "expiresAt",
+      "requestId",
+    ]);
+    expect(JSON.stringify(broker.health().body)).not.toContain("example.com");
+  });
+});

@@ -61,6 +61,19 @@ export const PLANS: Record<PlanId, PlanLimits> = {
 
 export const DEFAULT_PLAN: PlanId = "free";
 
+/**
+ * The free trial.
+ *
+ * Note what is *not* here: a `"trial"` entry in `PlanId`. A trial is a reason
+ * an account resolves to a plan, not a tier of its own — which is exactly what
+ * keeps `limitsFor`, `exceeds`, the billing panel and the site's pricing table
+ * from needing to know it exists. Everything downstream sees "pro" and behaves
+ * accordingly; only the resolution step knows why.
+ */
+export const TRIAL_DAYS = 7;
+export const TRIAL_PLAN: PlanId = "pro";
+export const TRIAL_MS = TRIAL_DAYS * 24 * 60 * 60 * 1000;
+
 export function limitsFor(plan: string | null | undefined): PlanLimits {
   return PLANS[(plan as PlanId) in PLANS ? (plan as PlanId) : DEFAULT_PLAN];
 }

@@ -40,6 +40,22 @@ export const subscriptions = sqliteTable(
       .notNull()
       .default(false),
 
+    /**
+     * The free trial, stored here rather than in a `trials` table.
+     *
+     * `planFor()` already reads this row on the hot path and the unique index
+     * on `user_id` already exists, so a separate table would buy a second
+     * indexed read per entitlement check and nothing else.
+     *
+     * `trialStartedAt` is the permanent "this account has already had its
+     * trial" flag: it is never cleared, so an expired trial cannot be restarted
+     * by cancelling and re-registering. Both columns are nullable because the
+     * overwhelmingly common state is "never trialled", and a row exists for
+     * every account that has ever touched billing.
+     */
+    trialStartedAt: integer("trial_started_at", { mode: "timestamp_ms" }),
+    trialEndsAt: integer("trial_ends_at", { mode: "timestamp_ms" }),
+
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(now),

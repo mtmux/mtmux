@@ -176,6 +176,44 @@ The WebSocket upgrade checks `Origin` against `CORS_ORIGINS`:
 The relay never emits a wildcard `Access-Control-Allow-Origin`. In production it
 refuses to boot with a `localhost` origin in the list.
 
+## Scoped shares
+
+`mtmux share` narrows a browser's credential to named tmux sessions. Read-only
+is a real boundary; read-write is not. The difference, and why, is on its own
+page: [Sharing a session](/docs/sharing).
+
+## The device lock
+
+A browser that has paired holds keys in IndexedDB. By default they are stored in
+the clear, which is fine on a device only you use and is not fine on a phone you
+hand to someone. Setting a PIN in Settings encrypts them.
+
+This is encryption at rest, not a UI overlay — the keys are sealed with
+AES-256-GCM under a master key that exists only in memory, and locking is
+dropping that key. A reload is always locked, because a JavaScript module
+variable does not survive one.
+
+**What a PIN is worth, honestly.** Behind PBKDF2-SHA256 at 600,000 iterations, a
+six-digit PIN is roughly a minute of offline guessing on one consumer GPU. It
+stops the person holding your unlocked phone — the realistic threat — and it does
+not stop someone who copies this browser's storage and takes it away.
+
+**A passkey does.** Its secret comes from the WebAuthn `prf` extension, has 256
+bits of entropy, and never leaves the authenticator. It is additive: the PIN
+stays the base factor, because neither WebAuthn nor `crypto.subtle` exists on a
+plain-HTTP LAN address and `mtmux start` prints exactly such a URL.
+
+**There is no recovery.** Deliberately, and it costs little: re-pairing is
+running `mtmux` on the machine and typing six digits. Nothing on the machine is
+lost — the tmux sessions never stopped.
+
+Individual sessions can be marked **"require unlock to open"**, which re-asks for
+the PIN even on an already-unlocked device. The flag lives *inside* the encrypted
+record, so a locked device cannot be inspected to learn which sessions were worth
+protecting. It is a privacy control against someone in the room, not a server-side
+boundary — anyone with a devtools console on an unlocked device can drive the
+socket directly.
+
 ## Transport
 
 The CLI serves plain HTTP. That is correct on loopback and on a trusted LAN, and

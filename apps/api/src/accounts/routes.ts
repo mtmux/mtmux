@@ -67,7 +67,7 @@ export type RouteDeps = {
    */
   pairRequest?: (
     deviceId: string,
-    body: { commitment: string; deviceLabel: string; accountEmail: string },
+    body: { deviceLabel: string; accountEmail: string },
   ) => { status: number; body: unknown };
 };
 
@@ -132,7 +132,6 @@ export async function handleAccountRoute(
     }
 
     const result = deps.pairRequest(deviceIdFor(hexToBytes(server.publicKey)), {
-      commitment: body.data.commitment,
       deviceLabel: body.data.deviceLabel,
       // Shown on the machine so the person approving can see whose account
       // is asking. It is their own address; it tells them nothing new.

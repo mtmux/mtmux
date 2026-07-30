@@ -301,6 +301,21 @@ export const RequestIdSchema = z.string().min(8).max(64);
 const ephemeralKey = hex(32);
 const commitment = hex(32);
 
+/**
+ * Browser → broker, first message on `/v1/request/:id`: the commitment.
+ *
+ * Separate from the POST that mints the request id because the commitment has
+ * to cover that id — committing to a key without binding it to one request
+ * would let a commitment be lifted into another. The broker forwards nothing to
+ * the machine until this arrives, so the machine still answers having seen a
+ * commitment and no key.
+ */
+export const PairCommitMessage = z.object({
+  type: z.literal("pair:commit"),
+  requestId: RequestIdSchema,
+  commitment,
+});
+
 /** Broker → CLI: a browser is asking, and here is what it committed to. */
 export const PairRequestMessage = z.object({
   type: z.literal("pair:request"),
@@ -374,6 +389,7 @@ export const TunnelServerMessage = z.discriminatedUnion("type", [
 
 /** What the browser sends and receives on `/v1/request/:requestId`. */
 export const RequestClientMessage = z.discriminatedUnion("type", [
+  PairCommitMessage,
   PairRevealMessage,
 ]);
 
@@ -448,7 +464,6 @@ export const DiscoverResponse = z.object({
  */
 export const PairRequestBody = z.object({
   serverId: z.string().min(8).max(64),
-  commitment: hex(32),
   /** How the machine should describe the asker to the human at the keyboard. */
   deviceLabel: z.string().max(120),
 });
@@ -492,6 +507,7 @@ export type TunnelFrameMessage = z.infer<typeof TunnelFrameMessage>;
 export type TunnelClosedMessage = z.infer<typeof TunnelClosedMessage>;
 export type RequestClientMessage = z.infer<typeof RequestClientMessage>;
 export type RequestServerMessage = z.infer<typeof RequestServerMessage>;
+export type PairCommitMessage = z.infer<typeof PairCommitMessage>;
 export type PairRequestMessage = z.infer<typeof PairRequestMessage>;
 export type PairRequestAckMessage = z.infer<typeof PairRequestAckMessage>;
 export type PairRevealMessage = z.infer<typeof PairRevealMessage>;

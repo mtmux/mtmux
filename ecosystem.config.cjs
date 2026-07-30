@@ -50,8 +50,9 @@ module.exports = {
         API_CORS_ORIGINS: APP_ORIGIN,
 
         // Accounts and billing. The *secrets* (DATABASE_URL,
-        // BETTER_AUTH_SECRET, DODO_*) live in .env, loaded above; only the
-        // deployment topology belongs here.
+        // BETTER_AUTH_SECRET, DODO_*, RESEND_API_KEY, GOOGLE_CLIENT_*,
+        // GITHUB_CLIENT_*) live in .env, loaded above; only the deployment
+        // topology belongs here.
         //
         // BETTER_AUTH_URL must be the public https origin, not the loopback
         // one this process binds: session cookies are issued `Secure` and a
@@ -63,6 +64,29 @@ module.exports = {
         // `app.` and `api.` are different origins, so the session cookie has
         // to be scoped to the parent domain to be shared between them.
         AUTH_COOKIE_DOMAIN: ".mtmux.com",
+
+        /**
+         * ⚠︎ The WebAuthn Relying Party ID — a **one-way door**.
+         *
+         * Passkeys are bound to the rpID they were created under. Changing
+         * this after the first passkey exists does not migrate anything; it
+         * silently invalidates every credential ever registered, and there is
+         * no recovery beyond enrolling again.
+         *
+         * It is here rather than defaulted in code because it is deployment
+         * topology. The code default is the hostname of APP_ORIGIN — right for
+         * `pnpm dev` and right for every self-hoster, who serves one origin.
+         * This deployment serves two, `app.` and `api.`, and better-auth would
+         * otherwise derive `api.mtmux.com` from BETTER_AUTH_URL: the ceremony
+         * runs at `app.mtmux.com`, which is not a registrable-domain suffix of
+         * that, so every registration would fail with `SecurityError`.
+         *
+         * The apex covers `app.` and anything later put beside it. Accepted
+         * cost: any page on any `*.mtmux.com` subdomain can invoke these
+         * credentials, so never host untrusted user content on one.
+         */
+        PASSKEY_RP_ID: "mtmux.com",
+        PASSKEY_RP_NAME: "mtmux",
       },
     },
     {

@@ -21,6 +21,7 @@ flags.
 | `mtmux start` | Serve this machine's tmux, open a sealed tunnel, print a QR + six-digit code |
 | `mtmux local` | Alias for `mtmux start --local` |
 | `mtmux pair [code]` | The other direction: join a pairing a browser started |
+| `mtmux share <session>` | Share one tmux session without sharing the machine |
 | `mtmux status` | Show the server running on this machine |
 | `mtmux stop` | Stop the server running on this machine |
 | `mtmux doctor` | Check everything mtmux needs |
@@ -146,6 +147,35 @@ you got to over SSH, or when you want `--tunnel-only`. For the ordinary case,
 It stays in the foreground holding the tunnel open. Ctrl+C ends remote access;
 the local and LAN paths are unaffected.
 
+## `mtmux share`
+
+Share one tmux session with someone, without sharing the machine. Full details,
+including what a read-write share does and does not protect, are in
+[Sharing a Session](/docs/sharing) — read that page before you use this.
+
+```bash
+mtmux share <session>            # comma-separate for several
+mtmux share list
+mtmux share revoke <grantId>
+```
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--read-only` | off | They watch and cannot type. A real boundary. |
+| `--files <level>` | `none` | `none`, `ro`, `rw` |
+| `--expires <duration>` | `7d` | `30m`, `24h`, `7d`, `2w`, `never` |
+| `--label <text>` | `Share of <session>` | Name in `mtmux share list` |
+| `--no-qr` | — | Print the code without the QR block |
+| `-p, --port <number>` | `14100` | Port mtmux is serving on |
+| `--api <url>` | `https://api.mtmux.com` | Pairing service base URL |
+
+Requires a server already running on that port — the grant is pinned to tmux
+session ids, and only the running relay knows them.
+
+`mtmux start --share <sessions> [--read-only] [--files …]` does the same thing
+to the code `start` itself prints, so the first device to join is scoped rather
+than full-privilege.
+
 ## `mtmux status`
 
 ```
@@ -253,6 +283,7 @@ Aliased as `mtmux v`.
 | Path | Contents |
 | --- | --- |
 | `~/.mtmux/config.json` | Auth token, device key, paired peers, account, server name. Mode `0600`. |
+| `~/.mtmux/grants.json` | Shares created with `mtmux share`. Mode `0600`. Separate from `config.json` so a truncated write cannot cost you your device identity. |
 | `~/.mtmux/server.json` | The running server's pid, port, URLs and mode. |
 | `~/.tmuxremote/config.json` | Legacy location. Its token is adopted on first run if the new file is missing. |
 
@@ -260,5 +291,6 @@ Aliased as `mtmux v`.
 
 If you have seen these in an older guide or a generated snippet, they are not
 part of mtmux and never were: `mtmux up`, `mtmux down`, `mtmux watch`,
-`mtmux run`, `mtmux notify`, `mtmux share`, `mtmux sessions`. There is likewise
-no `~/.mtmux/agents.toml` — the only configuration file is `config.json`.
+`mtmux run`, `mtmux notify`, `mtmux sessions`. There is likewise no
+`~/.mtmux/agents.toml` — configuration is `config.json`, and shares are
+`grants.json`.

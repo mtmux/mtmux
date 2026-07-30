@@ -18,7 +18,11 @@ import {
   localRelayConnector,
   type TunnelAgent,
 } from "../tunnel-agent.js";
-import { generateLongSecret, generateSecret } from "@repo/crypto";
+import {
+  bytesToBase64Url,
+  generateLongSecret,
+  generateSecret,
+} from "@repo/crypto";
 import {
   hostPairing,
   PairingError,
@@ -32,6 +36,7 @@ import {
 } from "./pair.js";
 import * as account from "../account.js";
 import { resolveShareSessions, shareBanner } from "../share-grants.js";
+import { promptForAccess } from "../access-prompt.js";
 import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
 
 // The whole CLI is bundled into dist/bin.js, so this module's own directory IS
@@ -236,6 +241,64 @@ async function startHosted(opts: {
     connectBroker: brokerConnector(),
     connectLocal: localRelayConnector(opts.port),
     onTunnelReady: announce,
+    /**
+     * A signed-in browser asking to be let in.
+     *
+     * Everything cryptographic has already happened by the time this runs; all
+     * that is left is to show a human six digits and do as they say. Approving
+     * then follows exactly the same path a scanned code does — register the
+     * derived token with the relay, admit the keys, remember the peer — so a
+     * requested pairing and a scanned one produce an identical session.
+     */
+    onAccessRequest: async (request) => {
+      const answer = await promptForAccess(request);
+      if (!answer.approved) {
+        // Logged locally so a refusal leaves a trace on the machine that
+        // refused it. The broker is told nothing beyond "denied".
+        console.log(
+          kleur.dim(
+            `    Refused an access request from ${request.accountEmail}.`,
+          ),
+        );
+        return { approved: false, reason: answer.reason };
+      }
+
+      // Registration before admission, for the same reason as the code path:
+      // admitting the keys first lets the browser authenticate against a relay
+      // that has never heard of its token.
+      const registered = await registerDirectToken(
+        opts.port,
+        opts.cfg.token,
+        request.keys.directToken,
+      );
+      if (!registered) {
+        console.log(
+          kleur.red("  ✗ Could not register the session. Nothing was shared."),
+        );
+        return { approved: false, reason: "refused" };
+      }
+
+      const sealed = await sealDescriptor(request.keys, {
+        candidates: opts.tunnelOnly ? [] : buildCandidates(opts.port, null),
+        tunnelId: await ready,
+        deviceId: key.deviceId,
+        publicKey: Buffer.from(key.publicKey).toString("hex"),
+        label: deviceLabel(),
+      });
+
+      agent.addSessionKeys(request.keys);
+      await configStore.addPeer({
+        deviceId: `browser-${Date.now().toString(36)}`,
+        publicKey: "",
+        label: request.deviceLabel,
+        pairedAt: Date.now(),
+        lastSeenAt: Date.now(),
+        directToken: request.keys.directToken,
+      });
+      console.log(kleur.green(`  ✓ ${request.deviceLabel} connected.`));
+
+      return { approved: true, sealedDescriptor: bytesToBase64Url(sealed) };
+    },
   });
   agent.start();
 

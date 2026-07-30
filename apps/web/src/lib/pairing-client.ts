@@ -12,12 +12,18 @@ import {
   utf8ToBytes,
   base64UrlToBytes,
   FrameOpener,
+  deriveSas,
+  newEphemeralKey,
+  sasCommitment,
+  sasSharedSecret,
+  sasTranscript,
   type SessionKeys,
 } from "@repo/crypto";
 import {
   MAX_PEERS_PER_SLOT,
   SealedDescriptor,
   tryDeserializePairingServerMessage,
+  tryDeserializeRequestServerMessage,
 } from "@repo/protocol";
 
 /**
@@ -574,5 +580,197 @@ function describeFailure(reason: string): string {
       return "Too many attempts. Wait a minute and try again.";
     default:
       return "Pairing failed. Get a new code.";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Requesting access to a machine you already own
+// ---------------------------------------------------------------------------
+
+export type AccessRequestUpdate =
+  | { phase: "asking" }
+  /** The machine answered; show these digits and tell the user to compare. */
+  | { phase: "confirm"; sas: string }
+  | { phase: "paired"; keys: SessionKeys; descriptor: SealedDescriptor }
+  | { phase: "failed"; message: string };
+
+export type RequestAccessOptions = {
+  apiBase: string;
+  serverId: string;
+  /** How this browser should describe itself on the machine's screen. */
+  deviceLabel: string;
+  onUpdate: (update: AccessRequestUpdate) => void;
+  fetchImpl?: typeof fetch;
+  socketImpl?: SocketFactory;
+};
+
+/**
+ * Ask a machine on this account to let this browser in.
+ *
+ * The mirror image of `joinPairing`: instead of quoting a code the machine is
+ * showing, the browser asks and a human at the machine approves by comparing
+ * six digits. What makes that safe is the ordering — this commits to its
+ * ephemeral key *before* it has seen the machine's, so nothing in between can
+ * pick a key after the fact. See `packages/crypto/src/sas.ts`.
+ */
+export function requestAccess(opts: RequestAccessOptions): PairingHandle {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const makeSocket = opts.socketImpl ?? ((url: string) => new WebSocket(url));
+
+  let socket: WebSocket | null = null;
+  let cancelled = false;
+  let settled = false;
+
+  function fail(message: string) {
+    if (settled || cancelled) return;
+    settled = true;
+    socket?.close();
+    opts.onUpdate({ phase: "failed", message });
+  }
+
+  let pending: { keys: SessionKeys } | null = null;
+
+  void (async () => {
+    opts.onUpdate({ phase: "asking" });
+
+    // Generated before anything is sent, and never changed. Committing to a
+    // key we already hold is what makes the ordering honest.
+    const ephemeral = newEphemeralKey();
+
+    let requestId: string;
+    try {
+      const res = await doFetch(`${opts.apiBase}/v1/pair/request`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId: opts.serverId,
+          deviceLabel: opts.deviceLabel,
+        }),
+      });
+      if (res.status === 401) {
+        fail("Sign in again, then try once more.");
+        return;
+      }
+      if (res.status === 409) {
+        const body = (await res.json()) as { error?: string };
+        fail(body.error ?? "That machine is busy. Try again in a moment.");
+        return;
+      }
+      if (!res.ok) {
+        fail("Could not reach that machine. Is it online?");
+        return;
+      }
+      ({ requestId } = (await res.json()) as { requestId: string });
+    } catch {
+      fail("Could not reach the pairing service.");
+      return;
+    }
+    if (cancelled) return;
+
+    // The commitment covers the request id, so it can only be computed once the
+    // broker has minted one — hence a socket message rather than a field on the
+    // POST. The machine is not disturbed until this arrives, and it answers
+    // having seen a commitment and no key.
+    const commitment = sasCommitment(ephemeral.publicKey, requestId);
+
+    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/request/${requestId}`);
+    socket.onopen = () => {
+      socket?.send(
+        JSON.stringify({
+          type: "pair:commit",
+          requestId,
+          commitment: bytesToHex(commitment),
+        }),
+      );
+    };
+
+    socket.onmessage = (event) => {
+      const parsed = tryDeserializeRequestServerMessage(event.data as string);
+      if (!parsed.ok) return;
+      const msg = parsed.message;
+
+      if (msg.type === "pair:denied") {
+        fail(describeDenial(msg.reason));
+        return;
+      }
+
+      if (msg.type === "pair:request-ack") {
+        // Only now is the machine's key known, and only now is ours revealed.
+        void (async () => {
+          try {
+            const cliPublicKey = hexToBytes(msg.cliPublicKey);
+            const ikm = sasSharedSecret(ephemeral.secret, cliPublicKey);
+            const transcript = sasTranscript(
+              requestId,
+              commitment,
+              ephemeral.publicKey,
+              cliPublicKey,
+            );
+            pending = { keys: deriveSessionKeys(ikm, transcript) };
+            opts.onUpdate({
+              phase: "confirm",
+              sas: deriveSas(ikm, transcript),
+            });
+            socket?.send(
+              JSON.stringify({
+                type: "pair:reveal",
+                requestId,
+                browserPublicKey: bytesToHex(ephemeral.publicKey),
+              }),
+            );
+          } catch {
+            fail("That machine offered an unusable key. Nothing was shared.");
+          }
+        })();
+        return;
+      }
+
+      // pair:approved — the descriptor, sealed under keys only these two ends
+      // hold. A failure to open it means the SAS was compared carelessly.
+      void (async () => {
+        if (!pending) return;
+        try {
+          const descriptor = await unsealDescriptor(
+            pending.keys,
+            msg.sealedDescriptor,
+          );
+          if (settled || cancelled) return;
+          settled = true;
+          socket?.close();
+          opts.onUpdate({ phase: "paired", keys: pending.keys, descriptor });
+        } catch {
+          fail("Could not open the machine's reply. Try again.");
+        }
+      })();
+    };
+
+    socket.onclose = () => fail("Lost the connection to the pairing service.");
+  })();
+
+  return {
+    cancel() {
+      cancelled = true;
+      socket?.close();
+    },
+  };
+}
+
+function describeDenial(reason: string): string {
+  switch (reason) {
+    case "refused":
+      return "The request was refused on that machine.";
+    case "commitment-failed":
+      return "That machine could not verify this browser. Nothing was shared.";
+    case "no-tty":
+      return "Nobody is at that machine to approve. Run `mtmux approve` on it.";
+    case "timeout":
+      return "Nobody answered on that machine.";
+    case "agent-gone":
+      return "That machine went offline.";
+    case "too-many-requests":
+      return "Too many requests. Wait a moment.";
+    default:
+      return "The request was not approved.";
   }
 }

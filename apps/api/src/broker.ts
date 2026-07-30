@@ -194,6 +194,11 @@ export function createBroker(deps: BrokerDeps = {}) {
       readonly id: string;
       readonly deviceId: string;
       readonly expiresAt: number;
+      /** Held until the commitment arrives, then forwarded verbatim. */
+      readonly deviceLabel: string;
+      readonly accountEmail: string;
+      /** The machine is told about this request exactly once. */
+      forwarded: boolean;
       /** Set once the browser opens `/v1/request/:id`. */
       browser: ((message: RequestServerMessage) => void) | null;
       pending: RequestServerMessage[];
@@ -425,7 +430,7 @@ export function createBroker(deps: BrokerDeps = {}) {
    */
   function pairRequest(
     deviceId: string,
-    body: { commitment: string; deviceLabel: string; accountEmail: string },
+    body: { deviceLabel: string; accountEmail: string },
   ): HttpResult {
     const tunnel = tunnels.byDevice(deviceId, now());
     if (!tunnel) {
@@ -450,20 +455,19 @@ export function createBroker(deps: BrokerDeps = {}) {
       id: requestId,
       deviceId,
       expiresAt: now() + REQUEST_TTL_MS,
+      deviceLabel: body.deviceLabel,
+      accountEmail: body.accountEmail,
+      forwarded: false,
       browser: null,
       pending: [],
     });
     pendingByDevice.set(deviceId, requestId);
 
-    tunnel.agent({
-      type: "pair:request",
-      requestId,
-      commitment: body.commitment,
-      deviceLabel: body.deviceLabel,
-      accountEmail: body.accountEmail,
-    });
-
-    logger.info("Access request forwarded");
+    // Nothing reaches the machine yet. The browser must first commit to its
+    // ephemeral key over the socket, and the commitment has to cover this id —
+    // so the machine is only disturbed once there is something to disturb it
+    // with, and it answers having seen a commitment and no key.
+    logger.info("Access request opened");
     return {
       status: 200,
       body: { requestId, expiresAt: now() + REQUEST_TTL_MS },
@@ -928,8 +932,6 @@ export function createBroker(deps: BrokerDeps = {}) {
           return;
         }
 
-        // pair:reveal — the key the commitment was over. Forwarded verbatim;
-        // the broker cannot check it and must not pretend to.
         const tunnel = tunnels.byDevice(live.deviceId, now());
         if (!tunnel) {
           socket.send(
@@ -942,6 +944,26 @@ export function createBroker(deps: BrokerDeps = {}) {
           dropRequest(requestId);
           return;
         }
+
+        if (msg.type === "pair:commit") {
+          // Exactly once. A second commitment would be a second chance to
+          // choose a key, which is the one thing the commitment exists to stop.
+          if (live.forwarded) return;
+          live.forwarded = true;
+          tunnel.agent({
+            type: "pair:request",
+            requestId,
+            commitment: msg.commitment,
+            deviceLabel: live.deviceLabel,
+            accountEmail: live.accountEmail,
+          });
+          logger.info("Access request forwarded");
+          return;
+        }
+
+        // pair:reveal — the key the commitment was over. Forwarded verbatim;
+        // the broker cannot check it and must not pretend to.
+        if (!live.forwarded) return;
         tunnel.agent(msg);
       },
 
