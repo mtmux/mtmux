@@ -9,7 +9,7 @@
  */
 import { eq } from "drizzle-orm";
 import { subscriptions, user, type Db } from "@repo/db";
-import { DEFAULT_PLAN, type PlanId } from "@repo/config/plans";
+import { DEFAULT_PLAN, TRIAL_PLAN, type PlanId } from "@repo/config/plans";
 
 /** Dodo's own status vocabulary, stored verbatim for support questions. */
 export type SubscriptionStatus =
@@ -46,9 +46,104 @@ export function planForStatus(
   }
 }
 
+export type TrialStatus = "none" | "active" | "expired";
+
+export type TrialState = {
+  status: TrialStatus;
+  startedAt: number | null;
+  endsAt: number | null;
+  /** Whole days remaining, rounded up. Zero unless the trial is active. */
+  daysLeft: number;
+};
+
+export type PlanResolution = {
+  plan: PlanId;
+  /** Why they have that plan. The UI says "trial" differently from "paid". */
+  source: "free" | "trial" | "paid";
+  trial: TrialState;
+};
+
+/** The subset of a subscriptions row this resolution actually reads. */
+export type ResolvableSubscription = {
+  plan?: string | null;
+  trialStartedAt?: Date | number | null;
+  trialEndsAt?: Date | number | null;
+} | null;
+
+const NO_TRIAL: TrialState = {
+  status: "none",
+  startedAt: null,
+  endsAt: null,
+  daysLeft: 0,
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What plan a row grants right now, and why.
+ *
+ * Pure, and deliberately so: it is the single place the trial can grant Pro,
+ * it takes `now` as an argument, and it touches no database — which makes the
+ * whole of trial expiry a table-driven unit test rather than a fixture.
+ *
+ * **Expiry needs no cron and no sweeper.** Because this resolves at read time,
+ * a trial stops granting Pro the microsecond it ends, everywhere, with no job
+ * to fall behind and no window in which a lapsed account still has Pro. A
+ * proposed background expiry job for this is a design smell, not an
+ * optimisation.
+ *
+ * Order is paid, then active trial, then free. Paid wins outright so that
+ * someone who upgrades mid-trial is billed as a customer and reads as one,
+ * rather than seeing "3 days left" next to a charge they have already paid.
+ */
+export function resolvePlan(
+  row: ResolvableSubscription,
+  now = Date.now(),
+): PlanResolution {
+  const paid = row?.plan === "pro";
+  const startedAt = toMillis(row?.trialStartedAt);
+  const endsAt = toMillis(row?.trialEndsAt);
+
+  // `trialStartedAt` is the permanent "already used it" flag, so a trial with
+  // no end date is treated as spent rather than as an unbounded one.
+  const trial: TrialState =
+    startedAt === null
+      ? NO_TRIAL
+      : {
+          status: endsAt !== null && now < endsAt ? "active" : "expired",
+          startedAt,
+          endsAt,
+          daysLeft:
+            endsAt !== null && now < endsAt
+              ? Math.ceil((endsAt - now) / DAY_MS)
+              : 0,
+        };
+
+  if (paid) return { plan: "pro", source: "paid", trial };
+  if (trial.status === "active") {
+    return { plan: TRIAL_PLAN, source: "trial", trial };
+  }
+  return { plan: DEFAULT_PLAN, source: "free", trial };
+}
+
+function toMillis(value: Date | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.getTime() : value;
+}
+
 export type SubscriptionState = {
   status: string;
+  /**
+   * The *resolved* plan — what this account may actually do right now.
+   *
+   * Not `row.plan`. That column records what Dodo last told us was paid for,
+   * and an account on a trial has `plan: "free"` in it while being entitled to
+   * Pro. Reading the column directly was a live bug: `/v1/billing` reported
+   * "free" while every entitlement check said "pro".
+   */
   plan: PlanId;
+  planSource: PlanResolution["source"];
+  trial: TrialState;
   dodoCustomerId: string | null;
   dodoSubscriptionId: string | null;
   productId: string | null;
@@ -59,6 +154,8 @@ export type SubscriptionState = {
 export const FREE_STATE: SubscriptionState = {
   status: "none",
   plan: DEFAULT_PLAN,
+  planSource: "free",
+  trial: NO_TRIAL,
   dodoCustomerId: null,
   dodoSubscriptionId: null,
   productId: null,
@@ -69,6 +166,7 @@ export const FREE_STATE: SubscriptionState = {
 export async function readSubscription(
   db: Db,
   userId: string,
+  now = Date.now(),
 ): Promise<SubscriptionState> {
   const rows = await db
     .select()
@@ -78,9 +176,12 @@ export async function readSubscription(
   const row = rows[0];
   if (!row) return FREE_STATE;
 
+  const resolved = resolvePlan(row, now);
   return {
     status: row.status,
-    plan: row.plan === "pro" ? "pro" : DEFAULT_PLAN,
+    plan: resolved.plan,
+    planSource: resolved.source,
+    trial: resolved.trial,
     dodoCustomerId: row.dodoCustomerId,
     dodoSubscriptionId: row.dodoSubscriptionId,
     productId: row.productId,

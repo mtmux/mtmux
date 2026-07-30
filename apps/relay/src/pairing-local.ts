@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import type { GrantRecord } from "@repo/protocol";
+import { isGrantActive } from "@repo/protocol";
+import { FULL_GRANT } from "./grant.js";
 
 /**
  * Tokenless sign-in for a device on the same network.
@@ -30,8 +33,21 @@ function digest(secret: string): string {
 
 type Expiring = { expiresAt: number };
 
+/**
+ * A live session token and what it may do.
+ *
+ * This map was `Map<sha256(token), {expiresAt}>` already, which is why scoping
+ * needed no protocol change and no change to the token format: widening the
+ * *value* to carry a grant is the whole mechanism. Keeping the token opaque
+ * matters — a `<grantId>.<secret>` format would have to be communicated to the
+ * browser somehow, and the browser derives `directToken` independently from
+ * the CPace secret with no round trip to learn an id in. It would also put a
+ * grant id into `/file?token=` URLs and every access log that sees them.
+ */
+type Session = Expiring & { grant: GrantRecord };
+
 const nonces = new Map<string, Expiring>();
-const sessions = new Map<string, Expiring>();
+const sessions = new Map<string, Session>();
 
 function prune(map: Map<string, Expiring>, now: number): void {
   for (const [key, entry] of map) {
@@ -96,11 +112,12 @@ export function redeemPairingNonce(
 export function issueSessionToken(
   ttlMs: number = SESSION_TTL_MS,
   now: number = Date.now(),
+  grant: GrantRecord = FULL_GRANT,
 ): SessionToken {
   prune(sessions, now);
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = now + ttlMs;
-  sessions.set(digest(token), { expiresAt });
+  sessions.set(digest(token), { expiresAt, grant });
   return { token, expiresAt };
 }
 
@@ -117,24 +134,59 @@ export function registerSessionToken(
   token: string,
   ttlMs: number = SESSION_TTL_MS,
   now: number = Date.now(),
+  grant: GrantRecord = FULL_GRANT,
 ): SessionToken {
   prune(sessions, now);
   const expiresAt = now + ttlMs;
-  sessions.set(digest(token), { expiresAt });
+  sessions.set(digest(token), { expiresAt, grant });
   return { token, expiresAt };
+}
+
+/**
+ * The grant behind a session token, or null if there isn't a live one.
+ *
+ * The single lookup every caller should use. `isValidSessionToken` is kept as
+ * a thin wrapper over it so nothing can accidentally answer "yes, valid"
+ * without also having the scope in hand.
+ */
+export function grantForToken(
+  token: string,
+  now: number = Date.now(),
+): GrantRecord | null {
+  const key = digest(token);
+  const entry = sessions.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= now) {
+    sessions.delete(key);
+    return null;
+  }
+  // Revocation and expiry live on the grant as well as on the map entry: a
+  // grant revoked through `mtmux share revoke` must die immediately, without
+  // waiting for the session token's own 24-hour TTL.
+  if (!isGrantActive(entry.grant, now)) {
+    sessions.delete(key);
+    return null;
+  }
+  return entry.grant;
 }
 
 export function isValidSessionToken(
   token: string,
   now: number = Date.now(),
 ): boolean {
-  const entry = sessions.get(digest(token));
-  if (!entry) return false;
-  if (entry.expiresAt <= now) {
-    sessions.delete(digest(token));
-    return false;
+  return grantForToken(token, now) !== null;
+}
+
+/** Drop every token bound to a grant id. Used by `mtmux share revoke`. */
+export function revokeGrant(grantId: string): number {
+  let removed = 0;
+  for (const [key, entry] of sessions) {
+    if (entry.grant.id === grantId) {
+      sessions.delete(key);
+      removed++;
+    }
   }
-  return true;
+  return removed;
 }
 
 export function revokeSessionToken(token: string): void {

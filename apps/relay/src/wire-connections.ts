@@ -12,8 +12,10 @@ import {
   getAllConnections,
   getConnectionCount,
   getIpCount,
-  broadcastToAll,
+  broadcastWhere,
 } from "./connection-manager.js";
+import { allowsSession, allowsSessionName } from "./grant.js";
+import { isCloneSession, sweepOrphanClones } from "./tmux-clone.js";
 import { createRateLimiter } from "./rate-limiter.js";
 import { createSessionMonitor } from "./session-monitor.js";
 import { routeMessage } from "./message-router.js";
@@ -130,13 +132,34 @@ export function wireConnections(
         }
 
         conn.authenticated = true;
-        sendJson(ws, { type: "auth:success", serverVersion: SERVER_VERSION });
+        // The grant is always present on a successful result; the fallback
+        // exists so a future auth path that forgets to set one cannot silently
+        // produce a connection with no policy attached.
+        if (authResult.grant) conn.grant = authResult.grant;
+
+        sendJson(ws, {
+          type: "auth:success",
+          serverVersion: SERVER_VERSION,
+          // Capabilities, so the client can render a read-only banner and hide
+          // a file tree that would only ever return ACCESS_DENIED. Advisory —
+          // every one of these is enforced server-side regardless.
+          capabilities: {
+            readOnly: conn.grant.readOnly,
+            files: conn.grant.files,
+            scope: conn.grant.scope.kind,
+          },
+        });
         sendJson(ws, {
           type: "server:info",
           hostname: os.hostname(),
           platform: os.platform(),
           uptime: os.uptime(),
-          defaultPath: defaultBrowsePath(),
+          // Omitted when files are off: it is the home directory path, and
+          // handing it to someone who may not list a single file in it leaks
+          // the account name for nothing.
+          ...(conn.grant.files === "none"
+            ? {}
+            : { defaultPath: defaultBrowsePath() }),
         });
 
         // Heartbeat: standard `ws` liveness protocol. If a peer missed the
@@ -175,22 +198,39 @@ export function wireConnections(
     });
   });
 
+  /**
+   * Both monitor events used to bypass the connection manager entirely and
+   * iterate `wss.clients`, which meant they were unreachable by any scope
+   * check — two of the four broadcast leaks. Routing them through
+   * `broadcastWhere` is what makes a session name visible only to connections
+   * entitled to know it exists.
+   */
   monitor.onSessionExit((name) => {
-    const allConns = getAllConnections();
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        const conn = allConns.find((c) => c.ws === client);
-        if (conn && conn.attachedSession === name) continue;
-        sendJson(client, { type: "session:exited", name });
-      }
-    }
+    if (isCloneSession(name)) return;
+    broadcastWhere((conn) => {
+      // The connection attached to it already learns from its own PTY exit.
+      if (conn.attachedSession === name) return null;
+      if (!allowsSessionName(conn.grant, name)) return null;
+      return { type: "session:exited", name };
+    });
   });
 
   monitor.onSessionCreated((session) => {
-    broadcastToAll({ type: "session:created", session });
+    if (isCloneSession(session.name)) return;
+    broadcastWhere((conn) =>
+      allowsSession(conn.grant, session)
+        ? { type: "session:created", session }
+        : null,
+    );
   });
 
   monitor.start();
+
+  // Clones are destroyed with their connection, but a crash or `kill -9`
+  // skips that. Harmless individually, they accumulate across restarts.
+  void sweepOrphanClones().catch(() => {
+    // tmux may not be running yet. Nothing to sweep is the normal case.
+  });
 
   // Idle reaper: close connections with no inbound traffic for longer than the
   // configured idle timeout. Uses close code 1000 so it reads as a normal close.

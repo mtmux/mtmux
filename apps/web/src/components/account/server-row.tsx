@@ -5,8 +5,9 @@ import { Badge } from "@repo/ui/components/ui/badge";
 import { Button } from "@repo/ui/components/ui/button";
 import { Input } from "@repo/ui/components/ui/input";
 import { cn } from "@repo/ui/lib/utils";
-import { Check, Info, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { Check, Info, Loader2, Pencil, Share2, Trash2, X } from "lucide-react";
 import { platformName, timeAgo } from "./format";
+import { ShareDialog } from "./share-dialog";
 
 export type RegisteredServer = {
   id: string;
@@ -53,6 +54,7 @@ export function ServerRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(server.name);
   const [saving, setSaving] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -194,6 +196,17 @@ export function ServerRow({
                 "Pair this device"
               )}
             </Button>
+            {/* Shows the command rather than running it — the browser has no
+                way to mint a grant. See share-dialog.tsx. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11"
+              onClick={() => setSharing(true)}
+              aria-label={`Share a session on ${server.name}`}
+            >
+              <Share2 className="h-4 w-4" aria-hidden />
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -225,6 +238,12 @@ export function ServerRow({
           <span>{notice}</span>
         </p>
       )}
+
+      <ShareDialog
+        open={sharing}
+        onOpenChange={setSharing}
+        serverName={server.name}
+      />
     </li>
   );
 }

@@ -82,11 +82,11 @@ describe("POST /_pair/local", () => {
     // The whole point: this is NOT the long-lived AUTH_TOKEN.
     expect(token).not.toBe(config.authToken);
 
-    expect(authenticateMessage({ type: "auth", token }, "192.168.1.9")).toEqual(
-      {
-        authenticated: true,
-      },
-    );
+    // A LAN pairing is a full grant — it is the machine's owner, standing in
+    // front of the machine, scanning the QR it printed.
+    const paired = authenticateMessage({ type: "auth", token }, "192.168.1.9");
+    expect(paired.authenticated).toBe(true);
+    expect(paired.grant?.scope.kind).toBe("all");
   });
 
   it("never caches the response", async () => {
@@ -170,13 +170,13 @@ describe("session tokens and the auth throttle together", () => {
         { type: "auth", token: config.authToken },
         "10.0.0.1",
       ),
-    ).toEqual({ authenticated: true });
+    ).toMatchObject({ authenticated: true });
   });
 
   it("still accepts the long-lived AUTH_TOKEN alongside session tokens", () => {
     expect(
       authenticateMessage({ type: "auth", token: config.authToken }, IP),
-    ).toEqual({ authenticated: true });
+    ).toMatchObject({ authenticated: true });
   });
 
   it("rejects a session token after the pairing state is reset", async () => {

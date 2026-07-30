@@ -21,17 +21,54 @@ const logger = createLogger("api:server");
 const MAX_BODY_BYTES = 8 * 1024;
 
 /**
- * Client address, preferring the proxy's X-Forwarded-For.
+ * Loopback and link-local peers, which on this box means nginx.
  *
- * The broker runs behind nginx on this box, so the socket peer is always
- * 127.0.0.1 and every rate limit would share one bucket. Only the left-most
- * entry is used, and only the address — never stored against a mailbox.
+ * Only a request that actually arrived from the local reverse proxy may steer
+ * its own rate-limit bucket with a header; anything else is taken at face
+ * value from the socket. Without that test a direct caller could pick its own
+ * bucket — or someone else's — by setting `CF-Connecting-IP` itself.
+ */
+function fromTrustedProxy(req: http.IncomingMessage): boolean {
+  const peer = req.socket.remoteAddress ?? "";
+  return (
+    peer === "127.0.0.1" ||
+    peer === "::1" ||
+    peer === "::ffff:127.0.0.1" ||
+    peer.startsWith("10.") ||
+    peer.startsWith("172.17.") ||
+    peer.startsWith("192.168.")
+  );
+}
+
+/**
+ * Client address, for rate limiting only — never stored against a mailbox.
+ *
+ * The broker runs behind nginx, so the socket peer is always 127.0.0.1 and an
+ * unaided limiter would put every user in one bucket. Two headers can say who
+ * the real client is, and the order matters:
+ *
+ * `CF-Connecting-IP` is preferred because in front of nginx sits Cloudflare,
+ * and the vhost sets `X-Forwarded-For $remote_addr` — the address of the *PoP*,
+ * not the user. Bucketing on that put every visitor behind a given PoP into a
+ * single 5-claims-per-minute window: a denial of service against honest users
+ * and a limiter that isolated no attacker.
+ *
+ * `X-Forwarded-For` remains the fallback, because a self-hosted install behind
+ * a plain reverse proxy has no Cloudflare header. Both are only consulted when
+ * the request came from a trusted proxy.
  */
 export function clientIp(req: http.IncomingMessage): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  const first = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  const candidate = first?.split(",")[0]?.trim();
-  return candidate || req.socket.remoteAddress || "unknown";
+  if (fromTrustedProxy(req)) {
+    const cf = req.headers["cf-connecting-ip"];
+    const cfFirst = (Array.isArray(cf) ? cf[0] : cf)?.trim();
+    if (cfFirst) return cfFirst;
+
+    const forwarded = req.headers["x-forwarded-for"];
+    const first = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const candidate = first?.split(",")[0]?.trim();
+    if (candidate) return candidate;
+  }
+  return req.socket.remoteAddress || "unknown";
 }
 
 function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -197,6 +234,10 @@ export async function startApiServer(
     // API_MAILBOXES_PER_MINUTE were parsed, validated, and then ignored.
     claimLimiter: createRateLimiter(config.claimsPerMinute),
     mailboxLimiter: createRateLimiter(config.mailboxesPerMinute),
+    slotClaimLimiter: createRateLimiter(config.slotClaimsPerMinute),
+    globalClaimLimiter: createRateLimiter(config.globalClaimsPerMinute),
+    discoverLimiter: createRateLimiter(config.discoversPerMinute),
+    upgradeLimiter: createRateLimiter(config.upgradesPerMinute),
     quotas: {
       maxBytes: config.tunnelMaxBytes,
       maxMinutes: config.tunnelMaxMinutes,
@@ -226,6 +267,13 @@ export async function startApiServer(
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "api"}`);
     const route = routeSocketPath(url.pathname);
     if (!route) {
+      socket.destroy();
+      return;
+    }
+    // Every HTTP entry point is budgeted; without this the same routes were
+    // reachable over WS as fast as sockets could be opened.
+    if (!broker.allowUpgrade(clientIp(req))) {
+      socket.write("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\n\r\n");
       socket.destroy();
       return;
     }

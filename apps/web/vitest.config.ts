@@ -16,6 +16,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // `*.idb.test.ts` belongs to the sibling project in vitest.config.idb.ts,
+    // which sets up fake-indexeddb. Without this they would also run here,
+    // where there is no `indexedDB` at all.
+    exclude: ["**/node_modules/**", "src/**/*.idb.test.ts"],
     // @repo/* workspace packages are published as raw TypeScript
     // (`"exports": "./src/index.ts"`), so they must be transformed rather than
     // externalised to node.

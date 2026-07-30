@@ -27,6 +27,24 @@ import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 
 const logger = createLogger("api:broker");
 
+/** How many slots to try before reporting the broker full. */
+const SLOT_DRAWS = 8;
+
+/** Bucket key for limits that are deliberately not per-caller. */
+const GLOBAL_KEY = "*";
+
+/**
+ * Bucket key for the per-slot claim limit.
+ *
+ * Read off the raw body before validation, because a malformed claim should
+ * still be charged to whichever slot it names — otherwise the limit is dodged
+ * by sending rubbish. An unreadable slot falls back to the global bucket.
+ */
+function slotKeyOf(rawBody: unknown): string {
+  const slot = (rawBody as { slot?: unknown } | null)?.slot;
+  return typeof slot === "string" ? `slot:${slot}` : GLOBAL_KEY;
+}
+
 /**
  * The pairing broker.
  *
@@ -65,6 +83,14 @@ export type BrokerDeps = {
   tunnels?: TunnelRegistry;
   claimLimiter?: RateLimiter;
   mailboxLimiter?: RateLimiter;
+  /** Claims per minute against one slot, regardless of source. */
+  slotClaimLimiter?: RateLimiter;
+  /** Claims per minute against the whole broker, regardless of source. */
+  globalClaimLimiter?: RateLimiter;
+  /** Per-IP ceiling on `/v1/discover`. */
+  discoverLimiter?: RateLimiter;
+  /** Per-IP ceiling on WebSocket upgrades. */
+  upgradeLimiter?: RateLimiter;
   quotas?: { maxBytes: number; maxMinutes: number; maxStreams: number };
   /**
    * Ties a tunnel to an account, so plan limits mean something and usage can
@@ -110,6 +136,24 @@ export function createBroker(deps: BrokerDeps = {}) {
   const tunnels = deps.tunnels ?? createTunnelRegistry(quotas);
   const claimLimiter = deps.claimLimiter ?? createRateLimiter(5);
   const mailboxLimiter = deps.mailboxLimiter ?? createRateLimiter(10);
+  /**
+   * Adversary-independent ceilings.
+   *
+   * The per-IP limiter isolates one *client*; behind a CDN or a botnet it
+   * isolates nobody. These two do not care who is asking. The per-slot ceiling
+   * caps tries against any one code, and the global ceiling caps tries against
+   * the service — which together is what makes "you cannot brute force this" a
+   * budget rather than a hope.
+   */
+  const slotClaimLimiter = deps.slotClaimLimiter ?? createRateLimiter(12);
+  const globalClaimLimiter = deps.globalClaimLimiter ?? createRateLimiter(600);
+  const discoverLimiter = deps.discoverLimiter ?? createRateLimiter(30);
+  /**
+   * The upgrade path was the one door with no limit on it at all: every socket
+   * route could be dialled as fast as a client could open connections, which
+   * made the HTTP limits above bypassable for anything reachable over WS.
+   */
+  const upgradeLimiter = deps.upgradeLimiter ?? createRateLimiter(60);
 
   /**
    * Claim payloads, kept only long enough to fan them out and reply.
@@ -205,7 +249,22 @@ export function createBroker(deps: BrokerDeps = {}) {
       };
     }
 
-    const mailbox = store.createMailbox(generateSlot(), now());
+    // A slot at capacity is a collision, not a failure: draw another. With 100
+    // slots and a small cap this converges immediately unless the broker is
+    // genuinely saturated, which is what the last `null` reports.
+    let mailbox = null;
+    for (let attempt = 0; attempt < SLOT_DRAWS && !mailbox; attempt += 1) {
+      mailbox = store.createMailbox(generateSlot(), now());
+    }
+    if (!mailbox) {
+      logger.warn("No slot available for a new mailbox");
+      return {
+        status: 503,
+        body: { error: "Pairing is busy. Try again in a moment." },
+        headers: { "Retry-After": "5" },
+      };
+    }
+
     logger.info("Mailbox opened");
     return {
       status: 200,
@@ -218,13 +277,23 @@ export function createBroker(deps: BrokerDeps = {}) {
   }
 
   function pairClaim(ip: string, rawBody: unknown): HttpResult {
-    if (!claimLimiter.take(ip, now())) {
+    // Three independent budgets, cheapest first. The per-IP window isolates one
+    // client; the per-slot and global windows are what actually bound guessing,
+    // because an attacker picks its own source addresses but cannot pick how
+    // many claims the broker will answer.
+    const limits: Array<[RateLimiter, string, string]> = [
+      [claimLimiter, ip, "Too many pairing attempts"],
+      [slotClaimLimiter, slotKeyOf(rawBody), "Too many attempts on that code"],
+      [globalClaimLimiter, GLOBAL_KEY, "Pairing is busy. Try again shortly."],
+    ];
+    for (const [limiter, key, error] of limits) {
+      if (limiter.take(key, now())) continue;
       return {
         status: 429,
-        body: { error: "Too many pairing attempts" },
+        body: { error },
         headers: {
           "Retry-After": String(
-            Math.ceil(claimLimiter.retryAfterMs(ip, now()) / 1000),
+            Math.max(1, Math.ceil(limiter.retryAfterMs(key, now()) / 1000)),
           ),
         },
       };
@@ -242,11 +311,14 @@ export function createBroker(deps: BrokerDeps = {}) {
     // Fan out to every live mailbox on the slot. Slots are shared on purpose,
     // so they never run out; only the mailbox whose four-digit secret matches
     // will produce a confirmation that verifies.
+    //
+    // This *offers* rather than claims. The guess is only spent when the claim
+    // attaches its socket — see `attachClaimSocket` — so a flood of bare POSTs
+    // cannot retire a single honest pairing.
     const targets = store.liveMailboxesForSlot(slot, now());
     for (const mailbox of targets) {
       const peer = newPeerHandle();
-      mailbox.claimedBy = claim.id;
-      mailbox.peer = peer;
+      store.offerMailbox(mailbox, claim.id, peer, now());
       claim.peers.set(peer, mailbox.id);
       store.deliver(mailbox, {
         type: "pair:peer-share",
@@ -260,23 +332,45 @@ export function createBroker(deps: BrokerDeps = {}) {
     logger.info({ offered: targets.length }, "Claim fanned out");
     return {
       status: 200,
-      body: { claimId: claim.id, offered: targets.length },
+      // Deliberately a boolean, not `targets.length`. The count told an
+      // unauthenticated caller exactly how many pairings were live on a slot,
+      // which is a free enumeration oracle; the claimant only ever needed to
+      // know whether to bother opening a socket.
+      body: { claimId: claim.id, waiting: targets.length > 0 },
     };
   }
 
   function discover(ip: string): HttpResult {
+    if (!discoverLimiter.take(ip, now())) {
+      return {
+        status: 429,
+        body: { error: "Too many requests" },
+        headers: {
+          "Retry-After": String(
+            Math.max(
+              1,
+              Math.ceil(discoverLimiter.retryAfterMs(ip, now()) / 1000),
+            ),
+          ),
+        },
+      };
+    }
     return { status: 200, body: { ip } };
   }
 
+  /**
+   * Liveness only.
+   *
+   * The live mailbox, claim and tunnel counts used to be here, which handed
+   * anyone who could curl the broker a free read on how many pairings were in
+   * flight — the same enumeration `offered` used to leak, without even needing
+   * a claim. Operational counts belong on an authenticated or bound endpoint;
+   * `stats()` still exposes them in-process for tests and diagnostics.
+   */
   function health(): HttpResult {
     return {
       status: 200,
-      body: {
-        status: "ok",
-        uptime: process.uptime(),
-        ...store.stats(),
-        ...tunnels.stats(),
-      },
+      body: { status: "ok", uptime: process.uptime() },
     };
   }
 
@@ -314,7 +408,11 @@ export function createBroker(deps: BrokerDeps = {}) {
     let established = false;
 
     function claimFor(box: Mailbox): Claim | null {
-      return box.claimedBy ? store.getClaim(box.claimedBy, now()) : null;
+      // Follows an offer as well as a burn: the holder is sent the claimant's
+      // share the moment it is POSTed and answers straight away, which is
+      // routinely before the claim's socket has attached.
+      const claimId = store.claimIdFor(box, now());
+      return claimId ? store.getClaim(claimId, now()) : null;
     }
 
     return {
@@ -429,6 +527,15 @@ export function createBroker(deps: BrokerDeps = {}) {
       return null;
     }
     store.attach(claim, pairSink(socket));
+
+    // Attaching is the first thing a claimant does that a flood of anonymous
+    // POSTs cannot: it costs a real connection the broker has already counted.
+    // So this is where the guess is spent, and from here the mailboxes this
+    // claim was offered are single-shot exactly as before.
+    for (const mailboxId of claim.peers.values()) {
+      const offered = store.getMailbox(mailboxId, now());
+      if (offered) store.burnOffer(offered, claim.id);
+    }
 
     function mailboxFor(peer: string): Mailbox | null {
       const mailboxId = claim!.peers.get(peer);
@@ -726,6 +833,8 @@ export function createBroker(deps: BrokerDeps = {}) {
     pairClaim,
     discover,
     health,
+    /** Whether this address may open another socket. See `upgradeLimiter`. */
+    allowUpgrade: (ip: string) => upgradeLimiter.take(ip, now()),
     attachMailboxSocket,
     attachClaimSocket,
     attachAgentSocket,

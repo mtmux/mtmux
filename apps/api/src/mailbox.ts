@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { PairingServerMessage } from "@repo/protocol";
+import { MAX_PEERS_PER_SLOT, type PairingServerMessage } from "@repo/protocol";
 
 /**
  * Pending pairings, keyed by mailbox and indexed by slot.
@@ -16,6 +16,38 @@ import type { PairingServerMessage } from "@repo/protocol";
 
 export const MAILBOX_TTL_MS = 3 * 60 * 1000;
 
+/**
+ * Live mailboxes allowed on one slot.
+ *
+ * A slot is two digits and deliberately shared, so honest collisions happen and
+ * the number cannot be one. But it must be small: a claim is fanned out to
+ * every live mailbox on the slot, so `M` mailboxes seeded with `M` different
+ * guessed secrets buy an attacker `M` parallel tries against each victim claim
+ * — odds of `M / 10^6` per pairing, for the price of `M` POSTs. Capping at two
+ * keeps honest collisions working and squatting worthless.
+ *
+ * Shared with the claimants through `@repo/protocol`, which is what lets them
+ * refuse a broker that offers more peers than this.
+ */
+export const MAX_MAILBOXES_PER_SLOT = MAX_PEERS_PER_SLOT;
+
+/**
+ * Live mailboxes across every slot. Bounds the store's memory; the per-IP
+ * mailbox limiter is what stops one client getting near it.
+ */
+export const MAX_LIVE_MAILBOXES = 10_000;
+
+/**
+ * How long a POSTed claim holds a mailbox before its socket must attach.
+ *
+ * A claim reserves the mailboxes it was fanned out to, and only *burns* them
+ * once it proves itself by opening its WebSocket. Without the reservation two
+ * claims could race the same mailbox and each get a guess; without the lapse a
+ * bare POST would take a code out of circulation for its whole TTL. The window
+ * only has to cover POST → upgrade on a live connection.
+ */
+export const OFFER_TTL_MS = 10 * 1000;
+
 /** Where broker-generated messages go once a socket is attached. */
 export type Sink = (message: PairingServerMessage) => void;
 
@@ -25,11 +57,24 @@ export type Mailbox = {
   readonly createdAt: number;
   readonly expiresAt: number;
   /**
-   * Set once a claim has been offered. A mailbox accepts exactly one claim in
-   * its lifetime; that single-shot rule is what caps an attacker at one
-   * 1-in-10,000 guess per code.
+   * Set once a claim has *proved itself* by attaching its socket. A mailbox is
+   * burned by exactly one claim in its lifetime; that single-shot rule is what
+   * caps an attacker at one 1-in-10,000 guess per code.
+   *
+   * Deliberately not set at POST time. An unauthenticated POST costs nothing,
+   * so burning on it let one request retire every pairing on a slot — a
+   * service-wide outage with no crypto and no protocol participation.
    */
   claimedBy: string | null;
+  /**
+   * Claim this mailbox has been fanned out to but which has not yet attached a
+   * socket. Routing follows this as well as `claimedBy`, so the holder can
+   * answer immediately; liveness does not, so the mailbox is not offered to a
+   * second claim while one is in flight.
+   */
+  offeredTo: string | null;
+  /** When an unproven offer lapses and the mailbox is offerable again. */
+  offerExpiresAt: number;
   /** Opaque handle shared with the claimant for this conversation. */
   peer: string | null;
   sink: Sink | null;
@@ -49,10 +94,31 @@ export type Claim = {
 };
 
 export interface MailboxStore {
-  createMailbox(slot: string, now?: number): Mailbox;
+  /**
+   * Open a mailbox on a slot, or null when the slot or the store is full.
+   * A null is the caller's cue to draw a fresh slot and try again.
+   */
+  createMailbox(slot: string, now?: number): Mailbox | null;
   getMailbox(id: string, now?: number): Mailbox | null;
-  /** Every live, unclaimed mailbox on a slot. */
+  /**
+   * Every mailbox on a slot that is live, unburned, and not already in flight
+   * with another claim.
+   */
   liveMailboxesForSlot(slot: string, now?: number): Mailbox[];
+  /** Fan a claim out to a mailbox without yet spending its single guess. */
+  offerMailbox(
+    mailbox: Mailbox,
+    claimId: string,
+    peer: string,
+    now?: number,
+  ): void;
+  /**
+   * Spend the guess. Called when a claim attaches its socket, which is the
+   * first point at which it has done anything an attacker cannot do for free.
+   */
+  burnOffer(mailbox: Mailbox, claimId: string): void;
+  /** The claim a mailbox is talking to, proven or merely offered. */
+  claimIdFor(mailbox: Mailbox, now?: number): string | null;
   destroyMailbox(id: string): void;
 
   createClaim(slot: string, now?: number): Claim;
@@ -104,12 +170,25 @@ export function createMailboxStore(
 
   return {
     createMailbox(slot, now = Date.now()) {
+      // Expire before counting, so a slot is never reported full on the
+      // strength of mailboxes that have already timed out.
+      let liveOnSlot = 0;
+      for (const mailboxId of [...(bySlot.get(slot) ?? [])]) {
+        const existing = mailboxes.get(mailboxId);
+        if (!existing || expired(existing, now)) removeMailbox(mailboxId);
+        else liveOnSlot += 1;
+      }
+      if (liveOnSlot >= MAX_MAILBOXES_PER_SLOT) return null;
+      if (mailboxes.size >= MAX_LIVE_MAILBOXES) return null;
+
       const mailbox: Mailbox = {
         id: id("mbx"),
         slot,
         createdAt: now,
         expiresAt: now + ttlMs,
         claimedBy: null,
+        offeredTo: null,
+        offerExpiresAt: 0,
         peer: null,
         sink: null,
         pending: [],
@@ -146,9 +225,37 @@ export function createMailboxStore(
         }
         // One claim per mailbox, ever.
         if (mailbox.claimedBy !== null) continue;
+        // An offer that never attached a socket lapses, and the mailbox
+        // returns to circulation rather than being lost for its whole TTL.
+        if (mailbox.offeredTo !== null) {
+          if (mailbox.offerExpiresAt > now) continue;
+          mailbox.offeredTo = null;
+          mailbox.offerExpiresAt = 0;
+          mailbox.peer = null;
+        }
         live.push(mailbox);
       }
       return live;
+    },
+
+    offerMailbox(mailbox, claimId, peer, now = Date.now()) {
+      mailbox.offeredTo = claimId;
+      mailbox.offerExpiresAt = now + OFFER_TTL_MS;
+      mailbox.peer = peer;
+    },
+
+    burnOffer(mailbox, claimId) {
+      // Only the claim the mailbox is actually talking to can spend its guess.
+      if (mailbox.offeredTo !== claimId) return;
+      mailbox.claimedBy = claimId;
+    },
+
+    claimIdFor(mailbox, now = Date.now()) {
+      if (mailbox.claimedBy !== null) return mailbox.claimedBy;
+      if (mailbox.offeredTo !== null && mailbox.offerExpiresAt > now) {
+        return mailbox.offeredTo;
+      }
+      return null;
     },
 
     destroyMailbox: removeMailbox,

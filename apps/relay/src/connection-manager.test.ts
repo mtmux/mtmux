@@ -1,0 +1,129 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import type { WebSocket } from "ws";
+import type { GrantRecord, ServerMessage } from "@repo/protocol";
+
+import {
+  broadcastToAll,
+  broadcastWhere,
+  createConnection,
+  getAllConnections,
+  removeConnection,
+} from "./connection-manager.js";
+import { FULL_GRANT, allowsSessionName } from "./grant.js";
+import type { RateLimiter } from "./rate-limiter.js";
+
+vi.mock("./tmux-clone.js", () => ({
+  destroyClone: () => Promise.resolve(),
+  isCloneSession: (name: string) => name.startsWith("__mtmux_"),
+}));
+
+function fakeWs(inbox: ServerMessage[]): WebSocket {
+  return {
+    readyState: 1,
+    bufferedAmount: 0,
+    send: (raw: string) => inbox.push(JSON.parse(raw) as ServerMessage),
+  } as unknown as WebSocket;
+}
+
+function scopedTo(names: string[]): GrantRecord {
+  return {
+    ...FULL_GRANT,
+    id: `grn_${names.join("_")}`,
+    scope: {
+      kind: "sessions",
+      sessions: names.map((name, i) => ({ id: `$${i + 1}`, name })),
+    },
+  };
+}
+
+const limiter = {} as RateLimiter;
+
+describe("scoped broadcasts", () => {
+  beforeEach(async () => {
+    for (const conn of getAllConnections()) await removeConnection(conn);
+  });
+
+  /**
+   * The test the plan singled out, and the reason it exists: this leak is
+   * invisible with one browser connected. It only appears when two are, with
+   * different scopes, at the same moment — which is exactly the situation
+   * `mtmux share` creates and nothing before it did.
+   */
+  it("delivers a session event to one scope and not the other", async () => {
+    const inboxA: ServerMessage[] = [];
+    const inboxB: ServerMessage[] = [];
+
+    const a = createConnection(fakeWs(inboxA), limiter, "10.0.0.1");
+    a.authenticated = true;
+    a.grant = scopedTo(["work"]);
+
+    const b = createConnection(fakeWs(inboxB), limiter, "10.0.0.2");
+    b.authenticated = true;
+    b.grant = scopedTo(["other"]);
+
+    broadcastWhere((conn) =>
+      allowsSessionName(conn.grant, "work")
+        ? { type: "session:killed", name: "work" }
+        : null,
+    );
+
+    expect(inboxA).toEqual([{ type: "session:killed", name: "work" }]);
+    // The whole point. B must not learn that a session called "work" exists.
+    expect(inboxB).toEqual([]);
+  });
+
+  it("skips connections that have not authenticated", () => {
+    const inbox: ServerMessage[] = [];
+    const conn = createConnection(fakeWs(inbox), limiter, "10.0.0.3");
+    conn.authenticated = false;
+
+    broadcastToAll({ type: "session:killed", name: "work" });
+    expect(inbox).toEqual([]);
+  });
+
+  it("honours the exclusion, so an actor is not told its own news twice", () => {
+    const inboxA: ServerMessage[] = [];
+    const inboxB: ServerMessage[] = [];
+    const a = createConnection(fakeWs(inboxA), limiter, "10.0.0.4");
+    a.authenticated = true;
+    const b = createConnection(fakeWs(inboxB), limiter, "10.0.0.5");
+    b.authenticated = true;
+
+    broadcastToAll({ type: "session:killed", name: "work" }, a.ws);
+
+    expect(inboxA).toEqual([]);
+    expect(inboxB).toHaveLength(1);
+  });
+
+  it("keeps delivering when one connection's builder throws", () => {
+    const inboxA: ServerMessage[] = [];
+    const inboxB: ServerMessage[] = [];
+    const a = createConnection(fakeWs(inboxA), limiter, "10.0.0.6");
+    a.authenticated = true;
+    const b = createConnection(fakeWs(inboxB), limiter, "10.0.0.7");
+    b.authenticated = true;
+
+    broadcastWhere((conn) => {
+      if (conn.id === a.id) throw new Error("builder blew up");
+      return { type: "session:killed", name: "work" };
+    });
+
+    expect(inboxA).toEqual([]);
+    expect(inboxB).toHaveLength(1);
+  });
+
+  it("gives a full grant everything a scoped one is denied", () => {
+    const inbox: ServerMessage[] = [];
+    const conn = createConnection(fakeWs(inbox), limiter, "10.0.0.8");
+    conn.authenticated = true;
+    conn.grant = FULL_GRANT;
+
+    broadcastWhere((c) =>
+      allowsSessionName(c.grant, "anything-at-all")
+        ? { type: "session:killed", name: "anything-at-all" }
+        : null,
+    );
+
+    expect(inbox).toHaveLength(1);
+  });
+});

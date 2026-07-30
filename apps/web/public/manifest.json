@@ -1,7 +1,7 @@
 {
-  "name": "ccremote",
-  "short_name": "ccremote",
-  "description": "Your Claude. Your terminal. Anywhere.",
+  "name": "mtmux",
+  "short_name": "mtmux",
+  "description": "Your tmux, on any device.",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",

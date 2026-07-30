@@ -1,1 +1,16 @@
 @import "@repo/ui/globals.css";
+
+/*
+ * Blur the page while the tab is hidden.
+ *
+ * On by default and independent of the device lock, because the leak it closes
+ * needs no attacker: iOS and Android both screenshot the app when you switch
+ * away, and that screenshot is your shell. Thirty lines of CSS, no state, and
+ * nothing to configure.
+ *
+ * `visibility: hidden` would be stronger but forces a full relayout of xterm on
+ * every app switch; a blur filter is composited and costs nothing.
+ */
+.mtmux-hidden body {
+  filter: blur(18px);
+}

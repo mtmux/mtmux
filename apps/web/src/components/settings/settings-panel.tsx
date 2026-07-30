@@ -10,6 +10,7 @@ import { cn } from "@repo/ui/lib/utils";
 import { terminalThemes } from "@repo/ui/terminal-themes";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { LockSettings } from "@/components/lock/lock-settings";
 
 /** Raw buttons here need the same focus ring the shared Button component has. */
 const focusRing =
@@ -243,6 +244,10 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
             />
           </div>
         </section>
+
+        <Separator />
+
+        <LockSettings />
       </div>
     </ScrollArea>
   );

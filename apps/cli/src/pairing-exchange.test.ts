@@ -24,9 +24,9 @@ import {
  *
  * `pairing-client.test.ts` covers both flows through their real entry points;
  * what this file adds is the case those cannot reach — a mailbox holder facing
- * several candidate peers at once. The broker gives a mailbox exactly one claim
- * today, so `hostPairing` sets `outstanding` to 1 and the fan-out path would
- * otherwise go untested in this direction.
+ * several candidate peers at once. The broker offers a mailbox to one claim at
+ * a time, so that shape only arises when an offer lapses and a second claim
+ * arrives, and the fan-out path would otherwise go untested in this direction.
  */
 
 const DESCRIPTOR: SealedDescriptor = {
@@ -107,14 +107,18 @@ function mailboxDerive(secret: string) {
 
 function run(opts: {
   secret: string;
-  outstanding: number;
   side?: ExchangeSide;
+  maxPeers?: number;
+  noMatchGraceMs?: number;
 }) {
   const io = fakeSocket();
   const exchange = runExchange({
     socket: io.socket,
     side: opts.side ?? "mailbox",
-    outstanding: opts.outstanding,
+    maxPeers: opts.maxPeers,
+    // Matches `hostPairing`: on the mailbox side a ruled-out peer has already
+    // had its mailbox destroyed, so there is no straggler to wait for.
+    noMatchGraceMs: opts.noMatchGraceMs ?? 0,
     derive: mailboxDerive(opts.secret),
     buildDescriptor: () => DESCRIPTOR,
     seal: () => Promise.resolve(new Uint8Array([1, 2, 3])),
@@ -123,6 +127,7 @@ function run(opts: {
       noMatch: () => new PairingError("did not match"),
       timedOut: () => new PairingError("timed out"),
       lost: () => new PairingError("lost"),
+      tooManyPeers: () => new PairingError("too many peers"),
       failed: (reason) => new PairingError(`failed: ${reason}`),
     },
   });
@@ -174,7 +179,7 @@ function claimAs(
 describe("mailbox-side fan-out", () => {
   it("keeps the peer whose confirmation verifies and closes the rest", async () => {
     const secret = "2716";
-    const io = run({ secret, outstanding: 3 });
+    const io = run({ secret });
 
     const decoy = claimAs(io, "peer-0", "0000");
     const real = claimAs(io, "peer-1", secret);
@@ -189,7 +194,7 @@ describe("mailbox-side fan-out", () => {
   });
 
   it("answers every peer with its own share and tag before any of them prove anything", () => {
-    const io = run({ secret: "2716", outstanding: 2 });
+    const io = run({ secret: "2716" });
     claimAs(io, "peer-0", "0000");
     claimAs(io, "peer-1", "2716");
     for (const peer of ["peer-0", "peer-1"]) {
@@ -199,7 +204,7 @@ describe("mailbox-side fan-out", () => {
   });
 
   it("fails once every candidate has been ruled out", async () => {
-    const io = run({ secret: "2716", outstanding: 2 });
+    const io = run({ secret: "2716" });
     claimAs(io, "peer-0", "0000").confirm();
     claimAs(io, "peer-1", "9999").confirm();
     await expect(io.exchange.result).rejects.toThrow(/did not match/);
@@ -207,7 +212,7 @@ describe("mailbox-side fan-out", () => {
 
   it("retires one peer on a peer-scoped failure and keeps waiting", async () => {
     const secret = "2716";
-    const io = run({ secret, outstanding: 2 });
+    const io = run({ secret });
 
     io.deliver({ type: "pair:failed", peer: "peer-0", reason: "peer-gone" });
     const real = claimAs(io, "peer-1", secret);
@@ -218,14 +223,14 @@ describe("mailbox-side fan-out", () => {
   });
 
   it("ends the run on a failure that names no peer", async () => {
-    const io = run({ secret: "2716", outstanding: 2 });
+    const io = run({ secret: "2716" });
     io.deliver({ type: "pair:failed", reason: "expired" });
     await expect(io.exchange.result).rejects.toThrow(/failed: expired/);
   });
 
   it("ignores pair:ready, which is an acknowledgement and not news", async () => {
     const secret = "2716";
-    const io = run({ secret, outstanding: 1 });
+    const io = run({ secret });
     io.deliver({
       type: "pair:ready",
       mailboxId: "mbx-abcdefgh",
@@ -237,14 +242,14 @@ describe("mailbox-side fan-out", () => {
   });
 
   it("surfaces a dropped socket", async () => {
-    const io = run({ secret: "2716", outstanding: 1 });
+    const io = run({ secret: "2716" });
     io.drop();
     await expect(io.exchange.result).rejects.toThrow(/lost/);
   });
 
   it("abort settles the run and nothing later can unsettle it", async () => {
     const secret = "2716";
-    const io = run({ secret, outstanding: 1 });
+    const io = run({ secret });
     io.exchange.abort(new PairingError("cancelled"));
     claimAs(io, "peer-0", secret).confirm();
     await expect(io.exchange.result).rejects.toThrow(/cancelled/);

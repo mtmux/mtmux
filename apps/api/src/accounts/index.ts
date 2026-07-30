@@ -35,6 +35,7 @@ import {
 import { createAuth } from "./auth.js";
 import { accountsConfig, type AccountsConfig } from "./config.js";
 import { applyCors, clientIp, readRawBody, sendJson } from "./http.js";
+import { handlePublicRoute } from "./public.js";
 import { handleAccountRoute } from "./routes.js";
 import { createServerRegistry } from "./servers.js";
 import type { Accounts, AuthedUser, Decision } from "./types.js";
@@ -51,11 +52,21 @@ const WEBHOOK_PATH = "/api/auth/dodopayments/webhooks";
 
 const ALLOWED: Decision = { allowed: true };
 
-/** Paths this module owns. Everything else falls through to the broker. */
+/**
+ * Paths this module owns. Everything else falls through to the broker.
+ *
+ * `createStub` calls this same function, which is what makes a path added here
+ * answer 503 without a database rather than throwing on a null `db`. Adding a
+ * route to the router without adding it here is the failure mode — it would
+ * 404 for everyone; adding it here without a stub answer would be worse.
+ * `accounts.test.ts`'s "without a database" block pins both.
+ */
 function owns(pathname: string): boolean {
   return (
     pathname === AUTH_PREFIX ||
     pathname.startsWith(`${AUTH_PREFIX}/`) ||
+    pathname === "/v1/auth/lookup" ||
+    pathname === "/v1/auth/config" ||
     pathname === "/v1/me" ||
     pathname === "/v1/servers" ||
     pathname.startsWith("/v1/servers/") ||
@@ -141,6 +152,10 @@ function createLiveAccounts(db: Db, config: AccountsConfig): Accounts {
   // rate-limit everybody behind it out of signing in.
   const reads = createRateLimiter(config.requestsPerMinute);
   const writes = createRateLimiter(config.writesPerMinute);
+  // A third bucket, an order of magnitude tighter, for the one route that
+  // will happily tell a stranger whether an address has an account. See the
+  // note on `lookupsPerMinute` and the one on `lookupAccount`.
+  const lookups = createRateLimiter(config.lookupsPerMinute);
 
   const routeDeps = { db, config, registry, entitlements, billing };
 
@@ -280,6 +295,23 @@ function createLiveAccounts(db: Db, config: AccountsConfig): Accounts {
       return true;
     }
 
+    // Before `authenticate`, because these are what the sign-in page asks in
+    // order to know what to render — there is by definition no session yet.
+    if (
+      await handlePublicRoute(
+        {
+          db,
+          config,
+          takeLookup: () => lookups.take(`lookup:${clientIp(req)}`),
+          lookupRetryAfter: () =>
+            retryAfter(lookups, `lookup:${clientIp(req)}`),
+        },
+        { req, res, url },
+      )
+    ) {
+      return true;
+    }
+
     const user = await authenticate(req);
     if (!user) {
       sendJson(res, 401, { error: "Sign in first: `mtmux login`." });
@@ -316,6 +348,7 @@ function createLiveAccounts(db: Db, config: AccountsConfig): Accounts {
     checkDevice: async (userId, serverId) => {
       if (!userId) return ALLOWED;
       return entitlements.checkDevice(
+        userId,
         serverId,
         await entitlements.planFor(userId),
       );
@@ -337,6 +370,11 @@ function createLiveAccounts(db: Db, config: AccountsConfig): Accounts {
  * truer answer than 404 — while everything the pairing path asks is answered
  * permissively so that an install with no accounts behaves exactly like one
  * that never had them.
+ *
+ * The 503 covers every path `owns()` claims, including the unauthenticated
+ * `/v1/auth/lookup` and `/v1/auth/config`. That is not incidental: a route
+ * that is owned by the router but has no stub answer would reach a handler
+ * with a null database and throw.
  */
 function createStub(): Accounts {
   return {

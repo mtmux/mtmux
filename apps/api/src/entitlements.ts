@@ -27,15 +27,29 @@ import {
   type Db,
 } from "@repo/db";
 import {
-  DEFAULT_PLAN,
   exceeds,
   limitsFor,
+  TRIAL_MS,
+  TRIAL_PLAN,
   type PlanId,
 } from "@repo/config/plans";
+import { resolvePlan, type PlanResolution } from "./billing/subscriptions.js";
 
-export type Decision = { allowed: boolean; reason?: string };
+export type Decision = {
+  allowed: boolean;
+  reason?: string;
+  /**
+   * Set when this very call started the account's free trial.
+   *
+   * The caller turns it into "Started your 7-day Pro trial — no card needed."
+   * It is on the decision rather than a separate query because the trial
+   * starts *because of* the check, and the two must not be able to disagree.
+   */
+  trialStarted?: boolean;
+};
 
 const ALLOWED: Decision = { allowed: true };
+const TRIAL_STARTED: Decision = { allowed: true, trialStarted: true };
 
 /** UTC `YYYY-MM-DD`. Text, so a day is comparable without date arithmetic. */
 export function dayKey(now = Date.now()): string {
@@ -56,29 +70,131 @@ export type MonthUsage = {
 
 export type Entitlements = {
   planFor(userId: string): Promise<PlanId>;
+  /** The full answer behind `planFor`: plan, why, and the trial's state. */
+  resolveFor(userId: string, now?: number): Promise<PlanResolution>;
   usageThisMonth(userId: string, now?: number): Promise<MonthUsage>;
   /** May this account open another tunnel? */
   checkTunnel(userId: string | null): Promise<Decision>;
   /** May this account register another server? */
   checkServerLimit(userId: string): Promise<Decision>;
   /** May this server trust another browser? */
-  checkDevice(serverId: string, plan: PlanId): Promise<Decision>;
+  checkDevice(
+    userId: string,
+    serverId: string,
+    plan: PlanId,
+  ): Promise<Decision>;
   /** May this account rename a server? */
-  checkRename(plan: PlanId): Decision;
+  checkRename(userId: string, plan: PlanId): Promise<Decision>;
+  /**
+   * Begin the free trial, once and only once per account.
+   *
+   * Returns false when the account has already had one. Callers do not need to
+   * check first — the write itself is the check.
+   */
+  startTrial(userId: string, now?: number): Promise<boolean>;
   /** How long one tunnel session may run, in minutes, or null for unbounded. */
   tunnelMinutesFor(plan: PlanId): number | null;
   recordUsage(userId: string, bytes: number, seconds: number): Promise<void>;
 };
 
 export function createEntitlements(db: Db): Entitlements {
-  async function planFor(userId: string): Promise<PlanId> {
+  async function resolveFor(
+    userId: string,
+    now = Date.now(),
+  ): Promise<PlanResolution> {
     const rows = await db
-      .select({ plan: subscriptions.plan })
+      .select({
+        plan: subscriptions.plan,
+        trialStartedAt: subscriptions.trialStartedAt,
+        trialEndsAt: subscriptions.trialEndsAt,
+      })
       .from(subscriptions)
       .where(eq(subscriptions.userId, userId))
       .limit(1);
-    const plan = rows[0]?.plan;
-    return plan === "pro" ? "pro" : DEFAULT_PLAN;
+    return resolvePlan(rows[0] ?? null, now);
+  }
+
+  async function planFor(userId: string): Promise<PlanId> {
+    return (await resolveFor(userId)).plan;
+  }
+
+  /**
+   * Start the trial, idempotently, in one statement.
+   *
+   * `setWhere` is what makes a second call a no-op rather than a fresh seven
+   * days: the update only fires when `trial_started_at` is still null. Doing
+   * this as read-then-write would leave a race in which two concurrent
+   * refusals each grant their own trial window.
+   *
+   * A user with no subscriptions row yet is the common case — nobody has a row
+   * until they touch billing — hence insert-with-conflict rather than update.
+   */
+  async function startTrial(
+    userId: string,
+    now = Date.now(),
+  ): Promise<boolean> {
+    const startedAt = new Date(now);
+    const endsAt = new Date(now + TRIAL_MS);
+
+    const result = await db
+      .insert(subscriptions)
+      .values({
+        id: `sub_${userId}`,
+        userId,
+        status: "none",
+        plan: "free",
+        trialStartedAt: startedAt,
+        trialEndsAt: endsAt,
+        createdAt: startedAt,
+        updatedAt: startedAt,
+      })
+      .onConflictDoUpdate({
+        target: subscriptions.userId,
+        set: {
+          trialStartedAt: startedAt,
+          trialEndsAt: endsAt,
+          updatedAt: startedAt,
+        },
+        setWhere: sql`${subscriptions.trialStartedAt} is null`,
+      });
+
+    return changedRows(result) > 0;
+  }
+
+  /**
+   * Turn a refusal into the start of a trial, when that is honest.
+   *
+   * Three conditions, all required. The check must have refused — the trial is
+   * never burned on someone's first server, because free allows one and the
+   * check passes. The account must never have trialled, `trial_started_at`
+   * being permanent. And the same check must *pass* under the trial plan, so a
+   * refusal a trial cannot fix (the monthly byte cap when they are over even
+   * Pro's) does not silently consume it.
+   *
+   * The extra read only happens on the refusal path, so the common allowed
+   * case costs exactly what it did before.
+   */
+  async function withTrial(
+    userId: string,
+    plan: PlanId,
+    evaluate: (plan: PlanId) => Decision | Promise<Decision>,
+    now = Date.now(),
+  ): Promise<Decision> {
+    const decision = await evaluate(plan);
+    if (decision.allowed) return decision;
+    if (plan === TRIAL_PLAN) return decision;
+
+    const resolution = await resolveFor(userId, now);
+    if (resolution.trial.status !== "none") return decision;
+
+    const underTrial = await evaluate(TRIAL_PLAN);
+    if (!underTrial.allowed) return decision;
+
+    // Lost the race to a concurrent request that started it first: that
+    // request's trial is live, so re-evaluating under it is correct and this
+    // caller simply does not get to claim the announcement.
+    if (!(await startTrial(userId, now))) return ALLOWED;
+    return TRIAL_STARTED;
   }
 
   async function usageThisMonth(
@@ -110,76 +226,88 @@ export function createEntitlements(db: Db): Entitlements {
   }
 
   async function checkTunnel(userId: string | null): Promise<Decision> {
+    // Invariant #5, and the reason this line comes before any database work:
+    // an anonymous tunnel is allowed without a single query. A self-hosted
+    // install has no account, and must not pay a read to be told so.
     if (!userId) return ALLOWED;
 
     const plan = await planFor(userId);
-    const limits = limitsFor(plan);
-    if (limits.monthlyBytes === null) return ALLOWED;
+    return withTrial(userId, plan, async (candidate) => {
+      const limits = limitsFor(candidate);
+      if (limits.monthlyBytes === null) return ALLOWED;
 
-    const used = await usageThisMonth(userId);
-    if (!exceeds(used.bytes, limits.monthlyBytes)) return ALLOWED;
+      const used = await usageThisMonth(userId);
+      if (!exceeds(used.bytes, limits.monthlyBytes)) return ALLOWED;
 
-    return {
-      allowed: false,
-      reason:
-        `This account has used its ${formatBytes(limits.monthlyBytes)} of ` +
-        `relayed traffic for ${used.month}. Local and LAN sessions are ` +
-        `unaffected — they never touch our infrastructure.`,
-    };
+      return {
+        allowed: false,
+        reason:
+          `This account has used its ${formatBytes(limits.monthlyBytes)} of ` +
+          `relayed traffic for ${used.month}. Local and LAN sessions are ` +
+          `unaffected — they never touch our infrastructure.`,
+      };
+    });
   }
 
   async function checkServerLimit(userId: string): Promise<Decision> {
     const plan = await planFor(userId);
-    const limit = limitsFor(plan).servers;
-    if (limit === null) return ALLOWED;
+    return withTrial(userId, plan, async (candidate) => {
+      const limit = limitsFor(candidate).servers;
+      if (limit === null) return ALLOWED;
 
-    const rows = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(servers)
-      .where(eq(servers.userId, userId));
-    const used = Number(rows[0]?.count ?? 0);
+      const rows = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(servers)
+        .where(eq(servers.userId, userId));
+      const used = Number(rows[0]?.count ?? 0);
 
-    if (!exceeds(used, limit)) return ALLOWED;
-    return {
-      allowed: false,
-      reason: `The ${plan} plan covers ${limit} server${limit === 1 ? "" : "s"}.`,
-    };
+      if (!exceeds(used, limit)) return ALLOWED;
+      return {
+        allowed: false,
+        reason: `The ${candidate} plan covers ${limit} server${limit === 1 ? "" : "s"}.`,
+      };
+    });
   }
 
   async function checkDevice(
+    userId: string,
     serverId: string,
     plan: PlanId,
   ): Promise<Decision> {
-    const limit = limitsFor(plan).devicesPerServer;
-    if (limit === null) return ALLOWED;
+    return withTrial(userId, plan, async (candidate) => {
+      const limit = limitsFor(candidate).devicesPerServer;
+      if (limit === null) return ALLOWED;
 
-    // Revoked devices are excluded rather than deleted — "this phone was
-    // trusted until Tuesday" is a question people ask after losing a phone,
-    // and a deleted row cannot answer it. They must not count against the cap.
-    const rows = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(serverDevices)
-      .where(
-        and(
-          eq(serverDevices.serverId, serverId),
-          sql`${serverDevices.revokedAt} is null`,
-        ),
-      );
-    const used = Number(rows[0]?.count ?? 0);
+      // Revoked devices are excluded rather than deleted — "this phone was
+      // trusted until Tuesday" is a question people ask after losing a phone,
+      // and a deleted row cannot answer it. They must not count against the cap.
+      const rows = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(serverDevices)
+        .where(
+          and(
+            eq(serverDevices.serverId, serverId),
+            sql`${serverDevices.revokedAt} is null`,
+          ),
+        );
+      const used = Number(rows[0]?.count ?? 0);
 
-    if (!exceeds(used, limit)) return ALLOWED;
-    return {
-      allowed: false,
-      reason: `The ${plan} plan trusts ${limit} browsers per server.`,
-    };
+      if (!exceeds(used, limit)) return ALLOWED;
+      return {
+        allowed: false,
+        reason: `The ${candidate} plan trusts ${limit} browsers per server.`,
+      };
+    });
   }
 
-  function checkRename(plan: PlanId): Decision {
-    if (limitsFor(plan).namedServers) return ALLOWED;
-    return {
-      allowed: false,
-      reason: "Renaming a server is a Pro feature.",
-    };
+  async function checkRename(userId: string, plan: PlanId): Promise<Decision> {
+    return withTrial(userId, plan, (candidate) => {
+      if (limitsFor(candidate).namedServers) return ALLOWED;
+      return {
+        allowed: false,
+        reason: "Renaming a server is a Pro feature.",
+      };
+    });
   }
 
   function tunnelMinutesFor(plan: PlanId): number | null {
@@ -225,14 +353,29 @@ export function createEntitlements(db: Db): Entitlements {
 
   return {
     planFor,
+    resolveFor,
     usageThisMonth,
     checkTunnel,
     checkServerLimit,
     checkDevice,
     checkRename,
+    startTrial,
     tunnelMinutesFor,
     recordUsage,
   };
+}
+
+/**
+ * How many rows a Drizzle write touched.
+ *
+ * better-sqlite3 reports `changes`; the shared cross-dialect typing is looser
+ * than that. Narrowed here rather than cast at the call site — and defaulting
+ * to 0, so an unrecognised result reads as "did not start a trial" rather than
+ * as a spurious announcement.
+ */
+function changedRows(result: unknown): number {
+  const changes = (result as { changes?: number } | undefined)?.changes;
+  return typeof changes === "number" ? changes : 0;
 }
 
 /** For limit messages only — `5 GB`, not a precise byte count. */

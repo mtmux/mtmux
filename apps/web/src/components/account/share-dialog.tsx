@@ -1,0 +1,177 @@
+"use client";
+
+import { useState } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@repo/ui/components/ui/dialog";
+import { Input } from "@repo/ui/components/ui/input";
+import { Label } from "@repo/ui/components/ui/label";
+import { Switch } from "@repo/ui/components/ui/switch";
+import { CopyCommand } from "./copy-command";
+import { buildShareCommand, type ShareFiles } from "./share-command";
+
+/**
+ * Builds the `mtmux share` command, and does nothing else.
+ *
+ * The browser deliberately cannot mint a grant. Minting one needs the tmux
+ * truth about which sessions exist and what their ids are (only the relay has
+ * that) and a broker socket to arm a pairing code (only the CLI process has
+ * that, and in split mode there is no agent at all). A dashboard button that
+ * appeared to create a share would have to round-trip through a machine that
+ * may well be offline, and would fail in a way that looks like a bug.
+ *
+ * So this is a command builder. It is honest about what it is, and the copy
+ * button is the whole feature.
+ */
+
+const EXPIRY_OPTIONS = [
+  { value: "24h", label: "24 hours" },
+  { value: "7d", label: "7 days" },
+  { value: "30d", label: "30 days" },
+  { value: "never", label: "Never" },
+] as const;
+
+const FILE_OPTIONS: { value: ShareFiles; label: string }[] = [
+  { value: "none", label: "No files" },
+  { value: "ro", label: "Read files" },
+  { value: "rw", label: "Read + write files" },
+];
+
+export function ShareDialog({
+  open,
+  onOpenChange,
+  serverName,
+  session = "",
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  serverName: string;
+  /** Prefilled once the cross-server session list knows the name. */
+  session?: string;
+}) {
+  const [name, setName] = useState(session);
+  const [readOnly, setReadOnly] = useState(false);
+  const [files, setFiles] = useState<ShareFiles>("none");
+  const [expires, setExpires] = useState<string>("7d");
+
+  const command = buildShareCommand({
+    session: name,
+    readOnly,
+    files,
+    expires,
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Share a session on {serverName}</DialogTitle>
+          <DialogDescription>
+            Run this on {serverName}. It prints a six-digit code the other
+            person enters at app.mtmux.com — they never get your machine, only
+            what you name here.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="share-session">tmux session</Label>
+            <Input
+              id="share-session"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="work"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-11 font-mono"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <Label htmlFor="share-read-only">Read-only</Label>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                They can watch, and cannot type.
+              </p>
+            </div>
+            <Switch
+              id="share-read-only"
+              checked={readOnly}
+              onCheckedChange={setReadOnly}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Files</Label>
+            <div className="flex flex-wrap gap-2">
+              {FILE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setFiles(option.value)}
+                  aria-pressed={files === option.value}
+                  className={
+                    files === option.value
+                      ? "rounded-md border border-primary bg-primary/10 px-3 py-2 text-sm text-foreground"
+                      : "rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                  }
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Expires</Label>
+            <div className="flex flex-wrap gap-2">
+              {EXPIRY_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setExpires(option.value)}
+                  aria-pressed={expires === option.value}
+                  className={
+                    expires === option.value
+                      ? "rounded-md border border-primary bg-primary/10 px-3 py-2 text-sm text-foreground"
+                      : "rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                  }
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <CopyCommand command={command} />
+
+          {/*
+            The same paragraph the CLI prints before the code, for the same
+            reason: read-write is a scope on the client, not a boundary on the
+            machine. Saying it only in the terminal would mean the person
+            configuring the share from a phone never reads it.
+          */}
+          {readOnly ? (
+            <p className="text-sm text-muted-foreground">
+              Read-only is a real boundary — the viewer attaches to a locked
+              copy of the session that accepts no input at all.
+            </p>
+          ) : (
+            <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-foreground">
+              Read-write means they are typing into a shell on this machine.
+              mtmux keeps them in this session, but the shell does not — they
+              can run <code className="font-mono">tmux switch-client</code>,
+              read <code className="font-mono">~/.ssh</code>, or anything your
+              user account can do. Turn on read-only for a share that is
+              actually a boundary.
+            </p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -2,6 +2,7 @@
 
 import { Terminal, LayoutList, FolderOpen, Settings } from "lucide-react";
 import { cn } from "@repo/ui/lib/utils";
+import { filesDisabled, useConnectionStore } from "@/stores/connection-store";
 
 export type MobileTab = "terminal" | "sessions" | "files" | "settings";
 
@@ -23,6 +24,14 @@ export function MobileNav({
   onTabChange,
   className,
 }: MobileNavProps) {
+  const capabilities = useConnectionStore((s) => s.capabilities);
+  // A share with no file access gets no Files tab at all. Leaving it in place
+  // would open a browser whose every request comes back ACCESS_DENIED, which
+  // reads as a broken app rather than as the share it is.
+  const visible = filesDisabled(capabilities)
+    ? tabs.filter((t) => t.id !== "files")
+    : tabs;
+
   // No safe-area padding here — AppShell already insets the whole frame, and
   // doubling it stole ~34px of screen on notched devices.
   return (
@@ -32,7 +41,7 @@ export function MobileNav({
         className,
       )}
     >
-      {tabs.map(({ id, label, icon: Icon }) => (
+      {visible.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           className={cn(

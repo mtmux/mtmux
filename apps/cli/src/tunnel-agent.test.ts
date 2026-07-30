@@ -187,6 +187,48 @@ describe("stream plumbing", () => {
     expect(h.locals).toHaveLength(1);
   });
 
+  it("sends nothing of its own before the browser's first frame", async () => {
+    /**
+     * The regression test for the first finding.
+     *
+     * The agent used to authenticate this loopback socket with the machine's
+     * full `AUTH_TOKEN`, so every tunnelled browser arrived on an
+     * already-privileged connection and its own credential was never checked.
+     * Over the tunnel there was consequently nothing to scope.
+     *
+     * The first thing on this socket must now be the browser's own `auth`
+     * frame, verbatim — nothing injected before it.
+     */
+    const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    const browser = browserEnd(keys);
+    h.agent.start();
+    register(h);
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    const local = h.locals[0]!;
+    local.open();
+    await flush();
+
+    // Nothing at all until the browser speaks.
+    expect(local.sent).toEqual([]);
+
+    const browserAuth = JSON.stringify({
+      type: "auth",
+      token: "the-browsers-own-direct-token",
+    });
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browser.seal(browserAuth),
+    });
+    await flush();
+
+    expect(local.sent[0]).toBe(browserAuth);
+    // Nothing anywhere on this socket carries the machine's token.
+    expect(local.sent.join("\n")).not.toContain("AUTH_TOKEN");
+  });
+
   it("unseals browser frames into plaintext relay lines", async () => {
     const h = harness();
     const keys = sessionKeys();

@@ -11,6 +11,7 @@ import { isHostedBuild, signOut, useSession } from "@/lib/auth-client";
 
 const NAV = [
   { href: "/dashboard", label: "Servers" },
+  { href: "/settings/security", label: "Security" },
   { href: "/settings/billing", label: "Billing" },
 ] as const;
 

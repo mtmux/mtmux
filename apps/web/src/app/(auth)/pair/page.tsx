@@ -19,6 +19,7 @@ import {
   type PairingUpdate,
 } from "@/lib/pairing-client";
 import { raceCandidates } from "@/lib/candidate-race";
+import { markJustPaired } from "@/lib/lock-controller";
 import {
   saveDescriptor,
   saveSessionKeys,
@@ -88,6 +89,9 @@ export default function PairPage() {
             ? `Connected to ${update.descriptor.label} directly`
             : `Connected to ${update.descriptor.label} over the relay`,
         );
+        // Offer the device lock once, here and nowhere else — see
+        // `takeEnrollmentPrompt`.
+        markJustPaired();
         router.push("/");
       })();
     },

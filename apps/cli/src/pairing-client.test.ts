@@ -11,7 +11,7 @@ import {
   randomBytes,
   type SessionKeys,
 } from "@repo/crypto";
-import type { SealedDescriptor } from "@repo/protocol";
+import { MAX_PEERS_PER_SLOT, type SealedDescriptor } from "@repo/protocol";
 import {
   pairWithCode,
   hostPairing,
@@ -88,7 +88,9 @@ function scenario(opts: {
       sid = b.sid;
       return Promise.resolve({
         claimId: "clm-abcdefgh",
-        offered: opts.browserSecrets.length + (opts.silent ?? 0),
+        // The broker reports only that something is there. How many peers
+        // exist, the CLI counts from the shares that actually arrive.
+        waiting: opts.browserSecrets.length + (opts.silent ?? 0) > 0,
       });
     },
     openClaimSocket() {
@@ -100,8 +102,14 @@ function scenario(opts: {
     inbound?.(JSON.stringify(msg));
   }
 
-  /** Run one browser's half of the exchange and push its messages at the CLI. */
-  function runBrowser(index: number) {
+  /**
+   * Run one browser's half of the exchange and push its messages at the CLI.
+   *
+   * `confirmNow: false` sends only the share, so a test can line several peers
+   * up before any of them is ruled out — the CLI treats "everyone answered and
+   * everyone was wrong" differently from "the only answer so far was wrong".
+   */
+  function runBrowser(index: number, confirmNow = true) {
     const secret = opts.browserSecrets[index]!;
     const peer = `peer-${index}`;
     const browser = cpaceStart(
@@ -132,12 +140,14 @@ function scenario(opts: {
       ad,
       sid,
     });
-    deliver({
-      type: "pair:peer-confirm",
-      peer,
-      tag: bytesToHex(confirmationTag(keys.confirm, "browser")),
-    });
-    return { peer, keys };
+    const confirm = () =>
+      deliver({
+        type: "pair:peer-confirm",
+        peer,
+        tag: bytesToHex(confirmationTag(keys.confirm, "browser")),
+      });
+    if (confirmNow) confirm();
+    return { peer, keys, confirm };
   }
 
   return {
@@ -237,8 +247,8 @@ describe("successful pairing", () => {
 describe("fan-out", () => {
   it("ignores mailboxes whose secret does not match and keeps the one that does", async () => {
     const secret = "2716";
-    // Two decoys sharing the slot, then the real one.
-    const s = scenario({ browserSecrets: ["0000", "9999", secret] });
+    // A decoy sharing the slot, then the real one. Two is the broker's cap.
+    const s = scenario({ browserSecrets: ["0000", secret] });
 
     const promise = pairWithCode({
       code: `49${secret}`,
@@ -249,13 +259,37 @@ describe("fan-out", () => {
 
     await s.ready;
     s.runBrowser(0);
-    s.runBrowser(1);
-    const real = s.runBrowser(2);
+    const real = s.runBrowser(1);
     const result = await promise;
 
     expect(bytesToHex(result.keys.c2s)).toBe(bytesToHex(real.keys.c2s));
-    // Both decoys were closed, which destroys their mailboxes.
-    expect(s.closedPeers.sort()).toEqual(["peer-0", "peer-1"]);
+    // The decoy was closed, which destroys its mailbox.
+    expect(s.closedPeers).toEqual(["peer-0"]);
+  });
+
+  it("refuses a broker offering more peers than a slot may hold", async () => {
+    // More answers than the cap is the signature of a broker fanning one claim
+    // out to attackers to multiply their guesses. Racing them would be doing
+    // exactly what the cap exists to prevent.
+    const secrets = Array.from(
+      { length: MAX_PEERS_PER_SLOT + 1 },
+      () => "0000",
+    );
+    const s = scenario({ browserSecrets: secrets });
+
+    const promise = pairWithCode({
+      code: "492716",
+      transport: s.transport,
+      buildDescriptor: () => DESCRIPTOR,
+      seal: sealed,
+    });
+
+    await s.ready;
+    // Shares only: the run must refuse on the count alone, before any of them
+    // is ruled out on its tag.
+    for (let i = 0; i < secrets.length; i += 1) s.runBrowser(i, false);
+
+    await expect(promise).rejects.toThrow(/more terminals than it should/);
   });
 
   it("fails once every offered mailbox has been ruled out", async () => {

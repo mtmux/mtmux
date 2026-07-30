@@ -35,6 +35,18 @@ type Interval = "monthly" | "yearly";
 
 type Billing = {
   plan: PlanId;
+  /**
+   * Why they are on that plan.
+   *
+   * Needed because `plan` alone stopped being enough to describe the account:
+   * a trial resolves to "pro" so that every limit is Pro's, and rendering that
+   * as "your subscription is active" would be a lie to someone who has never
+   * entered a card.
+   */
+  planSource: "free" | "trial" | "paid";
+  /** Whole days left on an active trial. Zero when there isn't one. */
+  trialDaysLeft: number;
+  trialEndsAt: number | null;
   /** Free accounts have no subscription at all, hence "none". */
   status: "none" | "active" | "trialing" | "on_hold" | "cancelled" | string;
   renewsAt: number | null;
@@ -77,9 +89,23 @@ function normalize(body: unknown): Billing {
       (plan === "free" ? "none" : "active"),
   );
   const usage = pick(body, "usage");
+  const trial = pick(body, "trial");
+  const trialActive = pick(trial, "status") === "active";
+  // Defaults to "paid" for a pro plan from an older broker that does not send
+  // `planSource` yet, which is what the panel assumed before trials existed.
+  const rawSource = pick(body, "planSource");
+  const planSource: Billing["planSource"] =
+    rawSource === "trial" || (rawSource === undefined && trialActive)
+      ? "trial"
+      : rawSource === "paid" || (rawSource === undefined && plan === "pro")
+        ? "paid"
+        : "free";
 
   return {
     plan,
+    planSource,
+    trialDaysLeft: num(pick(trial, "daysLeft")) ?? 0,
+    trialEndsAt: toEpochMs(pick(trial, "endsAt")),
     status,
     renewsAt: toEpochMs(
       pick(body, "renewsAt", "renewalDate", "currentPeriodEnd", "renewsOn") ??
@@ -183,8 +209,17 @@ export function BillingPanel() {
   const { billing } = load;
   const limits = limitsFor(billing.plan);
   const onHold = ON_HOLD.has(billing.status);
-  const ending = ENDED.has(billing.status) && billing.plan === "pro";
+  const trialing = billing.planSource === "trial";
+  // A trial has no subscription behind it, so none of the subscription states
+  // apply to it — without this guard `status: "none"` would render a trialing
+  // account as "Ending".
+  const ending =
+    !trialing && ENDED.has(billing.status) && billing.plan === "pro";
   const isPro = billing.plan === "pro";
+  // What the *buttons* key off. "Pro" is now reachable without ever having
+  // paid, and someone on a trial has no Dodo customer to manage and every
+  // reason to still be offered the upgrade.
+  const paid = billing.planSource === "paid";
 
   return (
     <div className="space-y-4">
@@ -236,17 +271,24 @@ export function BillingPanel() {
             <Badge variant={isPro ? "default" : "secondary"}>
               {isPro ? "Pro" : "Free"}
             </Badge>
+            {trialing && <Badge variant="outline">Trial</Badge>}
             {onHold && <Badge variant="destructive">Payment failed</Badge>}
             {ending && <Badge variant="outline">Ending</Badge>}
           </div>
           <CardDescription>
-            {isPro && billing.renewsAt && !ending
-              ? `Renews on ${formatDate(billing.renewsAt)}.`
-              : ending && billing.renewsAt
-                ? `Pro access continues until ${formatDate(billing.renewsAt)}.`
-                : isPro
-                  ? "Your subscription is active."
-                  : "You're on the free plan. No card, no expiry."}
+            {trialing
+              ? `${billing.trialDaysLeft} day${billing.trialDaysLeft === 1 ? "" : "s"} left on your free trial${
+                  billing.trialEndsAt
+                    ? `, until ${formatDate(billing.trialEndsAt)}`
+                    : ""
+                }. Nothing happens when it ends except that Pro limits go back to free ones — your machines and sessions keep working.`
+              : isPro && billing.renewsAt && !ending
+                ? `Renews on ${formatDate(billing.renewsAt)}.`
+                : ending && billing.renewsAt
+                  ? `Pro access continues until ${formatDate(billing.renewsAt)}.`
+                  : isPro
+                    ? "Your subscription is active."
+                    : "You're on the free plan. No card, no expiry."}
           </CardDescription>
         </CardHeader>
 
@@ -267,7 +309,7 @@ export function BillingPanel() {
             />
           )}
 
-          {isPro && (
+          {paid && (
             <Button
               variant="outline"
               className="h-11 w-full sm:w-auto"
@@ -290,7 +332,7 @@ export function BillingPanel() {
         </CardContent>
       </Card>
 
-      {!isPro && (
+      {!paid && (
         <Card className="border-primary/40">
           <CardHeader>
             <div className="flex items-center gap-2">

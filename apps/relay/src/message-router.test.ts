@@ -2,25 +2,59 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { WebSocket } from "ws";
 import type {
   ClientMessage,
+  PaneInfo,
   ServerMessage,
+  SessionInfo,
   TerminalSize,
+  WindowInfo,
 } from "@repo/protocol";
 import type { ConnectionState } from "./connection-manager.js";
-import type { PtyBridge } from "./pty-bridge.js";
+import type { PtyBridge, PtyBridgeOptions } from "./pty-bridge.js";
+import { FULL_GRANT } from "./grant.js";
 
 const capturePane = vi.fn<(name: string) => Promise<string>>();
 const sessionExists = vi.fn<(name: string) => Promise<boolean>>();
+const listSessions = vi.fn<() => Promise<SessionInfo[]>>();
+const listPanes = vi.fn<(session: string) => Promise<PaneInfo[]>>();
+const listWindows = vi.fn<(session: string) => Promise<WindowInfo[]>>();
+const capturePaneById = vi.fn<(id: string) => Promise<string>>();
 const createPtyBridge =
-  vi.fn<(name: string, size?: TerminalSize) => PtyBridge>();
+  vi.fn<
+    (name: string, size?: TerminalSize, opts?: PtyBridgeOptions) => PtyBridge
+  >();
 
 vi.mock("./tmux-manager.js", () => ({
   capturePane: (name: string) => capturePane(name),
   sessionExists: (name: string) => sessionExists(name),
+  listSessions: () => listSessions(),
+  listPanes: (session: string) => listPanes(session),
+  listWindows: (session: string) => listWindows(session),
+  capturePaneById: (id: string) => capturePaneById(id),
 }));
 
 vi.mock("./pty-bridge.js", () => ({
-  createPtyBridge: (name: string, size?: TerminalSize) =>
-    createPtyBridge(name, size),
+  createPtyBridge: (
+    name: string,
+    size?: TerminalSize,
+    opts?: PtyBridgeOptions,
+  ) => createPtyBridge(name, size, opts),
+}));
+
+const listDirectory = vi.fn<(path: string) => Promise<unknown[]>>();
+vi.mock("./file-service.js", () => ({
+  isPathAllowed: () => true,
+  listDirectory: (path: string) => listDirectory(path),
+  defaultBrowsePath: () => "/home/someone",
+}));
+
+const createReadOnlyClone =
+  vi.fn<(target: string, grantId: string, connId: string) => Promise<string>>();
+vi.mock("./tmux-clone.js", () => ({
+  createReadOnlyClone: (target: string, grantId: string, connId: string) =>
+    createReadOnlyClone(target, grantId, connId),
+  destroyClone: () => Promise.resolve(),
+  isCloneSession: (name: string) => name.startsWith("__mtmux_"),
+  CLONE_PREFIX: "__mtmux_",
 }));
 
 const { routeMessage } = await import("./message-router.js");
@@ -68,12 +102,14 @@ function makeConn(): ConnectionState {
     id: "conn-test",
     ws,
     authenticated: true,
+    grant: FULL_GRANT,
     pty: null,
     watchers: new Map(),
     uploads: new Map(),
     rateLimiter: {} as ConnectionState["rateLimiter"],
     attachedSession: null,
     lastSize: null,
+    cloneSession: null,
     activeWindowId: null,
     remoteAddress: null,
     lastActivityAt: Date.now(),
@@ -91,7 +127,50 @@ beforeEach(() => {
   conn = makeConn();
   sessionExists.mockResolvedValue(true);
   capturePane.mockResolvedValue("REPLAYED SCROLLBACK");
+  listSessions.mockResolvedValue([
+    session("work", "$1"),
+    session("other", "$2"),
+  ]);
+  listPanes.mockResolvedValue([pane("%1", "@1")]);
+  listWindows.mockResolvedValue([window("@1")]);
+  capturePaneById.mockResolvedValue("PANE CONTENT");
+  listDirectory.mockResolvedValue([]);
+  createReadOnlyClone.mockResolvedValue("__mtmux_clone");
 });
+
+function session(name: string, id: string): SessionInfo {
+  return {
+    name,
+    id,
+    windows: 1,
+    attached: false,
+    created: new Date(0).toISOString(),
+    activity: new Date(0).toISOString(),
+  };
+}
+
+function pane(id: string, windowId: string): PaneInfo {
+  return {
+    id,
+    index: 0,
+    windowId,
+    active: true,
+    zoomed: false,
+    dimensions: { cols: 80, rows: 24 },
+    position: { x: 0, y: 0 },
+  };
+}
+
+function window(id: string): WindowInfo {
+  return {
+    id,
+    index: 0,
+    name: "bash",
+    active: true,
+    paneCount: 1,
+    layout: "",
+  };
+}
 
 describe("session:attach", () => {
   it("acks before replaying the capture", async () => {
@@ -235,5 +314,130 @@ describe("terminal:resize", () => {
     expect(
       (bridge as unknown as { resize: ReturnType<typeof vi.fn> }).resize,
     ).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The scoping regressions.
+ *
+ * Each of these was a live hole before grants existed, and two of them —
+ * `pane:capture` and the file gate — applied to *every* connection, not just
+ * shared ones.
+ */
+describe("scoped grants", () => {
+  function scoped(over: Partial<ConnectionState["grant"]> = {}) {
+    conn.grant = {
+      ...FULL_GRANT,
+      id: "grn_share",
+      scope: { kind: "sessions", sessions: [{ id: "$1", name: "work" }] },
+      files: "none",
+      ...over,
+    };
+  }
+
+  it("refuses to capture a pane outside the attached session", async () => {
+    // Finding #2. `capturePaneById("%9")` passed the id straight to tmux,
+    // which resolves pane ids server-wide — so any pane's scrollback on the
+    // machine came back, and `attachedSession` was never a boundary at all.
+    const { bridge, fireReady } = makeBridge("work");
+    createPtyBridge.mockReturnValue(bridge);
+    await route({ type: "session:attach", name: "work", capture: false });
+    fireReady();
+    sent.length = 0;
+
+    // listPanes only ever reports %1 for this session.
+    await route({ type: "pane:capture", id: "%9" });
+
+    expect(capturePaneById).not.toHaveBeenCalled();
+    expect(sent[0]).toMatchObject({ type: "error", code: "PANE_NOT_FOUND" });
+  });
+
+  it("still captures a pane that does belong to the session", async () => {
+    const { bridge, fireReady } = makeBridge("work");
+    createPtyBridge.mockReturnValue(bridge);
+    await route({ type: "session:attach", name: "work", capture: false });
+    fireReady();
+    sent.length = 0;
+
+    await route({ type: "pane:capture", id: "%1" });
+
+    expect(capturePaneById).toHaveBeenCalledWith("%1");
+    expect(sent[0]).toMatchObject({ type: "pane:captured", id: "%1" });
+  });
+
+  it("hides out-of-scope sessions from the list rather than erroring", async () => {
+    scoped();
+    await route({ type: "session:list" });
+
+    const list = sent.find((m) => m.type === "session:list") as {
+      sessions: SessionInfo[];
+    };
+    expect(list.sessions.map((s) => s.name)).toEqual(["work"]);
+  });
+
+  it("answers SESSION_NOT_FOUND for an out-of-scope attach", async () => {
+    // Not "denied". A scoped holder who could tell those two apart could
+    // enumerate every session name on the machine by probing.
+    scoped();
+    await route({ type: "session:attach", name: "other", capture: false });
+
+    expect(createPtyBridge).not.toHaveBeenCalled();
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      code: "SESSION_NOT_FOUND",
+    });
+  });
+
+  it("never calls the file service when files are off", async () => {
+    scoped();
+    await route({ type: "file:list", path: "/home/someone" });
+
+    expect(listDirectory).not.toHaveBeenCalled();
+    expect(sent[0]).toMatchObject({ type: "error", code: "ACCESS_DENIED" });
+  });
+
+  it("never writes to the PTY on a read-only grant", async () => {
+    scoped({ readOnly: true });
+    const { bridge, fireReady } = makeBridge("work");
+    createPtyBridge.mockReturnValue(bridge);
+    await route({ type: "session:attach", name: "work", capture: false });
+    fireReady();
+
+    await route({ type: "terminal:input", data: "rm -rf ~\r" });
+
+    expect(
+      (bridge as unknown as { write: ReturnType<typeof vi.fn> }).write,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("attaches a read-only grant through a locked-down clone", async () => {
+    // Never `attach-session -r` against the target itself: under -r tmux
+    // still honours switch-client, and ( / ) are bound to it by default.
+    scoped({ readOnly: true });
+    const { bridge, fireReady } = makeBridge("work");
+    createPtyBridge.mockReturnValue(bridge);
+
+    await route({ type: "session:attach", name: "work", capture: false });
+    fireReady();
+
+    expect(createReadOnlyClone).toHaveBeenCalledWith(
+      "work",
+      "grn_share",
+      "conn-test",
+    );
+    const [target, , opts] = createPtyBridge.mock.calls[0]!;
+    expect(target).toBe("__mtmux_clone");
+    expect(opts).toMatchObject({ readOnly: true });
+    // The *real* name is what scope checks and broadcasts compare against.
+    expect(conn.attachedSession).toBe("work");
+  });
+
+  it("refuses a second auth frame instead of rubber-stamping it", async () => {
+    // Finding #1's other half. This used to answer auth:success without
+    // checking anything, because the tunnel agent had already authenticated
+    // the socket with the machine's full token.
+    await route({ type: "auth", token: "anything at all" });
+    expect(sent[0]).toMatchObject({ type: "error" });
+    expect(sent[0]).not.toMatchObject({ type: "auth:success" });
   });
 });

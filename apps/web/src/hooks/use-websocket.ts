@@ -12,14 +12,36 @@ import { useFileStore } from "@/stores/file-store";
 import { useAlertStore } from "@/stores/alert-store";
 import { useUiStore } from "@/stores/ui-store";
 import { TOKEN_KEY, clearStored } from "@/lib/storage-keys";
-
-let globalClient: RelayClient | null = null;
+import * as registry from "@/lib/relay-registry";
+import { loadDescriptor, serverIdFor } from "@/lib/session-store";
 
 // #1: Dedup session exit toasts — track handled exits at module scope
 const handledExits = new Set<string>();
 
+/**
+ * The client for the machine the terminal is currently driving.
+ *
+ * Kept as a shim over the registry on purpose. There are twenty-odd call sites
+ * across the terminal, every one of which means "the connection I am looking
+ * at"; threading a server id through all of them would be churn with no
+ * behaviour change, and the terminal genuinely only ever drives one machine at
+ * a time. The dashboard, which is the only thing that needs several at once,
+ * asks the registry directly.
+ */
 export function getRelayClient(): RelayClient | null {
-  return globalClient;
+  return registry.getActive();
+}
+
+/**
+ * Which machine this tab's socket belongs to.
+ *
+ * A hosted pairing keys on the paired machine's device id; the self-hosted and
+ * split deployments have no such id and share `LOCAL_SERVER_ID`, which is
+ * correct — there is exactly one relay in those topologies.
+ */
+function currentServerId(): string {
+  const session = loadDescriptor();
+  return session ? serverIdFor(session.descriptor) : registry.LOCAL_SERVER_ID;
 }
 
 /**
@@ -70,6 +92,11 @@ export function useWebSocket(
   useEffect(() => {
     if (!url || !token) return;
 
+    const serverId = currentServerId();
+    // Assigned by `acquire` below; the handler is only ever invoked by a
+    // connected client, so it is never null by the time it is read.
+    let client: RelayClient | null = null;
+
     const handleMessage = (msg: ServerMessage) => {
       const sessionStore = useSessionStore.getState();
       const connectionStore = useConnectionStore.getState();
@@ -77,9 +104,13 @@ export function useWebSocket(
       switch (msg.type) {
         case "auth:success":
           connectionStore.setServerInfo(msg.serverVersion, "");
+          // A relay too old to send this leaves the field undefined, which is
+          // exactly what an unrestricted connection looks like — so ?? null
+          // rather than a separate "unknown" state.
+          connectionStore.setCapabilities(msg.capabilities ?? null);
           connectionStore.resetReconnect();
           // Auto-request session list on connect
-          globalClient?.send({ type: "session:list" });
+          client?.send({ type: "session:list" });
           // Don't send session:attach here. TerminalView re-attaches from its
           // status-dependent effect, which guarantees exactly one attach per
           // connection — a second one would kill and respawn the PTY.
@@ -141,7 +172,7 @@ export function useWebSocket(
               !zoomedPane &&
               window.matchMedia("(max-width: 768px)").matches
             ) {
-              globalClient?.send({ type: "pane:zoom" });
+              client?.send({ type: "pane:zoom" });
             }
             paneStore.setPendingAutoZoom(false);
           }
@@ -167,7 +198,7 @@ export function useWebSocket(
               );
             // Refresh current directory listing
             const { currentPath: dirPath } = useFileStore.getState();
-            globalClient?.send({ type: "file:list", path: dirPath });
+            client?.send({ type: "file:list", path: dirPath });
           } else {
             useAlertStore
               .getState()
@@ -190,37 +221,42 @@ export function useWebSocket(
       }
     };
 
-    const client = new RelayClient({
-      url,
-      token,
-      transport,
-      onMessage: handleMessage,
-      onMessageDropped: (count) => {
-        useAlertStore
-          .getState()
-          .push(
-            "warning",
-            `${count} queued request${count === 1 ? "" : "s"} dropped while disconnected`,
-          );
-      },
-      onStatusChange: (status) => {
-        useConnectionStore.getState().setStatus(status);
-        if (status === "reconnecting") {
-          useConnectionStore.getState().incrementReconnect();
-        }
-      },
-    });
+    client = registry.acquire(
+      serverId,
+      () =>
+        new RelayClient({
+          url,
+          token,
+          transport,
+          onMessage: handleMessage,
+          onMessageDropped: (count) => {
+            useAlertStore
+              .getState()
+              .push(
+                "warning",
+                `${count} queued request${count === 1 ? "" : "s"} dropped while disconnected`,
+              );
+          },
+          onStatusChange: (status) => {
+            useConnectionStore.getState().setStatus(status);
+            if (status === "reconnecting") {
+              useConnectionStore.getState().incrementReconnect();
+            }
+          },
+        }),
+      `${url}|${token}|${transport ? "sealed" : "direct"}`,
+    );
+    // The terminal drives one machine at a time, and this is the hook that
+    // decided which. Every `getRelayClient()` call site reads back through here.
+    registry.setActive(serverId);
 
-    clientRef.current = client;
-    globalClient = client;
-    client.connect();
+    const held = client;
+    clientRef.current = held;
+    held.connect();
 
     const handleOnline = () => {
-      if (
-        client.status === "disconnected" ||
-        client.status === "reconnecting"
-      ) {
-        client.connect();
+      if (held.status === "disconnected" || held.status === "reconnecting") {
+        held.connect();
       }
     };
 
@@ -231,7 +267,7 @@ export function useWebSocket(
       // nothing ever put it back and anything keyed on the store status stayed
       // stuck. Going through disconnect() keeps the two in step; `online` above
       // reconnects.
-      client.disconnect();
+      held.disconnect();
     };
 
     window.addEventListener("online", handleOnline);
@@ -240,8 +276,9 @@ export function useWebSocket(
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
-      client.disconnect();
-      globalClient = null;
+      // The last holder disconnects; an overlapping remount (StrictMode, or a
+      // route change that reuses the connection) keeps it alive.
+      registry.release(serverId);
     };
   }, [url, token, transport]);
 

@@ -22,6 +22,20 @@ const ConfigSchema = z.object({
   /** Per-IP sliding windows. */
   claimsPerMinute: z.coerce.number().int().positive().default(5),
   mailboxesPerMinute: z.coerce.number().int().positive().default(10),
+  discoversPerMinute: z.coerce.number().int().positive().default(30),
+  upgradesPerMinute: z.coerce.number().int().positive().default(60),
+
+  /**
+   * Source-independent ceilings on claims.
+   *
+   * These carry the guessing bound. A per-IP limit isolates one client, which
+   * an attacker with a botnet or a CDN in front of it simply does not have to
+   * be; these two apply no matter who is asking. Twelve per slot per minute
+   * against a 10^4 secret is a ~14-hour expected search of a code that lives
+   * for three minutes.
+   */
+  slotClaimsPerMinute: z.coerce.number().int().positive().default(12),
+  globalClaimsPerMinute: z.coerce.number().int().positive().default(600),
 
   /** Tunnel quotas, per tunnel. */
   tunnelMaxBytes: z.coerce
@@ -53,6 +67,10 @@ export const config = ConfigSchema.parse({
   corsOrigins: process.env.API_CORS_ORIGINS,
   claimsPerMinute: process.env.API_CLAIMS_PER_MINUTE,
   mailboxesPerMinute: process.env.API_MAILBOXES_PER_MINUTE,
+  discoversPerMinute: process.env.API_DISCOVERS_PER_MINUTE,
+  upgradesPerMinute: process.env.API_UPGRADES_PER_MINUTE,
+  slotClaimsPerMinute: process.env.API_SLOT_CLAIMS_PER_MINUTE,
+  globalClaimsPerMinute: process.env.API_GLOBAL_CLAIMS_PER_MINUTE,
   tunnelMaxBytes: process.env.API_TUNNEL_MAX_BYTES,
   tunnelMaxMinutes: process.env.API_TUNNEL_MAX_MINUTES,
   tunnelMaxStreams: process.env.API_TUNNEL_MAX_STREAMS,

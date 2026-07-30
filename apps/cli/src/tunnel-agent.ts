@@ -385,13 +385,29 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
 }
 
 /**
- * Real local relay socket: a plain WebSocket to loopback that authenticates
- * itself with the machine's own token before any tunnel traffic flows.
+ * Real local relay socket: a plain WebSocket to loopback, carrying the
+ * browser's own frames and nothing else.
+ *
+ * ## What was deleted here, and why that is the fix
+ *
+ * This used to authenticate the loopback socket with the machine's full
+ * `AUTH_TOKEN` before any tunnel traffic flowed. Combined with the relay
+ * blanket-acknowledging the browser's own `auth` frame — which arrived second,
+ * on an already-privileged connection — the effect was that **over the tunnel
+ * there was nothing to scope**: every tunnelled browser had the machine's god
+ * token, whatever credential it presented.
+ *
+ * So the fix is a deletion. No token is injected; the browser's first sealed
+ * frame is already `{type:"auth", token}`, and it now reaches the relay as the
+ * first message on the socket and is authenticated on its own merits.
+ *
+ * **No defence is lost.** Trial decryption in `bindStream` already proves the
+ * far end possesses a pairing key before a single byte is written to loopback,
+ * so an unauthenticated stranger never reaches this socket at all. What
+ * changes is only that the relay now learns *which* pairing it is talking to,
+ * which is the entire prerequisite for a scoped share.
  */
-export function localRelayConnector(
-  port: number,
-  token: string,
-): () => LocalSocket {
+export function localRelayConnector(port: number): () => LocalSocket {
   return () => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/_relay`, {
       headers: {
@@ -402,9 +418,6 @@ export function localRelayConnector(
     const openHandlers: (() => void)[] = [];
 
     ws.on("open", () => {
-      // The relay's first-message-must-be-auth rule applies to this socket
-      // like any other. The token stays on this machine.
-      ws.send(JSON.stringify({ type: "auth", token }));
       for (const cb of openHandlers) cb();
     });
     // A failed connect surfaces as a close, which tears the stream down.

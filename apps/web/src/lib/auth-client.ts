@@ -1,5 +1,9 @@
 import { createAuthClient } from "better-auth/react";
-import { deviceAuthorizationClient } from "better-auth/client/plugins";
+import {
+  deviceAuthorizationClient,
+  magicLinkClient,
+} from "better-auth/client/plugins";
+import { passkeyClient } from "@better-auth/passkey/client";
 import { env } from "@/env";
 
 /**
@@ -35,10 +39,101 @@ export const authClient = createAuthClient({
   // pages guard on `isHostedBuild` before calling anything.
   baseURL: hostedApiUrl ?? undefined,
   fetchOptions: { credentials: "include" },
-  plugins: [deviceAuthorizationClient()],
+  // `passkeyClient` comes from `@better-auth/passkey/client` — a separate
+  // package, not `better-auth/client/plugins`, pinned to exactly the same
+  // version as `better-auth` in both apps. All three move together on a bump.
+  plugins: [deviceAuthorizationClient(), passkeyClient(), magicLinkClient()],
 });
 
 export const { signIn, signUp, signOut, useSession } = authClient;
+
+/**
+ * Absolute URL for a path on *this* app.
+ *
+ * Every `callbackURL` and `redirectTo` handed to better-auth has to be
+ * absolute. The client talks to `api.mtmux.com`, so a relative `/dashboard`
+ * resolves against that host — sending people to an origin that serves no
+ * pages, after a sign-in that actually worked.
+ */
+export function appUrl(path: string): string {
+  if (typeof window === "undefined") return path;
+  return new URL(path, window.location.origin).toString();
+}
+
+/** What sign-in methods this deployment offers. See `fetchAuthConfig`. */
+export type AuthConfig = {
+  emailPassword: boolean;
+  passkeys: boolean;
+  magicLink: boolean;
+  passwordReset: boolean;
+  providers: string[];
+};
+
+/**
+ * What a deployment with nothing configured offers, and what a failed fetch
+ * degrades to.
+ *
+ * Password and passkeys need no third party, so they are the floor rather than
+ * an empty set: a half-deployed or unreachable API leaves a usable sign-in
+ * form instead of a white screen with no buttons.
+ */
+export const DEFAULT_AUTH_CONFIG: AuthConfig = {
+  emailPassword: true,
+  passkeys: true,
+  magicLink: false,
+  passwordReset: false,
+  providers: [],
+};
+
+/**
+ * Ask the broker which sign-in methods exist.
+ *
+ * A runtime fetch, deliberately, rather than `NEXT_PUBLIC_*`: Next inlines
+ * public env vars at build time, so rotating or adding a provider would
+ * otherwise need a rebuild and a redeploy of the web app — and it keeps
+ * `deploy:hosted`'s bundle-origin grep unchanged.
+ *
+ * **Fails soft, always.** An older API 404s this route; a self-hosted build
+ * has no API at all. Both come back as password-and-passkeys, which is true
+ * for every deployment.
+ */
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  try {
+    const body = await apiFetch<Partial<AuthConfig>>("/v1/auth/config");
+    return {
+      emailPassword: body.emailPassword ?? true,
+      passkeys: body.passkeys ?? true,
+      magicLink: body.magicLink ?? false,
+      passwordReset: body.passwordReset ?? false,
+      providers: Array.isArray(body.providers) ? body.providers : [],
+    };
+  } catch {
+    return DEFAULT_AUTH_CONFIG;
+  }
+}
+
+/** Which sign-in methods one address has. See `lookupAccount`. */
+export type AccountLookup = {
+  exists: boolean;
+  hasPassword: boolean;
+  hasPasskey: boolean;
+  providers: string[];
+};
+
+/**
+ * Look an address up, so the form can show the right second step.
+ *
+ * This is what stops a Google-only account being shown a password box it can
+ * never satisfy. It is also, unavoidably, an account-enumeration oracle — the
+ * broker accepts that trade explicitly and pays for it with a dedicated
+ * ten-per-minute bucket and a constant-time response.
+ */
+export async function lookupAccount(email: string): Promise<AccountLookup> {
+  return apiFetch<AccountLookup>("/v1/auth/lookup", {
+    method: "POST",
+    json: { email },
+  });
+}
 
 /**
  * A failed call to the broker's own `/v1` API.

@@ -12,7 +12,7 @@ import {
   FrameSealer,
   type SessionKeys,
 } from "@repo/crypto";
-import type { SealedDescriptor } from "@repo/protocol";
+import { MAX_PEERS_PER_SLOT, type SealedDescriptor } from "@repo/protocol";
 import {
   joinPairing,
   startPairing,
@@ -93,7 +93,7 @@ function recorder() {
 
 type Claim = { slot: string; share: string; ad: string; sid: string };
 
-function claimHarness(opts: { offered: number; status?: number }) {
+function claimHarness(opts: { answering: number; status?: number }) {
   const io = fakeSocket();
   let claim: Claim | null = null;
 
@@ -104,7 +104,12 @@ function claimHarness(opts: { offered: number; status?: number }) {
       ok: status < 400,
       status,
       json: () =>
-        Promise.resolve({ claimId: "clm-abcdefgh", offered: opts.offered }),
+        // The broker reports only whether anything is there; how many peers
+        // exist the claimant learns by counting the shares that arrive.
+        Promise.resolve({
+          claimId: "clm-abcdefgh",
+          waiting: opts.answering > 0,
+        }),
     } as unknown as Response);
   }) as unknown as typeof fetch;
 
@@ -113,7 +118,7 @@ function claimHarness(opts: { offered: number; status?: number }) {
    * responder, then sends its share and its tag before the browser has proved
    * anything.
    */
-  function cliAnswers(peer: string, secret: string) {
+  function cliAnswers(peer: string, secret: string, confirmNow = true) {
     const c = claim!;
     const cpace = cpaceStart(
       utf8ToBytes(secret),
@@ -143,14 +148,17 @@ function claimHarness(opts: { offered: number; status?: number }) {
       ad: "cli",
       sid: c.sid,
     });
-    io.deliver({
-      type: "pair:peer-confirm",
-      peer,
-      tag: bytesToHex(confirmationTag(keys.confirm, "cli")),
-    });
+    const confirm = () =>
+      io.deliver({
+        type: "pair:peer-confirm",
+        peer,
+        tag: bytesToHex(confirmationTag(keys.confirm, "cli")),
+      });
+    if (confirmNow) confirm();
 
     return {
       keys,
+      confirm,
       /** Seal the descriptor and end the exchange, as the CLI does. */
       async establish() {
         const sealer = new FrameSealer(keys.s2c, "s2c");
@@ -200,7 +208,7 @@ function join(
 
 describe("joinPairing", () => {
   it("rejects anything that is not six digits before contacting the broker", async () => {
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     join(h, rec, "12345");
     const failed = await rec.waitFor("failed");
@@ -209,7 +217,7 @@ describe("joinPairing", () => {
   });
 
   it("accepts spaced and dashed codes", async () => {
-    const h = claimHarness({ offered: 0 });
+    const h = claimHarness({ answering: 0 });
     const rec = recorder();
     join(h, rec, "49 27-16");
     await rec.waitFor("failed");
@@ -217,7 +225,7 @@ describe("joinPairing", () => {
   });
 
   it("never puts the four-digit secret in the claim", async () => {
-    const h = claimHarness({ offered: 0 });
+    const h = claimHarness({ answering: 0 });
     const rec = recorder();
     join(h, rec, `${SLOT}2716`);
     await rec.waitFor("failed");
@@ -227,7 +235,7 @@ describe("joinPairing", () => {
 
   it("pairs with the terminal and opens the sealed descriptor", async () => {
     const secret = "2716";
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
@@ -247,14 +255,13 @@ describe("joinPairing", () => {
 
   it("keeps the terminal whose tag verifies and closes every decoy", async () => {
     const secret = "2716";
-    const h = claimHarness({ offered: 3 });
+    const h = claimHarness({ answering: 2 });
     const rec = recorder();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
 
     h.cliAnswers("peer-0", "0000");
-    h.cliAnswers("peer-1", "9999");
-    const real = h.cliAnswers("peer-2", secret);
+    const real = h.cliAnswers("peer-1", secret);
     await real.establish();
 
     const paired = (await rec.waitFor("paired")) as Extract<
@@ -264,14 +271,35 @@ describe("joinPairing", () => {
     expect(bytesToHex(paired.keys.c2s)).toBe(bytesToHex(real.keys.c2s));
 
     // Closing a decoy destroys its mailbox — one guess per code, even when the
-    // slot is shared by several pairings at once.
+    // slot is shared by two pairings at once.
     expect(h.io.find("pair:close", "peer-0")).toBeDefined();
-    expect(h.io.find("pair:close", "peer-1")).toBeDefined();
-    expect(h.io.find("pair:close", "peer-2")).toBeUndefined();
+    expect(h.io.find("pair:close", "peer-1")).toBeUndefined();
+  });
+
+  it("refuses a broker offering more peers than a slot may hold", async () => {
+    // The cap is what stops a mailbox-squatting attacker buying extra tries at
+    // a code, so a broker exceeding it is the one thing a claimant can detect
+    // on its own — and the only safe response is to stop.
+    const h = claimHarness({ answering: MAX_PEERS_PER_SLOT + 1 });
+    const rec = recorder();
+    join(h, rec, `${SLOT}2716`);
+    await flush();
+
+    // Shares only: the refusal must rest on the count alone, before any of
+    // them is ruled out on its tag.
+    for (let i = 0; i <= MAX_PEERS_PER_SLOT; i += 1) {
+      h.cliAnswers(`peer-${i}`, "0000", false);
+    }
+
+    const failed = (await rec.waitFor("failed")) as Extract<
+      PairingUpdate,
+      { phase: "failed" }
+    >;
+    expect(failed.message).toMatch(/more terminals than it should/);
   });
 
   it("fails once every offered mailbox has been ruled out", async () => {
-    const h = claimHarness({ offered: 2 });
+    const h = claimHarness({ answering: 2 });
     const rec = recorder();
     join(h, rec, `${SLOT}2716`);
     await flush();
@@ -287,7 +315,7 @@ describe("joinPairing", () => {
 
   it("refuses a tampered confirmation tag", async () => {
     const secret = "2716";
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
@@ -317,7 +345,7 @@ describe("joinPairing", () => {
   });
 
   it("refuses a share that is not a valid group element", async () => {
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     join(h, rec, `${SLOT}2716`);
     await flush();
@@ -334,7 +362,7 @@ describe("joinPairing", () => {
 
   it("ignores a second share for a conversation already under way", async () => {
     const secret = "2716";
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
@@ -358,7 +386,7 @@ describe("joinPairing", () => {
   });
 
   it("reports a code nobody is waiting for", async () => {
-    const h = claimHarness({ offered: 0 });
+    const h = claimHarness({ answering: 0 });
     const rec = recorder();
     join(h, rec, `${SLOT}2716`);
     const failed = (await rec.waitFor("failed")) as Extract<
@@ -369,7 +397,7 @@ describe("joinPairing", () => {
   });
 
   it("reports being rate limited", async () => {
-    const h = claimHarness({ offered: 1, status: 429 });
+    const h = claimHarness({ answering: 1, status: 429 });
     const rec = recorder();
     join(h, rec, `${SLOT}2716`);
     const failed = (await rec.waitFor("failed")) as Extract<
@@ -380,7 +408,7 @@ describe("joinPairing", () => {
   });
 
   it("surfaces a lost broker connection", async () => {
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     join(h, rec, `${SLOT}2716`);
     await flush();
@@ -394,7 +422,7 @@ describe("joinPairing", () => {
 
   it("stops reacting once cancelled", async () => {
     const secret = "2716";
-    const h = claimHarness({ offered: 1 });
+    const h = claimHarness({ answering: 1 });
     const rec = recorder();
     const handle = join(h, rec, `${SLOT}${secret}`);
     await flush();

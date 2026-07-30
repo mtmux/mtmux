@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import type { ClientMessage } from "@repo/protocol";
+import type { ClientMessage, GrantRecord } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { config } from "./config.js";
-import { isValidSessionToken } from "./pairing-local.js";
+import { FULL_GRANT } from "./grant.js";
+import { grantForToken } from "./pairing-local.js";
 import {
   checkAuthThrottle,
   recordAuthFailure,
@@ -18,6 +19,15 @@ export interface AuthResult {
   reason?: string;
   /** Set when the attempt was refused by the per-address backoff. */
   retryAfterMs?: number;
+  /**
+   * What this credential may do. Present exactly when `authenticated`.
+   *
+   * Resolution order is `AUTH_TOKEN` → `FULL_GRANT`, then a registered scoped
+   * token → its own record, then failure. The first arm is the entirety of
+   * legacy compatibility: an install that has never run `mtmux share` only
+   * ever produces `FULL_GRANT`, so nothing about the self-hosted path changes.
+   */
+  grant?: GrantRecord;
 }
 
 /**
@@ -67,11 +77,11 @@ export function authenticateMessage(
     };
   }
 
-  const ok =
-    timingSafeEqualToken(msg.token, config.authToken) ||
-    isValidSessionToken(msg.token);
+  const grant = timingSafeEqualToken(msg.token, config.authToken)
+    ? FULL_GRANT
+    : grantForToken(msg.token);
 
-  if (!ok) {
+  if (!grant) {
     const next = recordAuthFailure(remoteAddress);
     logger.warn("Authentication failed: invalid token");
     return {
@@ -82,8 +92,11 @@ export function authenticateMessage(
   }
 
   recordAuthSuccess(remoteAddress);
-  logger.info("Client authenticated successfully");
-  return { authenticated: true };
+  // The grant id is logged; the scope is not. "Which share was used" is an
+  // operational question the machine's owner may ask, "which sessions does it
+  // cover" is in the file they already have.
+  logger.info({ grant: grant.id }, "Client authenticated successfully");
+  return { authenticated: true, grant };
 }
 
 export function createAuthTimeout(onTimeout: () => void): NodeJS.Timeout {

@@ -1,3 +1,5 @@
+import { localToken } from "./unlocked";
+
 /**
  * localStorage keys, and the one-time migration off the old product name.
  *
@@ -61,4 +63,20 @@ export function clearStored(key: string): void {
   localStorage.removeItem(key);
   const legacyKey = LEGACY[key as keyof typeof LEGACY];
   if (legacyKey) localStorage.removeItem(legacyKey);
+}
+
+/**
+ * The self-hosted relay token, from wherever it currently lives.
+ *
+ * On a device with no lock that is `localStorage`, exactly as before. Once a
+ * lock is enrolled the plaintext copy is deleted and the token is held in
+ * memory by `unlocked.ts` — so this is the one function every reader should
+ * call, and the reason it exists rather than three `readStored(TOKEN_KEY)`
+ * calls that would each have to remember the second case.
+ *
+ * Synchronous on purpose: `getFileDownloadUrl()` builds a `?token=` URL during
+ * render and cannot await.
+ */
+export function readSelfHostedToken(): string | null {
+  return localToken() ?? readStored(TOKEN_KEY);
 }

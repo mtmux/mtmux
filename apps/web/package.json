@@ -9,15 +9,19 @@
     "start": "next start --port 14100",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run && vitest run --config vitest.config.idb.ts",
+    "test:idb": "vitest run --config vitest.config.idb.ts",
+    "e2e": "playwright test"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.6.25",
     "@monaco-editor/react": "^4.7.0",
     "@repo/config": "workspace:*",
     "@repo/crypto": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/protocol": "workspace:*",
     "@repo/ui": "workspace:*",
+    "@simplewebauthn/browser": "^13.2.2",
     "@t3-oss/env-nextjs": "^0.12",
     "@xterm/addon-fit": "^0.10",
     "@xterm/addon-search": "^0.15",
@@ -36,12 +40,14 @@
     "zustand": "^5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@repo/eslint-config": "workspace:*",
     "@repo/tsconfig": "workspace:*",
     "@tailwindcss/postcss": "^4",
     "@types/react": "^19.2",
     "@types/react-dom": "^19.2",
     "eslint": "^9.17.0",
+    "fake-indexeddb": "^6.2.5",
     "tailwindcss": "^4",
     "tw-animate-css": "^1",
     "typescript": "^5.8",

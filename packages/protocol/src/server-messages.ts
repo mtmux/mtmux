@@ -10,6 +10,25 @@ import {
 export const AuthSuccessMessage = z.object({
   type: z.literal("auth:success"),
   serverVersion: z.string(),
+  /**
+   * What this credential may do, so the UI can be honest about it.
+   *
+   * Strictly advisory. Every field here is enforced on the server for every
+   * message regardless of what the client does with it — this exists so a
+   * read-only viewer sees a read-only banner instead of a keyboard that
+   * silently does nothing, and so a share with no file access does not render
+   * a file tree that can only ever answer ACCESS_DENIED.
+   *
+   * Optional because an older relay does not send it, and the absence must
+   * read as "unrestricted", which is what such a relay in fact is.
+   */
+  capabilities: z
+    .object({
+      readOnly: z.boolean(),
+      files: z.enum(["none", "read", "write"]),
+      scope: z.enum(["all", "sessions"]),
+    })
+    .optional(),
 });
 
 export const AuthFailureMessage = z.object({

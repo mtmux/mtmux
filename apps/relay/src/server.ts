@@ -10,8 +10,13 @@ import { timingSafeEqualToken } from "./auth.js";
 import {
   redeemPairingNonce,
   registerSessionToken,
-  isValidSessionToken,
+  grantForToken,
+  revokeGrant,
 } from "./pairing-local.js";
+import { FULL_GRANT } from "./grant.js";
+import { isCloneSession } from "./tmux-clone.js";
+import { listSessions } from "./tmux-manager.js";
+import { GrantRecord } from "@repo/protocol";
 
 const logger = createLogger("relay:http");
 
@@ -130,7 +135,7 @@ async function handleSessionRegistration(
   }
 
   const raw = await readBody(req);
-  let body: { token?: unknown; ttlMs?: unknown } = {};
+  let body: { token?: unknown; ttlMs?: unknown; grant?: unknown } = {};
   try {
     body = raw ? (JSON.parse(raw) as typeof body) : {};
   } catch {
@@ -143,15 +148,138 @@ async function handleSessionRegistration(
     return true;
   }
 
+  /**
+   * An optional scope for the token being registered.
+   *
+   * Absent means the full grant, which is what every existing caller sends and
+   * what a plain `mtmux start` pairing has always meant. `mtmux share` is the
+   * only caller that supplies one.
+   *
+   * Parsed rather than trusted: this arrives over loopback from a process
+   * holding `AUTH_TOKEN`, so it is not an attack surface, but a malformed
+   * grant that silently became the full grant would turn a typo in the share
+   * command into a full-machine share.
+   */
+  let grant = FULL_GRANT;
+  if (body.grant !== undefined) {
+    const parsed = GrantRecord.safeParse(body.grant);
+    if (!parsed.success) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Malformed grant" }));
+      return true;
+    }
+    grant = parsed.data;
+  }
+
   const ttlMs =
     typeof body.ttlMs === "number" && body.ttlMs > 0 ? body.ttlMs : undefined;
-  const session = registerSessionToken(body.token, ttlMs);
-  logger.info("Session token registered for a paired device");
+  const session = registerSessionToken(body.token, ttlMs, undefined, grant);
+  logger.info(
+    { grant: grant.id, readOnly: grant.readOnly, files: grant.files },
+    "Session token registered for a paired device",
+  );
   res.writeHead(200, {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
   });
   res.end(JSON.stringify({ expiresAt: session.expiresAt }));
+  return true;
+}
+
+/**
+ * Cut a grant off immediately, rather than at the session token's own TTL.
+ *
+ * `mtmux share revoke` writes `grants.json` first — that file is the record of
+ * truth and survives a restart — and then calls this so the revocation takes
+ * effect on a live server without waiting for one.
+ */
+export const PAIR_REVOKE_PATH = "/_pair/revoke";
+
+/**
+ * The session list, for `mtmux share` to pin ids against.
+ *
+ * A grant names sessions by tmux `session_id`, and the sharing process is not
+ * the one holding the tmux connection — so it has to ask. Loopback-only and
+ * `AUTH_TOKEN`-authenticated like the other two, because a list of session
+ * names is exactly the thing this product does not hand out.
+ */
+export const SESSIONS_PATH = "/_sessions";
+
+/** Shared guard: loopback only, and the machine's own token. */
+function localAdminOk(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): boolean {
+  const peer = req.socket.remoteAddress ?? "";
+  if (!LOOPBACK_ADDRESSES.has(peer)) {
+    res.writeHead(403);
+    res.end("Loopback only");
+    return false;
+  }
+  const auth = req.headers.authorization;
+  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!bearer || !timingSafeEqualToken(bearer, config.authToken)) {
+    res.writeHead(401);
+    res.end("Unauthorized");
+    return false;
+  }
+  return true;
+}
+
+async function handleGrantRevocation(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<boolean> {
+  if (req.method !== "POST") {
+    res.writeHead(405, { Allow: "POST" });
+    res.end("Method not allowed");
+    return true;
+  }
+  if (!localAdminOk(req, res)) return true;
+
+  const raw = await readBody(req);
+  let body: { grantId?: unknown } = {};
+  try {
+    body = raw ? (JSON.parse(raw) as typeof body) : {};
+  } catch {
+    body = {};
+  }
+  if (typeof body.grantId !== "string" || body.grantId.length === 0) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing grantId" }));
+    return true;
+  }
+
+  const removed = revokeGrant(body.grantId);
+  logger.info({ grant: body.grantId, removed }, "Grant revoked");
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify({ removed }));
+  return true;
+}
+
+async function handleSessionListing(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<boolean> {
+  if (req.method !== "GET") {
+    res.writeHead(405, { Allow: "GET" });
+    res.end("Method not allowed");
+    return true;
+  }
+  if (!localAdminOk(req, res)) return true;
+
+  const sessions = (await listSessions())
+    .filter((s) => !isCloneSession(s.name))
+    .map((s) => ({ id: s.id, name: s.name }));
+
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify({ sessions }));
   return true;
 }
 
@@ -196,6 +324,14 @@ export async function handleRelayRequest(
     return handleSessionRegistration(req, res);
   }
 
+  if (req.url === PAIR_REVOKE_PATH) {
+    return handleGrantRevocation(req, res);
+  }
+
+  if (req.url === SESSIONS_PATH) {
+    return handleSessionListing(req, res);
+  }
+
   if (req.url?.startsWith("/file?") && req.method === "GET") {
     // Echo the request Origin only when allow-listed (never a blanket `*`).
     if (origin && config.corsOrigins.includes(origin)) {
@@ -209,24 +345,45 @@ export async function handleRelayRequest(
 
     const url = new URL(req.url, `http://${req.headers.host}`);
     const filePath = url.searchParams.get("path");
-    // Accept the token from an `Authorization: Bearer <token>` header (preferred,
-    // keeps it out of the URL) or the legacy `?token=` query param (back-compat).
+    // `Authorization: Bearer <token>` is the only path this app uses. The
+    // `?token=` query param is deprecated and kept purely for older clients:
+    // the credential is the session's own 256-bit token, and a query string
+    // puts it in browser history, `Referer` headers and every access log in
+    // between. Logged when used, so its remaining traffic is visible.
     const authHeader = req.headers.authorization;
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length)
       : null;
-    const token = bearerToken ?? url.searchParams.get("token");
+    const queryToken = url.searchParams.get("token");
+    if (!bearerToken && queryToken) {
+      logger.warn(
+        "Deprecated ?token= used on /file; send Authorization: Bearer instead",
+      );
+    }
+    const token = bearerToken ?? queryToken;
     const download = url.searchParams.get("download") === "1";
 
     // Either the long-lived token or a scoped session token from pairing —
     // otherwise a paired device could read the terminal but not open a file.
-    const tokenOk =
-      token !== null &&
-      (timingSafeEqualToken(token, config.authToken) ||
-        isValidSessionToken(token));
-    if (!tokenOk) {
+    const grant =
+      token === null
+        ? null
+        : timingSafeEqualToken(token, config.authToken)
+          ? FULL_GRANT
+          : grantForToken(token);
+    if (!grant) {
       res.writeHead(401);
       res.end("Unauthorized");
+      return true;
+    }
+
+    // The same hole as `file:*` on the WebSocket, but outside it: this
+    // endpoint accepted any valid session token and checked only
+    // `isPathAllowed`, so a share with file access explicitly off could still
+    // read any file under ALLOWED_PATHS by asking over HTTP instead.
+    if (grant.files === "none") {
+      res.writeHead(403);
+      res.end("File access is not part of this share");
       return true;
     }
 

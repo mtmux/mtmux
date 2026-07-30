@@ -5,11 +5,12 @@ import {
   migrate,
   serverDevices,
   servers,
+  subscriptions,
   tunnelUsage,
   user,
   type Db,
 } from "@repo/db";
-import { PLANS } from "@repo/config/plans";
+import { PLANS, TRIAL_MS } from "@repo/config/plans";
 
 import { createEntitlements, dayKey, monthKey } from "./entitlements.js";
 import { mirrorSubscription } from "./billing/subscriptions.js";
@@ -26,6 +27,39 @@ async function seed(): Promise<Db> {
     updatedAt: new Date(),
   });
   return db;
+}
+
+/**
+ * Put the account in the "already had its trial, and it is over" state.
+ *
+ * Most of the refusal tests below need this now: without it the first refusal
+ * is not a refusal at all, it is the moment the trial starts. That is the
+ * product working, so the tests say so explicitly rather than being weakened.
+ */
+async function spendTrial(db: Db, userId = USER): Promise<void> {
+  const started = new Date(Date.now() - TRIAL_MS * 2);
+  const ended = new Date(Date.now() - TRIAL_MS);
+  await db
+    .insert(subscriptions)
+    .values({
+      id: `sub_${userId}`,
+      userId,
+      trialStartedAt: started,
+      trialEndsAt: ended,
+    })
+    .onConflictDoUpdate({
+      target: subscriptions.userId,
+      set: { trialStartedAt: started, trialEndsAt: ended },
+    });
+}
+
+async function trialRow(db: Db, userId = USER) {
+  const rows = await db
+    .select()
+    .from(subscriptions)
+    .where(eq(subscriptions.userId, userId))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 describe("entitlements", () => {
@@ -48,7 +82,8 @@ describe("entitlements", () => {
     expect(await entitlements.checkTunnel(USER)).toEqual({ allowed: true });
   });
 
-  it("refuses once the monthly allowance is spent", async () => {
+  it("refuses once the monthly allowance is spent and the trial is over", async () => {
+    await spendTrial(db);
     await entitlements.recordUsage(USER, PLANS.free.monthlyBytes ?? 0, 60);
     const decision = await entitlements.checkTunnel(USER);
     expect(decision.allowed).toBe(false);
@@ -59,6 +94,7 @@ describe("entitlements", () => {
   });
 
   it("lifts the ceiling on Pro", async () => {
+    await spendTrial(db);
     await entitlements.recordUsage(USER, PLANS.free.monthlyBytes ?? 0, 60);
     expect((await entitlements.checkTunnel(USER)).allowed).toBe(false);
 
@@ -115,6 +151,7 @@ describe("entitlements", () => {
   });
 
   it("counts servers against the plan", async () => {
+    await spendTrial(db);
     expect((await entitlements.checkServerLimit(USER)).allowed).toBe(true);
 
     await db.insert(servers).values({
@@ -138,6 +175,7 @@ describe("entitlements", () => {
   });
 
   it("caps trusted browsers per server, ignoring revoked ones", async () => {
+    await spendTrial(db);
     await db.insert(servers).values({
       id: "srv_1",
       userId: USER,
@@ -154,9 +192,9 @@ describe("entitlements", () => {
         publicKey: `${i}`.repeat(64),
       });
     }
-    expect((await entitlements.checkDevice("srv_1", "free")).allowed).toBe(
-      false,
-    );
+    expect(
+      (await entitlements.checkDevice(USER, "srv_1", "free")).allowed,
+    ).toBe(false);
 
     // Revoking one frees a slot: a lost phone should not permanently consume
     // the allowance, but its row stays so the history is answerable.
@@ -164,15 +202,18 @@ describe("entitlements", () => {
       .update(serverDevices)
       .set({ revokedAt: new Date() })
       .where(eq(serverDevices.id, "dev_0"));
-    expect((await entitlements.checkDevice("srv_1", "free")).allowed).toBe(
+    expect(
+      (await entitlements.checkDevice(USER, "srv_1", "free")).allowed,
+    ).toBe(true);
+    expect((await entitlements.checkDevice(USER, "srv_1", "pro")).allowed).toBe(
       true,
     );
-    expect((await entitlements.checkDevice("srv_1", "pro")).allowed).toBe(true);
   });
 
-  it("makes renaming a Pro feature", () => {
-    expect(entitlements.checkRename("free").allowed).toBe(false);
-    expect(entitlements.checkRename("pro").allowed).toBe(true);
+  it("makes renaming a Pro feature", async () => {
+    await spendTrial(db);
+    expect((await entitlements.checkRename(USER, "free")).allowed).toBe(false);
+    expect((await entitlements.checkRename(USER, "pro")).allowed).toBe(true);
   });
 
   it("reads the session cap from the plan table rather than inventing one", () => {
@@ -180,5 +221,137 @@ describe("entitlements", () => {
       PLANS.free.tunnelMinutes,
     );
     expect(entitlements.tunnelMinutesFor("pro")).toBe(PLANS.pro.tunnelMinutes);
+  });
+
+  describe("the free trial", () => {
+    async function addServer(id: string): Promise<void> {
+      await db.insert(servers).values({
+        id,
+        userId: USER,
+        name: id,
+        slug: id,
+        publicKey: id.padEnd(64, "0"),
+      });
+    }
+
+    it("does not start on the first server, because free allows one", async () => {
+      // The whole point of starting the trial at the moment of refusal: a
+      // single-server user should never silently burn theirs.
+      expect((await entitlements.checkServerLimit(USER)).allowed).toBe(true);
+      expect(await trialRow(db)).toBeNull();
+    });
+
+    it("starts on the second server and allows it", async () => {
+      await addServer("srv_1");
+
+      const decision = await entitlements.checkServerLimit(USER);
+      expect(decision.allowed).toBe(true);
+      expect(decision.trialStarted).toBe(true);
+
+      const row = await trialRow(db);
+      expect(row?.trialStartedAt).toBeInstanceOf(Date);
+      expect(await entitlements.planFor(USER)).toBe("pro");
+    });
+
+    it("leaves trial_started_at untouched when called twice", async () => {
+      // Pins the `setWhere` clause on the upsert. Without it, every later
+      // refusal would silently hand out another seven days.
+      const started = await entitlements.startTrial(USER, 1_000);
+      expect(started).toBe(true);
+      const first = await trialRow(db);
+
+      const again = await entitlements.startTrial(USER, 9_999_999);
+      expect(again).toBe(false);
+
+      const second = await trialRow(db);
+      expect(second?.trialStartedAt?.getTime()).toBe(
+        first?.trialStartedAt?.getTime(),
+      );
+      expect(second?.trialEndsAt?.getTime()).toBe(
+        first?.trialEndsAt?.getTime(),
+      );
+    });
+
+    it("never starts for an anonymous tunnel", async () => {
+      // Invariant #5. A null user must not reach the database at all, let
+      // alone acquire a trial — there is no account to attach one to.
+      expect(await entitlements.checkTunnel(null)).toEqual({ allowed: true });
+      expect(await trialRow(db)).toBeNull();
+    });
+
+    it("never restarts after it has expired", async () => {
+      await spendTrial(db);
+      await addServer("srv_1");
+
+      const decision = await entitlements.checkServerLimit(USER);
+      expect(decision.allowed).toBe(false);
+      expect(decision.trialStarted).toBeUndefined();
+      expect(await entitlements.planFor(USER)).toBe("free");
+    });
+
+    it("does not start when the trial plan would refuse anyway", async () => {
+      // Over even Pro's byte cap. A trial cannot fix this refusal, so
+      // consuming one to discover that would spend the benefit for nothing.
+      // The account has never trialled here — that is the point.
+      await entitlements.recordUsage(
+        USER,
+        (PLANS.pro.monthlyBytes ?? 0) + 1,
+        1,
+      );
+
+      const decision = await entitlements.checkTunnel(USER);
+      expect(decision.allowed).toBe(false);
+      expect(await trialRow(db)).toBeNull();
+    });
+
+    it("expires at exactly its end, and downgrades softly", async () => {
+      // The product decision, encoded: existing things keep working after a
+      // trial ends, only *new* ones refuse. Every gate is on the add path, so
+      // this is what happens with no expiry code written at all.
+      await entitlements.startTrial(USER, 0);
+      await addServer("srv_1");
+      await addServer("srv_2");
+
+      const during = await entitlements.resolveFor(USER, TRIAL_MS - 1);
+      expect(during.plan).toBe("pro");
+      expect(during.source).toBe("trial");
+
+      const after = await entitlements.resolveFor(USER, TRIAL_MS);
+      expect(after.plan).toBe("free");
+      expect(after.trial.status).toBe("expired");
+
+      // Over cap now, so a third server refuses...
+      expect((await entitlements.checkServerLimit(USER)).allowed).toBe(false);
+      // ...while the two they already have are untouched.
+      const rows = await db
+        .select()
+        .from(servers)
+        .where(eq(servers.userId, USER));
+      expect(rows).toHaveLength(2);
+    });
+
+    it("survives a subscription mirror write", async () => {
+      // `mirrorSubscription` omits the trial columns from its `set` clause,
+      // which is correct but fragile — a webhook must never be able to reset
+      // or extend somebody's trial. Pinned here so adding a column to that
+      // upsert without thinking is a failing test.
+      await entitlements.startTrial(USER, 5_000);
+      const before = await trialRow(db);
+
+      await mirrorSubscription(db, {
+        userId: USER,
+        status: "active",
+        plan: "pro",
+      });
+
+      const after = await trialRow(db);
+      expect(after?.trialStartedAt?.getTime()).toBe(
+        before?.trialStartedAt?.getTime(),
+      );
+      expect(after?.trialEndsAt?.getTime()).toBe(
+        before?.trialEndsAt?.getTime(),
+      );
+      expect(after?.plan).toBe("pro");
+    });
   });
 });

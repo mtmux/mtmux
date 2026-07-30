@@ -1,7 +1,7 @@
 import os from "node:os";
 import kleur from "kleur";
 import { FrameSealer, utf8ToBytes, type SessionKeys } from "@repo/crypto";
-import type { SealedDescriptor } from "@repo/protocol";
+import type { GrantRecord, SealedDescriptor } from "@repo/protocol";
 import * as configStore from "../config-store.js";
 import { apiBase, discoverPublicIp } from "../api.js";
 import { getLanAddresses } from "../lan.js";
@@ -72,6 +72,13 @@ export async function registerDirectToken(
   port: number,
   authToken: string,
   directToken: string,
+  /**
+   * Scope for the token, when there is one.
+   *
+   * Omitted by every ordinary pairing, which means the full grant — what a
+   * token from `mtmux start` has always meant. Only `mtmux share` sends one.
+   */
+  grant?: GrantRecord,
 ): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/_pair/session`, {
@@ -80,7 +87,7 @@ export async function registerDirectToken(
         "Content-Type": "application/json",
         Authorization: `Bearer ${authToken}`,
       },
-      body: JSON.stringify({ token: directToken }),
+      body: JSON.stringify({ token: directToken, ...(grant ? { grant } : {}) }),
       signal: AbortSignal.timeout(3000),
     });
     return res.ok;
@@ -155,7 +162,7 @@ export async function pair(opts: PairOpts): Promise<void> {
     apiBase: base,
     deviceKey: key,
     connectBroker: brokerConnector(),
-    connectLocal: localRelayConnector(opts.port, config.token),
+    connectLocal: localRelayConnector(opts.port),
     onTunnelReady: (id) => onReady(id),
     onStatus: (status, detail) => {
       if (status === "disconnected" && detail) {
@@ -193,16 +200,23 @@ export async function pair(opts: PairOpts): Promise<void> {
       seal: sealDescriptor,
     });
 
+    // Teach the local relay the direct-path token both sides derived, so a
+    // browser that wins the candidate race can authenticate without ever being
+    // sent the machine's 64-hex AUTH_TOKEN.
+    //
+    // This must happen BEFORE the agent will admit the keys. The tunnel agent
+    // no longer authenticates the loopback socket with the machine's token, so
+    // the browser's own `auth` frame is what the relay checks — and admitting
+    // the keys first leaves a window where the browser can present a token the
+    // relay has not yet been told about. A failure here therefore leaves the
+    // keys unadmitted rather than half-paired.
+    await registerDirectToken(opts.port, config.token, result.keys.directToken);
+
     // The agent is the other end of the browser's seal, so it needs this
     // pairing's key schedule before the browser opens a stream. Registering it
     // here rather than passing it in at construction is what lets one agent
     // serve several paired browsers over the same tunnel.
     agent.addSessionKeys(result.keys);
-
-    // Teach the local relay the direct-path token both sides derived, so a
-    // browser that wins the candidate race can authenticate without ever being
-    // sent the machine's 64-hex AUTH_TOKEN.
-    await registerDirectToken(opts.port, config.token, result.keys.directToken);
 
     await configStore.addPeer({
       deviceId: result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,

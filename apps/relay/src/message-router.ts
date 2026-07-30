@@ -1,16 +1,19 @@
 import type { WebSocket } from "ws";
-import type { ClientMessage, ServerMessage } from "@repo/protocol";
+import type { ClientMessage, ServerMessage, SessionInfo } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { sendJson } from "./ws-server.js";
 import type { ConnectionState } from "./connection-manager.js";
-import { broadcastToAll } from "./connection-manager.js";
+import { broadcastWhere } from "./connection-manager.js";
+import { allowsSession, allowsSessionName, isFullGrant } from "./grant.js";
+import { enforce } from "./policy.js";
 import { createPtyBridge } from "./pty-bridge.js";
+import {
+  createReadOnlyClone,
+  destroyClone,
+  isCloneSession,
+} from "./tmux-clone.js";
 import * as tmux from "./tmux-manager.js";
 import * as files from "./file-service.js";
-import { config } from "./config.js";
-
-const SERVER_VERSION = "1.0.0";
-
 const logger = createLogger("relay:router");
 
 // Output backpressure thresholds. If the socket's send buffer grows past the
@@ -29,11 +32,47 @@ function sendError(ws: WebSocket, code: string, message: string): void {
   send(ws, { type: "error", code, message });
 }
 
+/**
+ * Sessions this connection is allowed to know exist.
+ *
+ * Clones are stripped for *everyone*, scoped or not: they are relay plumbing,
+ * and one showing up in the owner's own session list is a bug.
+ */
+async function sessionsVisibleTo(
+  conn: ConnectionState,
+): Promise<SessionInfo[]> {
+  const all = await tmux.listSessions();
+  const real = all.filter((s) => !isCloneSession(s.name));
+  if (isFullGrant(conn.grant)) return real;
+  return real.filter((s) => allowsSession(conn.grant, s));
+}
+
+/** Would this connection be allowed to see an event about `name`? */
+function canSee(conn: ConnectionState, name: string): boolean {
+  if (isCloneSession(name)) return false;
+  // Name-matched, because a broadcast about a killed session has no id left
+  // to resolve. See `allowsSessionName` for why that is safe here and would
+  // not be for an access check.
+  return allowsSessionName(conn.grant, name);
+}
+
 export async function routeMessage(
   conn: ConnectionState,
   msg: ClientMessage,
 ): Promise<void> {
   const { ws } = conn;
+
+  // The single gate. Everything below assumes it has already run: read-only,
+  // file level, session scope, and — for every grant, including full ones —
+  // that a pane or window id names something inside the attached session.
+  const verdict = await enforce(
+    { grant: conn.grant, attachedSession: conn.attachedSession },
+    msg,
+  );
+  if (!verdict.ok) {
+    sendError(ws, verdict.code, verdict.message);
+    return;
+  }
 
   try {
     switch (msg.type) {
@@ -42,8 +81,12 @@ export async function routeMessage(
         break;
 
       case "session:list": {
-        const sessions = await tmux.listSessions();
-        send(ws, { type: "session:list", sessions });
+        // Filtered, never refused. A scoped holder asking what exists gets
+        // their own sessions; an error here would tell them there is more.
+        send(ws, {
+          type: "session:list",
+          sessions: await sessionsVisibleTo(conn),
+        });
         break;
       }
 
@@ -54,7 +97,13 @@ export async function routeMessage(
           msg.command,
         );
         send(ws, { type: "session:created", session });
-        broadcastToAll({ type: "session:created", session }, ws);
+        broadcastWhere(
+          (other) =>
+            canSee(other, session.name)
+              ? { type: "session:created", session }
+              : null,
+          ws,
+        );
         break;
       }
 
@@ -74,8 +123,14 @@ export async function routeMessage(
         }
         conn.attachedSession = null;
         conn.lastSize = null;
+        if (conn.cloneSession) {
+          await destroyClone(conn.cloneSession);
+          conn.cloneSession = null;
+        }
 
-        const exists = await tmux.sessionExists(msg.name);
+        // A clone is never a legitimate attach target, whatever the grant.
+        const exists =
+          !isCloneSession(msg.name) && (await tmux.sessionExists(msg.name));
         if (!exists) {
           sendError(ws, "SESSION_NOT_FOUND", `Session "${msg.name}" not found`);
           break;
@@ -97,12 +152,48 @@ export async function routeMessage(
           }
         }
 
-        const bridge = createPtyBridge(msg.name, msg.size);
+        /**
+         * A read-only grant never attaches to the target directly.
+         *
+         * `attach-session -r` is not a boundary on its own — tmux keeps
+         * `detach-client` and `switch-client` live under `-r`, and `(` / `)`
+         * are bound to `switch-client` by default, so a viewer could page
+         * through every session on the machine. The clone carries no prefix
+         * and an empty key table, which is what makes the refusal total.
+         */
+        let attachTarget = msg.name;
+        if (conn.grant.readOnly) {
+          try {
+            attachTarget = await createReadOnlyClone(
+              msg.name,
+              conn.grant.id,
+              conn.id,
+            );
+            conn.cloneSession = attachTarget;
+          } catch (err) {
+            logger.error({ err, session: msg.name }, "Clone creation failed");
+            // Refuse rather than fall back to a direct attach: falling back
+            // would silently turn a read-only share into an escapable one.
+            sendError(ws, "ATTACH_FAILED", "Could not open a read-only view.");
+            break;
+          }
+        }
+
+        const bridge = createPtyBridge(attachTarget, msg.size, {
+          readOnly: conn.grant.readOnly,
+        });
         if (bridge.spawnError) {
+          if (conn.cloneSession) {
+            await destroyClone(conn.cloneSession);
+            conn.cloneSession = null;
+          }
           sendError(ws, "PTY_SPAWN_FAILED", bridge.spawnError.message);
           break;
         }
         conn.pty = bridge;
+        // The *real* session name, not the clone's. Every scope check and
+        // broadcast compares against this, and they must all speak about the
+        // session the grant actually names.
         conn.attachedSession = msg.name;
         conn.lastSize = msg.size ?? null;
 
@@ -196,13 +287,23 @@ export async function routeMessage(
         // an exited session) must still leave this connection unattached.
         conn.attachedSession = null;
         conn.lastSize = null;
+        if (conn.cloneSession) {
+          await destroyClone(conn.cloneSession);
+          conn.cloneSession = null;
+        }
         break;
       }
 
       case "session:kill": {
         await tmux.killSession(msg.name);
         send(ws, { type: "session:killed", name: msg.name });
-        broadcastToAll({ type: "session:killed", name: msg.name }, ws);
+        broadcastWhere(
+          (other) =>
+            canSee(other, msg.name)
+              ? { type: "session:killed", name: msg.name }
+              : null,
+          ws,
+        );
         break;
       }
 
@@ -217,9 +318,28 @@ export async function routeMessage(
           break;
         }
         await tmux.renameSession(msg.oldName, msg.newName);
-        const sessions = await tmux.listSessions();
-        send(ws, { type: "session:list", sessions });
-        broadcastToAll({ type: "session:list", sessions }, ws);
+        send(ws, {
+          type: "session:list",
+          sessions: await sessionsVisibleTo(conn),
+        });
+        // Each connection is told its *own* list. A single shared list here
+        // was one of the four leaks: it handed every session name on the
+        // machine to every connected browser on any rename.
+        const listsByGrant = new Map<string, SessionInfo[]>();
+        const everything = (await tmux.listSessions()).filter(
+          (s) => !isCloneSession(s.name),
+        );
+        broadcastWhere((other) => {
+          const key = other.grant.id;
+          let visible = listsByGrant.get(key);
+          if (!visible) {
+            visible = isFullGrant(other.grant)
+              ? everything
+              : everything.filter((s) => allowsSession(other.grant, s));
+            listsByGrant.set(key, visible);
+          }
+          return { type: "session:list", sessions: visible };
+        }, ws);
         break;
       }
 
@@ -790,13 +910,27 @@ export async function routeMessage(
       }
 
       case "auth":
-        // Auth normally happens before routing, so reaching here means the
-        // connection is already authenticated. That is the ordinary case on
-        // the tunnel path: the CLI's agent authenticates the loopback socket
-        // with the machine's own token, and the browser's own `auth` frame
-        // then arrives second. Acknowledge it so the client's state machine
-        // advances instead of stalling on a reply that never comes.
-        sendJson(ws, { type: "auth:success", serverVersion: SERVER_VERSION });
+        /**
+         * A second `auth` on an already-authenticated connection.
+         *
+         * This used to blanket-acknowledge, and that was the other half of the
+         * first finding: the CLI's tunnel agent authenticated the loopback
+         * socket with the machine's full `AUTH_TOKEN`, so the browser's own
+         * `auth` frame arrived second, on a connection that was already
+         * fully privileged, and was rubber-stamped without ever being checked.
+         * Over the tunnel there was consequently nothing to scope.
+         *
+         * The agent no longer injects anything, so the browser's frame is now
+         * the *first* message and is authenticated properly by
+         * `wireConnections`. Reaching here at all is anomalous — a client
+         * re-sending auth on a live connection — and the only safe answer is
+         * to say no rather than to hand out a success it did not earn.
+         */
+        sendError(
+          ws,
+          "ALREADY_AUTHENTICATED",
+          "This connection is already authenticated.",
+        );
         break;
 
       default: {

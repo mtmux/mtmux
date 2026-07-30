@@ -12,11 +12,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.6.25",
     "@dodopayments/better-auth": "^1.6.4",
     "@dodopayments/core": "^0.3.13",
     "@repo/config": "workspace:*",
     "@repo/crypto": "workspace:*",
     "@repo/db": "workspace:*",
+    "@repo/email": "workspace:^",
     "@repo/logger": "workspace:*",
     "@repo/protocol": "workspace:*",
     "better-auth": "1.6.25",

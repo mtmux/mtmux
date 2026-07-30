@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { WebAuthnAbortService } from "@simplewebauthn/browser";
 import { Button } from "@repo/ui/components/ui/button";
 import {
   Card,
@@ -14,36 +15,47 @@ import {
 import { Input } from "@repo/ui/components/ui/input";
 import { Label } from "@repo/ui/components/ui/label";
 import { cn } from "@repo/ui/lib/utils";
-import { AlertCircle, Loader2, Terminal } from "lucide-react";
-import { isHostedBuild, signIn, signUp, useSession } from "@/lib/auth-client";
+import {
+  AlertCircle,
+  ArrowLeft,
+  Fingerprint,
+  Loader2,
+  Mail,
+  MailCheck,
+  Terminal,
+} from "lucide-react";
+import {
+  appUrl,
+  authClient,
+  DEFAULT_AUTH_CONFIG,
+  fetchAuthConfig,
+  isHostedBuild,
+  lookupAccount,
+  signIn,
+  signUp,
+  useSession,
+  type AccountLookup,
+  type AuthConfig,
+} from "@/lib/auth-client";
 import { HostedUnavailable } from "./hosted-unavailable";
 import { safeNext } from "./format";
 
 type Mode = "signin" | "signup";
 
+/**
+ * The state machine.
+ *
+ * `email` is the only entry point people type into. What comes after it is
+ * decided by the broker, not by which page they landed on: an address that has
+ * an account goes to `signin` — showing only the methods that address actually
+ * has — and one that does not goes to `signup` with the address carried over
+ * and read-only. `magic-sent` and `reset-sent` are terminal; there is nothing
+ * useful to do in the tab once the mail is out.
+ */
+type Step = "email" | "signin" | "signup" | "magic-sent" | "reset-sent";
+
 type Fields = { name: string; email: string; password: string };
 type FieldErrors = Partial<Record<keyof Fields, string>>;
-
-const COPY = {
-  signin: {
-    title: "Sign in",
-    description: "Reach every machine you have registered.",
-    submit: "Sign in",
-    submitting: "Signing in…",
-    switchPrompt: "New to mtmux?",
-    switchLabel: "Create an account",
-    switchHref: "/signup",
-  },
-  signup: {
-    title: "Create your account",
-    description: "One account, every machine, from any browser.",
-    submit: "Create account",
-    submitting: "Creating account…",
-    switchPrompt: "Already have an account?",
-    switchLabel: "Sign in",
-    switchHref: "/signin",
-  },
-} as const;
 
 // Deliberately loose. The authority on whether an address exists is the
 // verification mail, not a regex, and a strict pattern only ever rejects
@@ -51,43 +63,52 @@ const COPY = {
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD = 8;
 
-function validate(mode: Mode, fields: Fields): FieldErrors {
-  const errors: FieldErrors = {};
-  if (mode === "signup" && !fields.name.trim()) {
-    errors.name = "Tell us what to call you.";
-  }
-  if (!fields.email.trim()) {
-    errors.email = "Enter your email address.";
-  } else if (!EMAIL.test(fields.email.trim())) {
-    errors.email = "That doesn't look like an email address.";
-  }
-  if (!fields.password) {
-    errors.password = "Enter your password.";
-  } else if (mode === "signup" && fields.password.length < MIN_PASSWORD) {
-    errors.password = `Use at least ${MIN_PASSWORD} characters.`;
-  }
-  return errors;
+const PROVIDER_LABELS: Record<string, string> = {
+  google: "Google",
+  github: "GitHub",
+};
+
+function providerLabel(id: string): string {
+  return PROVIDER_LABELS[id] ?? id;
 }
 
 export function AuthForm({ mode }: { mode: Mode }) {
-  const copy = COPY[mode];
   const router = useRouter();
   const searchParams = useSearchParams();
   const { data: session, isPending } = useSession();
-
-  const [fields, setFields] = useState<Fields>({
-    name: "",
-    email: "",
-    password: "",
-  });
-  const [errors, setErrors] = useState<FieldErrors>({});
-  const [formError, setFormError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
 
   const next = useMemo(
     () => safeNext(searchParams.get("next")),
     [searchParams],
   );
+  const presetEmail = useMemo(
+    () => (searchParams.get("email") ?? "").trim(),
+    [searchParams],
+  );
+  const errorParam = searchParams.get("error");
+
+  const [step, setStep] = useState<Step>(() =>
+    // `/signup?email=…` as a hard navigation lands straight on the sign-up
+    // form. That link is printed by the CLI and by the dashboard, and making
+    // it re-ask for the address it was just given reads as a bug.
+    mode === "signup" && presetEmail ? "signup" : "email",
+  );
+  const [fields, setFields] = useState<Fields>({
+    name: "",
+    email: presetEmail,
+    password: "",
+  });
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(() =>
+    errorParam === "account_not_linked"
+      ? "You already have an account for this email. Sign in below, then " +
+        "connect that provider in Settings."
+      : null,
+  );
+  const [busy, setBusy] = useState<string | null>(null);
+  const [lookup, setLookup] = useState<AccountLookup | null>(null);
+  const [config, setConfig] = useState<AuthConfig>(DEFAULT_AUTH_CONFIG);
 
   // Someone who is already signed in should never be shown a sign-in form —
   // most often they arrived here from a /device link in a second tab.
@@ -95,6 +116,89 @@ export function AuthForm({ mode }: { mode: Mode }) {
     if (!isHostedBuild || isPending || !session) return;
     router.replace(next);
   }, [isPending, session, router, next]);
+
+  useEffect(() => {
+    if (!isHostedBuild) return;
+    let live = true;
+    void fetchAuthConfig().then((result) => {
+      if (live) setConfig(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const finish = useCallback(() => {
+    router.replace(next);
+    router.refresh();
+  }, [router, next]);
+
+  const resolveEmail = useCallback(
+    async (email: string) => {
+      setBusy("lookup");
+      setFormError(null);
+      try {
+        const result = await lookupAccount(email);
+        setLookup(result);
+        setStep(result.exists ? "signin" : "signup");
+        if (result.exists && mode === "signup") {
+          setNotice("You already have an account for this address.");
+        }
+      } catch {
+        // A lookup that cannot be reached must not be a dead end. Fall through
+        // to whichever form the page was asked for and let the real call fail
+        // with a real message.
+        setLookup(null);
+        setStep(mode === "signup" ? "signup" : "signin");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [mode],
+  );
+
+  // `/signin?email=…` — the landing spot for the `account_not_linked` bounce —
+  // should already be on the sign-in step by the time it is read.
+  const resolved = useRef(false);
+  useEffect(() => {
+    if (resolved.current) return;
+    if (mode !== "signin" || !presetEmail || !EMAIL.test(presetEmail)) return;
+    resolved.current = true;
+    void resolveEmail(presetEmail);
+  }, [mode, presetEmail, resolveEmail]);
+
+  /**
+   * Conditional UI ("passkey autofill").
+   *
+   * The browser offers a stored passkey from the email field's own autofill
+   * dropdown, with no button to press. Two things make it work: the
+   * `webauthn` token in the input's `autoComplete`, and a ceremony already
+   * running in the background when the field is focused.
+   *
+   * The cleanup is not optional. A conditional ceremony outlives the element
+   * it was attached to, and Safari in particular leaves the prompt on screen
+   * — attached to nothing — if the step changes while one is pending.
+   * `WebAuthnAbortService` is a module singleton shared with the passkey
+   * plugin, which is why `@simplewebauthn/browser` is pinned to the same
+   * range the plugin asks for.
+   */
+  useEffect(() => {
+    if (!isHostedBuild || step !== "email" || !config.passkeys) return;
+    let live = true;
+
+    void (async () => {
+      const available = await conditionalMediationAvailable();
+      if (!live || !available) return;
+      const result = await signIn.passkey({ autoFill: true });
+      if (!live || !result || result.error) return;
+      finish();
+    })();
+
+    return () => {
+      live = false;
+      WebAuthnAbortService.cancelCeremony();
+    };
+  }, [step, config.passkeys, finish]);
 
   if (!isHostedBuild) return <HostedUnavailable />;
 
@@ -105,190 +209,589 @@ export function AuthForm({ mode }: { mode: Mode }) {
     setErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
   }
 
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function restart() {
+    setStep("email");
+    setLookup(null);
+    setErrors({});
     setFormError(null);
+    setNotice(null);
+    setFields((prev) => ({ ...prev, name: "", password: "" }));
+  }
 
-    const found = validate(mode, fields);
-    setErrors(found);
-    if (Object.values(found).some(Boolean)) {
-      return;
-    }
-
-    setSubmitting(true);
+  async function guard<T>(key: string, run: () => Promise<T>): Promise<void> {
+    setBusy(key);
+    setFormError(null);
     try {
-      const result =
-        mode === "signup"
-          ? await signUp.email({
-              name: fields.name.trim(),
-              email: fields.email.trim(),
-              password: fields.password,
-            })
-          : await signIn.email({
-              email: fields.email.trim(),
-              password: fields.password,
-              rememberMe: true,
-            });
-
-      if (result.error) {
-        setFormError(
-          result.error.message ??
-            (mode === "signin"
-              ? "That email and password don't match an account."
-              : "Could not create the account. Try again."),
-        );
-        return;
-      }
-
-      router.replace(next);
-      router.refresh();
+      await run();
     } catch {
       setFormError(
         "Could not reach mtmux. Check your connection and try again.",
       );
     } finally {
-      setSubmitting(false);
+      setBusy(null);
     }
+  }
+
+  async function onEmailSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = fields.email.trim();
+    if (!email) {
+      setErrors({ email: "Enter your email address." });
+      return;
+    }
+    if (!EMAIL.test(email)) {
+      setErrors({ email: "That doesn't look like an email address." });
+      return;
+    }
+    setErrors({});
+    await resolveEmail(email);
+  }
+
+  async function onPasswordSignIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!fields.password) {
+      setErrors({ password: "Enter your password." });
+      return;
+    }
+    setErrors({});
+    await guard("password", async () => {
+      const result = await signIn.email({
+        email: fields.email.trim(),
+        password: fields.password,
+        rememberMe: true,
+      });
+      if (result.error) {
+        setFormError(
+          result.error.message ?? "That password doesn't match this account.",
+        );
+        return;
+      }
+      finish();
+    });
+  }
+
+  async function onSignUp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const found: FieldErrors = {};
+    if (!fields.name.trim()) found.name = "Tell us what to call you.";
+    if (!fields.password) found.password = "Choose a password.";
+    else if (fields.password.length < MIN_PASSWORD) {
+      found.password = `Use at least ${MIN_PASSWORD} characters.`;
+    }
+    setErrors(found);
+    if (Object.values(found).some(Boolean)) return;
+
+    await guard("signup", async () => {
+      const result = await signUp.email({
+        name: fields.name.trim(),
+        email: fields.email.trim(),
+        password: fields.password,
+        // Absolute, or better-auth resolves it against the API's origin.
+        callbackURL: appUrl(next),
+      });
+      if (result.error) {
+        setFormError(
+          result.error.message ?? "Could not create the account. Try again.",
+        );
+        return;
+      }
+      finish();
+    });
+  }
+
+  async function onPasskey() {
+    await guard("passkey", async () => {
+      const result = await signIn.passkey();
+      if (!result || result.error) {
+        setFormError(
+          result?.error?.message ?? "That passkey didn't work. Try again.",
+        );
+        return;
+      }
+      finish();
+    });
+  }
+
+  async function onMagicLink() {
+    await guard("magic", async () => {
+      const result = await signIn.magicLink({
+        email: fields.email.trim(),
+        callbackURL: appUrl(next),
+      });
+      if (result.error) {
+        setFormError(
+          result.error.message ?? "Could not send the link. Try again.",
+        );
+        return;
+      }
+      setStep("magic-sent");
+    });
+  }
+
+  async function onForgotPassword() {
+    await guard("reset", async () => {
+      const result = await authClient.requestPasswordReset({
+        email: fields.email.trim(),
+        redirectTo: appUrl("/signin/reset"),
+      });
+      if (result.error) {
+        setFormError(
+          result.error.message ?? "Could not send the email. Try again.",
+        );
+        return;
+      }
+      setStep("reset-sent");
+    });
+  }
+
+  async function onSocial(provider: string) {
+    await guard(`social:${provider}`, async () => {
+      await signIn.social({
+        provider: provider as "google" | "github",
+        callbackURL: appUrl(next),
+        // Where better-auth sends someone whose address already belongs to an
+        // unlinked local account. Landing on the sign-in form with the address
+        // filled in and an explanation is the difference between "sign in and
+        // then connect this in Settings" and a dead end.
+        errorCallbackURL: appUrl(
+          `/signin?email=${encodeURIComponent(fields.email.trim())}` +
+            `&error=account_not_linked&next=${encodeURIComponent(next)}`,
+        ),
+      });
+    });
   }
 
   // Hold the form back until the session check settles, so a signed-in visitor
   // never sees a sign-in form flash before the redirect.
   const checking = isPending || Boolean(session);
+  const working = busy !== null;
+
+  const socialButtons =
+    config.providers.length > 0 ? (
+      <div className="space-y-2">
+        {config.providers.map((provider) => (
+          <Button
+            key={provider}
+            type="button"
+            variant="outline"
+            className="h-11 w-full"
+            disabled={working || checking}
+            onClick={() => void onSocial(provider)}
+          >
+            {busy === `social:${provider}` ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : null}
+            Continue with {providerLabel(provider)}
+          </Button>
+        ))}
+      </div>
+    ) : null;
 
   return (
     <div className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-10">
       <Card>
         <CardHeader className="text-center">
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-            <Terminal className="h-6 w-6 text-primary" aria-hidden />
+            {step === "magic-sent" || step === "reset-sent" ? (
+              <MailCheck className="h-6 w-6 text-primary" aria-hidden />
+            ) : (
+              <Terminal className="h-6 w-6 text-primary" aria-hidden />
+            )}
           </div>
           <CardTitle className="text-xl">
-            <h1>{copy.title}</h1>
+            <h1>{headingFor(step, mode)}</h1>
           </CardTitle>
-          <CardDescription>{copy.description}</CardDescription>
+          <CardDescription>
+            {descriptionFor(step, fields.email)}
+          </CardDescription>
         </CardHeader>
 
-        <form onSubmit={onSubmit} noValidate>
-          <CardContent className="space-y-4">
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            {mode === "signup" && (
-              <Field
-                id="name"
-                label="Name"
-                error={errors.name}
-                input={
-                  <Input
-                    id="name"
-                    name="name"
-                    autoComplete="name"
-                    className="h-11"
-                    value={fields.name}
-                    onChange={(e) => set("name", e.target.value)}
-                    aria-invalid={Boolean(errors.name)}
-                    aria-describedby={errors.name ? "name-error" : undefined}
-                    disabled={submitting}
-                  />
-                }
-              />
-            )}
-
-            <Field
-              id="email"
-              label="Email"
-              error={errors.email}
-              input={
-                <Input
-                  id="email"
-                  name="email"
-                  type="email"
-                  inputMode="email"
-                  autoComplete="email"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  className="h-11"
-                  value={fields.email}
-                  onChange={(e) => set("email", e.target.value)}
-                  aria-invalid={Boolean(errors.email)}
-                  aria-describedby={errors.email ? "email-error" : undefined}
-                  disabled={submitting}
-                />
-              }
-            />
-
-            <Field
-              id="password"
-              label="Password"
-              error={errors.password}
-              hint={
-                mode === "signup"
-                  ? `At least ${MIN_PASSWORD} characters.`
-                  : undefined
-              }
-              input={
-                <Input
-                  id="password"
-                  name="password"
-                  type="password"
-                  autoComplete={
-                    mode === "signup" ? "new-password" : "current-password"
-                  }
-                  className="h-11"
-                  value={fields.password}
-                  onChange={(e) => set("password", e.target.value)}
-                  aria-invalid={Boolean(errors.password)}
-                  aria-describedby={
-                    errors.password
-                      ? "password-error"
-                      : mode === "signup"
-                        ? "password-hint"
-                        : undefined
-                  }
-                  disabled={submitting}
-                />
-              }
-            />
-
-            <Button
-              type="submit"
-              className="h-11 w-full"
-              disabled={submitting || checking}
+        <CardContent className="space-y-4">
+          {notice && (
+            <div className="rounded-md border border-border bg-muted/50 p-3 text-sm text-muted-foreground">
+              {notice}
+            </div>
+          )}
+          {formError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
             >
-              {submitting ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                  {copy.submitting}
-                </>
-              ) : (
-                copy.submit
-              )}
-            </Button>
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>{formError}</span>
+            </div>
+          )}
 
-            <p className="pt-1 text-center text-sm text-muted-foreground">
-              {copy.switchPrompt}{" "}
-              <Link
-                href={
-                  next === "/dashboard"
-                    ? copy.switchHref
-                    : `${copy.switchHref}?next=${encodeURIComponent(next)}`
-                }
-                className="font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {copy.switchLabel}
-              </Link>
+          {step === "email" && (
+            <>
+              <form onSubmit={onEmailSubmit} noValidate className="space-y-4">
+                <Field
+                  id="email"
+                  label="Email"
+                  error={errors.email}
+                  input={
+                    <Input
+                      id="email"
+                      name="email"
+                      type="email"
+                      inputMode="email"
+                      // `webauthn` is what makes the browser offer a stored
+                      // passkey from this field's own autofill dropdown. It
+                      // must sit alongside `email`, not replace it.
+                      autoComplete="webauthn email"
+                      autoCapitalize="none"
+                      autoFocus
+                      spellCheck={false}
+                      className="h-11"
+                      value={fields.email}
+                      onChange={(e) => set("email", e.target.value)}
+                      aria-invalid={Boolean(errors.email)}
+                      aria-describedby={
+                        errors.email ? "email-error" : undefined
+                      }
+                      disabled={working}
+                    />
+                  }
+                />
+                <Button
+                  type="submit"
+                  className="h-11 w-full"
+                  disabled={working || checking}
+                >
+                  {busy === "lookup" ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      Checking…
+                    </>
+                  ) : (
+                    "Continue"
+                  )}
+                </Button>
+              </form>
+
+              {socialButtons && (
+                <>
+                  <Divider />
+                  {socialButtons}
+                </>
+              )}
+            </>
+          )}
+
+          {step === "signin" && (
+            <>
+              {/* Only offered when this account actually has one — showing a
+                  password box to a Google-only account is the dead end the
+                  lookup exists to prevent. */}
+              {lookup?.hasPassword !== false && (
+                <form
+                  onSubmit={onPasswordSignIn}
+                  noValidate
+                  className="space-y-4"
+                >
+                  <Field
+                    id="password"
+                    label="Password"
+                    error={errors.password}
+                    input={
+                      <Input
+                        id="password"
+                        name="password"
+                        type="password"
+                        autoComplete="current-password"
+                        autoFocus
+                        className="h-11"
+                        value={fields.password}
+                        onChange={(e) => set("password", e.target.value)}
+                        aria-invalid={Boolean(errors.password)}
+                        aria-describedby={
+                          errors.password ? "password-error" : undefined
+                        }
+                        disabled={working}
+                      />
+                    }
+                  />
+                  <Button
+                    type="submit"
+                    className="h-11 w-full"
+                    disabled={working || checking}
+                  >
+                    {busy === "password" ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                        Signing in…
+                      </>
+                    ) : (
+                      "Sign in"
+                    )}
+                  </Button>
+                </form>
+              )}
+
+              {(lookup?.hasPasskey ||
+                config.magicLink ||
+                config.providers.length > 0) && <Divider />}
+
+              <div className="space-y-2">
+                {lookup?.hasPasskey && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 w-full"
+                    disabled={working || checking}
+                    onClick={() => void onPasskey()}
+                  >
+                    {busy === "passkey" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Fingerprint className="h-4 w-4" aria-hidden />
+                    )}
+                    Use a passkey
+                  </Button>
+                )}
+
+                {config.magicLink && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 w-full"
+                    disabled={working || checking}
+                    onClick={() => void onMagicLink()}
+                  >
+                    {busy === "magic" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Mail className="h-4 w-4" aria-hidden />
+                    )}
+                    Email me a sign-in link
+                  </Button>
+                )}
+
+                {socialButtons}
+              </div>
+
+              <div className="flex items-center justify-between pt-1 text-sm">
+                <BackLink onClick={restart} />
+                {config.passwordReset && lookup?.hasPassword !== false && (
+                  <button
+                    type="button"
+                    onClick={() => void onForgotPassword()}
+                    disabled={working}
+                    className="font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {step === "signup" && (
+            <>
+              <form onSubmit={onSignUp} noValidate className="space-y-4">
+                <Field
+                  id="email"
+                  label="Email"
+                  input={
+                    <Input
+                      id="email"
+                      name="email"
+                      type="email"
+                      autoComplete="email"
+                      className="h-11"
+                      value={fields.email}
+                      readOnly
+                      // Read-only rather than disabled: a disabled field is
+                      // skipped by screen readers and by autofill, and the
+                      // address is the one thing on this form the person has
+                      // already told us.
+                      aria-readonly
+                    />
+                  }
+                />
+                <Field
+                  id="name"
+                  label="Name"
+                  error={errors.name}
+                  input={
+                    <Input
+                      id="name"
+                      name="name"
+                      autoComplete="name"
+                      autoFocus
+                      className="h-11"
+                      value={fields.name}
+                      onChange={(e) => set("name", e.target.value)}
+                      aria-invalid={Boolean(errors.name)}
+                      aria-describedby={errors.name ? "name-error" : undefined}
+                      disabled={working}
+                    />
+                  }
+                />
+                <Field
+                  id="password"
+                  label="Password"
+                  error={errors.password}
+                  hint={`At least ${MIN_PASSWORD} characters.`}
+                  input={
+                    <Input
+                      id="password"
+                      name="password"
+                      type="password"
+                      autoComplete="new-password"
+                      className="h-11"
+                      value={fields.password}
+                      onChange={(e) => set("password", e.target.value)}
+                      aria-invalid={Boolean(errors.password)}
+                      aria-describedby={
+                        errors.password ? "password-error" : "password-hint"
+                      }
+                      disabled={working}
+                    />
+                  }
+                />
+                <Button
+                  type="submit"
+                  className="h-11 w-full"
+                  disabled={working || checking}
+                >
+                  {busy === "signup" ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      Creating account…
+                    </>
+                  ) : (
+                    "Create account"
+                  )}
+                </Button>
+              </form>
+
+              {socialButtons && (
+                <>
+                  <Divider />
+                  {socialButtons}
+                </>
+              )}
+
+              <div className="pt-1 text-sm">
+                <BackLink onClick={restart} />
+              </div>
+            </>
+          )}
+
+          {(step === "magic-sent" || step === "reset-sent") && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                {step === "magic-sent"
+                  ? "Open it on this device to sign in. It works once, and only for a few minutes."
+                  : "Follow it to choose a new password. It's good for an hour."}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Nothing yet? Check spam, then try again.
+              </p>
+              <BackLink onClick={restart} />
+            </div>
+          )}
+
+          {step === "email" && (
+            <p className="pt-1 text-center text-xs text-muted-foreground">
+              {mode === "signup"
+                ? "Already have an account? Enter the same address — we'll work it out."
+                : "New here? Enter your address and we'll set you up."}
             </p>
-          </CardContent>
-        </form>
+          )}
+        </CardContent>
       </Card>
+
+      <p className="mt-4 text-center text-sm text-muted-foreground">
+        <Link
+          href={next === "/dashboard" ? "/" : "/"}
+          className="underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Back to mtmux
+        </Link>
+      </p>
     </div>
+  );
+}
+
+/**
+ * Whether the browser can run a conditional ceremony.
+ *
+ * Guarded three ways because all three happen: no `PublicKeyCredential` at all
+ * on an insecure origin (`mtmux start` prints a LAN URL, where WebAuthn does
+ * not exist), no `isConditionalMediationAvailable` on older Safari, and a
+ * rejection from the call itself.
+ */
+async function conditionalMediationAvailable(): Promise<boolean> {
+  try {
+    const api = (
+      globalThis as {
+        PublicKeyCredential?: {
+          isConditionalMediationAvailable?: () => Promise<boolean>;
+        };
+      }
+    ).PublicKeyCredential;
+    if (!api?.isConditionalMediationAvailable) return false;
+    return await api.isConditionalMediationAvailable();
+  } catch {
+    return false;
+  }
+}
+
+function headingFor(step: Step, mode: Mode): string {
+  switch (step) {
+    case "email":
+      return mode === "signup" ? "Create your account" : "Sign in";
+    case "signin":
+      return "Welcome back";
+    case "signup":
+      return "Create your account";
+    case "magic-sent":
+      return "Check your email";
+    case "reset-sent":
+      return "Check your email";
+  }
+}
+
+function descriptionFor(step: Step, email: string): string {
+  switch (step) {
+    case "email":
+      return "One account, every machine, from any browser.";
+    case "signin":
+      return email;
+    case "signup":
+      return "Two more things and you're in.";
+    case "magic-sent":
+      return `We sent a sign-in link to ${email}.`;
+    case "reset-sent":
+      return `We sent a reset link to ${email}.`;
+  }
+}
+
+function Divider() {
+  return (
+    <div className="relative py-1">
+      <div className="absolute inset-0 flex items-center" aria-hidden>
+        <span className="w-full border-t border-border" />
+      </div>
+      <div className="relative flex justify-center">
+        <span className="bg-card px-2 text-xs text-muted-foreground">or</span>
+      </div>
+    </div>
+  );
+}
+
+function BackLink({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+      Use a different email
+    </button>
   );
 }
 

@@ -12,6 +12,7 @@ import {
   type SessionKeys,
 } from "@repo/crypto";
 import {
+  MAX_PEERS_PER_SLOT,
   PairClaimResponse,
   PairNewResponse,
   type SealedDescriptor,
@@ -56,7 +57,7 @@ export { PairingError } from "./pairing-exchange.js";
 
 /** Claiming a code someone else is showing. */
 export type ClaimTransport = {
-  postClaim(body: unknown): Promise<{ claimId: string; offered: number }>;
+  postClaim(body: unknown): Promise<{ claimId: string; waiting: boolean }>;
   openClaimSocket(claimId: string): Promise<PairingSocket>;
 };
 
@@ -109,14 +110,14 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
   const channelId = utf8ToBytes(slot);
   const cpace = cpaceStart(utf8ToBytes(secret), channelId, sid);
 
-  const { claimId, offered } = await opts.transport.postClaim({
+  const { claimId, waiting } = await opts.transport.postClaim({
     slot,
     share: bytesToHex(cpace.share),
     ad: AD_CLI,
     sid: bytesToHex(sid),
   });
 
-  if (offered === 0) {
+  if (!waiting) {
     throw new PairingError(
       "No pairing is waiting for that code.",
       "Codes expire after three minutes. Reload the page for a new one.",
@@ -130,7 +131,7 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
   return runExchange({
     socket,
     side: "claim",
-    outstanding: offered,
+    maxPeers: MAX_PEERS_PER_SLOT,
     buildDescriptor: opts.buildDescriptor,
     seal: opts.seal,
     timeoutMs: opts.timeoutMs ?? CLAIM_TIMEOUT_MS,
@@ -177,6 +178,11 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
         new PairingError(
           "Lost the connection to the pairing service.",
           "Check your network and try again.",
+        ),
+      tooManyPeers: () =>
+        new PairingError(
+          "The pairing service offered more terminals than it should.",
+          "Stopped rather than risk pairing with the wrong one. Get a new code.",
         ),
       failed: (reason) => new PairingError(describeFailure(reason), hint),
     },
@@ -249,9 +255,16 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
   const exchange: Exchange = runExchange({
     socket,
     side: "mailbox",
-    // A mailbox accepts exactly one claim in its lifetime, so there is exactly
-    // one peer to rule out before the code is spent and the caller re-arms.
-    outstanding: 1,
+    // `maxPeers` is deliberately unset. A mailbox is burned by exactly one
+    // claim, but a claim that POSTs and never opens a socket only ever
+    // *offers*: that lapses, the mailbox returns to circulation, and another
+    // claim may legitimately arrive before the code expires. So a second peer
+    // here is normal, not the broker misbehaving.
+    //
+    // No straggler window either: ruling a peer out means its confirmation
+    // failed, and the broker destroys the mailbox on that — so nothing further
+    // can arrive and there is nothing to wait for.
+    noMatchGraceMs: 0,
     buildDescriptor: opts.buildDescriptor,
     seal: opts.seal,
     // The mailbox stops existing at `expiresAt`, so a deadline past it would
@@ -302,16 +315,28 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
       };
     },
     errors: {
-      noMatch: () => new PairingError("That code did not match.", hint),
+      noMatch: () =>
+        new PairingError("That code did not match.", hint, "no-match"),
       timedOut: () =>
         new PairingError(
           "The pairing code expired before anyone used it.",
           "A fresh code is on its way.",
+          // Nobody engaged with this code at all. `startHosted` counts these:
+          // an unwatched terminal must stop minting fresh codes eventually.
+          "expired",
         ),
       lost: () =>
         new PairingError(
           "Lost the connection to the pairing service.",
           "Check your network — the code will be retried.",
+          "lost",
+        ),
+      // Unreachable: `maxPeers` is unset on this side. Present because the
+      // exchange asks every caller for its own wording.
+      tooManyPeers: () =>
+        new PairingError(
+          "The pairing service behaved unexpectedly.",
+          "A fresh code is on its way.",
         ),
       failed: (reason) => new PairingError(describeFailure(reason), hint),
     },

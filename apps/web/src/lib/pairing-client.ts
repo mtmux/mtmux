@@ -15,6 +15,7 @@ import {
   type SessionKeys,
 } from "@repo/crypto";
 import {
+  MAX_PEERS_PER_SLOT,
   SealedDescriptor,
   tryDeserializePairingServerMessage,
 } from "@repo/protocol";
@@ -268,6 +269,14 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
 type Attempt = { keys: SessionKeys; peerAd: string };
 
 /**
+ * How long to wait for a straggling terminal before calling a code wrong.
+ *
+ * Long enough that a terminal on a slow link is not mistaken for a bad code,
+ * short enough that a genuinely wrong code still fails promptly.
+ */
+const NO_MATCH_GRACE_MS = 3_000;
+
+/**
  * Claim a code the terminal is showing.
  *
  * A slot is two digits and deliberately shared, so this claim is offered to
@@ -283,10 +292,26 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
   let socket: WebSocket | null = null;
   let cancelled = false;
   let settled = false;
+  /**
+   * Armed when the last known candidate is ruled out.
+   *
+   * Terminals answer independently over the network, so a decoy sharing the
+   * slot can be ruled out before the real one has said anything — failing the
+   * instant the counter hits zero would reject a correct code on a slow link.
+   * A share arriving cancels the window.
+   */
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearGrace() {
+    if (!graceTimer) return;
+    clearTimeout(graceTimer);
+    graceTimer = null;
+  }
 
   function fail(message: string) {
     if (settled || cancelled) return;
     settled = true;
+    clearGrace();
     socket?.close();
     opts.onUpdate({ phase: "failed", message });
   }
@@ -309,7 +334,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
     const cpace = cpaceStart(utf8ToBytes(secret), utf8ToBytes(slot), sid);
 
     let claimId: string;
-    let offered: number;
+    let waiting: boolean;
     try {
       const res = await doFetch(`${opts.apiBase}/v1/pair/claim`, {
         method: "POST",
@@ -329,9 +354,9 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
         fail("The pairing service is unavailable. Try again shortly.");
         return;
       }
-      ({ claimId, offered } = (await res.json()) as {
+      ({ claimId, waiting } = (await res.json()) as {
         claimId: string;
-        offered: number;
+        waiting: boolean;
       });
     } catch {
       fail("Could not reach the pairing service.");
@@ -339,7 +364,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
     }
     if (cancelled) return;
 
-    if (offered === 0) {
+    if (!waiting) {
       fail(
         "Nothing is waiting for that code. Check the digits, or get a new code from your terminal.",
       );
@@ -349,8 +374,17 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
     socket = makeSocket(`${wsBase(opts.apiBase)}/v1/claim/${claimId}`);
 
     const attempts = new Map<string, Attempt>();
-    /** Mailboxes that could still turn out to be the terminal. */
-    let outstanding = offered;
+    /**
+     * Mailboxes that could still turn out to be the terminal.
+     *
+     * Counted from the shares that actually arrive rather than from a number
+     * the broker promised, because the broker no longer reports one — a live
+     * count on a slot was an enumeration oracle for anyone who could POST.
+     * `seen` is what makes "all of them were ruled out" distinguishable from
+     * "none has answered yet"; the latter is left to the timeout.
+     */
+    let outstanding = 0;
+    let seen = 0;
 
     function send(message: unknown) {
       socket?.send(JSON.stringify(message));
@@ -359,9 +393,17 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
     function ruleOut(peer: string) {
       attempts.delete(peer);
       outstanding -= 1;
-      if (outstanding <= 0) {
+      if (seen === 0 || outstanding > 0) return;
+
+      // Every peer that answered has been ruled out. Once as many have answered
+      // as the broker is allowed to offer, nothing else can be coming.
+      if (seen >= MAX_PEERS_PER_SLOT) {
         fail("That code did not match. Get a new one from your terminal.");
+        return;
       }
+      graceTimer ??= setTimeout(() => {
+        fail("That code did not match. Get a new one from your terminal.");
+      }, NO_MATCH_GRACE_MS);
     }
 
     /**
@@ -398,6 +440,23 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
         // confused terminal or someone hoping to restart it under a fresh
         // scalar. Neither is a reason to abandon the run in progress.
         if (attempts.has(msg.peer)) return;
+
+        // The broker caps live mailboxes per slot, so more answers than that
+        // means it is not playing by its own rules — the shape a broker would
+        // take if it were fanning a code out to attackers to multiply their
+        // guesses. Refuse rather than race them.
+        // A straggler arrived, so "everyone has been ruled out" was wrong.
+        clearGrace();
+
+        seen += 1;
+        if (seen > MAX_PEERS_PER_SLOT) {
+          fail(
+            "The pairing service offered more terminals than it should. " +
+              "Stop, and get a new code.",
+          );
+          return;
+        }
+        outstanding += 1;
 
         let isk: Uint8Array;
         try {

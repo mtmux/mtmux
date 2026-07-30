@@ -30,7 +30,9 @@ import {
  * verifies is the real one, and the rest are closed — which destroys their
  * mailboxes. `outstanding` counts the peers that could still turn out to be the
  * one, so the run can fail fast the moment the last candidate is ruled out
- * instead of sitting until the timeout.
+ * instead of sitting until the timeout. It is counted from the shares that
+ * arrive rather than from a total the broker promises, because a broker that
+ * reports live mailbox counts is handing out an enumeration oracle.
  *
  * ## The identity labels never swap
  *
@@ -53,10 +55,24 @@ export const AD_CLI = "cli";
  */
 export const AD_PEER_MAX = 256;
 
+/**
+ * Why a run ended, for callers that must act differently rather than only say
+ * something different. `expired` is the one that matters: it means nobody ever
+ * engaged with the code, which is what separates an abandoned terminal from a
+ * watched one.
+ */
+export type PairingErrorKind =
+  | "expired"
+  | "no-match"
+  | "lost"
+  | "too-many-peers"
+  | "failed";
+
 export class PairingError extends Error {
   constructor(
     message: string,
     readonly hint?: string,
+    readonly kind: PairingErrorKind = "failed",
   ) {
     super(message);
     this.name = "PairingError";
@@ -121,8 +137,19 @@ export type ExchangeSide = "claim" | "mailbox";
 export type ExchangeOptions = {
   socket: PairingSocket;
   side: ExchangeSide;
-  /** How many peers could still turn out to be the one. */
-  outstanding: number;
+  /**
+   * Most peers this run will entertain, or undefined for no bound.
+   *
+   * Set by a claimant to the broker's own per-slot cap: being offered more
+   * mailboxes than the broker is supposed to keep on a slot is the signature
+   * of a broker multiplying an attacker's guesses, so the run stops.
+   *
+   * A mailbox holder leaves it unset. Its offers lapse and it legitimately
+   * returns to circulation, so it can see several claims across its lifetime.
+   */
+  maxPeers?: number;
+  /** Override the straggler window. Tests drive this; callers rarely do. */
+  noMatchGraceMs?: number;
   /** Derive this peer's key schedule from its share. */
   derive: (msg: PairPeerShareMessage) => Derived;
   /** Built once a key is known, so it can be sealed for that peer alone. */
@@ -133,7 +160,7 @@ export type ExchangeOptions = {
   ) => Promise<Uint8Array>;
   timeoutMs: number;
   /**
-   * Wording for the three ways a run ends badly. The two flows want to say
+   * Wording for the ways a run ends badly. The two flows want to say
    * quite different things ("reload the page" vs "scan the new code"), and
    * error copy is the whole of what the user sees when pairing fails.
    */
@@ -141,6 +168,8 @@ export type ExchangeOptions = {
     noMatch: () => PairingError;
     timedOut: () => PairingError;
     lost: () => PairingError;
+    /** The broker offered more peers than its own cap allows. */
+    tooManyPeers: () => PairingError;
     /** Wraps a failure the broker reported; see `describeFailure`. */
     failed: (reason: string) => PairingError;
   };
@@ -152,12 +181,37 @@ export type Exchange = {
   abort(err: PairingError): void;
 };
 
+/**
+ * How long to wait for a straggling peer before calling a code wrong.
+ *
+ * Long enough that a terminal on a slow link is not mistaken for a bad code,
+ * short enough to beat the run's own timeout by an order of magnitude.
+ */
+const NO_MATCH_GRACE_MS = 3_000;
+
 export function runExchange(opts: ExchangeOptions): Exchange {
   const { socket } = opts;
   const attempts = new Map<string, Attempt>();
 
   let settled = false;
-  let outstanding = opts.outstanding;
+  /**
+   * Peers that could still turn out to be the one, counted from the shares
+   * that actually arrive. The broker no longer reports how many mailboxes a
+   * slot holds — that count was an enumeration oracle — so `seen` is what
+   * separates "every peer was ruled out" from "none has answered yet". The
+   * latter is the timeout's business.
+   */
+  let outstanding = 0;
+  let seen = 0;
+  /**
+   * Armed when the last known candidate is ruled out.
+   *
+   * Peers answer independently over the network, so a decoy can be ruled out
+   * before the real terminal has said anything at all — declaring "wrong code"
+   * the instant the counter hits zero would fail correct codes on a slow link.
+   * The grace window closes that race; a share arriving cancels it.
+   */
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
   let finish!: (err: Error | null, result?: PairingResult) => void;
 
   const result = new Promise<PairingResult>((resolve, reject) => {
@@ -172,6 +226,7 @@ export function runExchange(opts: ExchangeOptions): Exchange {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       socket.close();
       if (err) reject(err);
       else resolve(value!);
@@ -185,7 +240,21 @@ export function runExchange(opts: ExchangeOptions): Exchange {
     function ruleOut(peer: string) {
       attempts.delete(peer);
       outstanding -= 1;
-      if (outstanding <= 0) finish(opts.errors.noMatch());
+      if (seen === 0 || outstanding > 0) return;
+
+      // Every peer that has answered has been ruled out. If the broker's cap
+      // is known and that many have answered, nothing else can be coming and
+      // the run can fail immediately; otherwise wait a moment for stragglers.
+      if (opts.maxPeers !== undefined && seen >= opts.maxPeers) {
+        finish(opts.errors.noMatch());
+        return;
+      }
+      if (graceTimer) return;
+      graceTimer = setTimeout(
+        () => finish(opts.errors.noMatch()),
+        opts.noMatchGraceMs ?? NO_MATCH_GRACE_MS,
+      );
+      graceTimer.unref?.();
     }
 
     /**
@@ -216,6 +285,21 @@ export function runExchange(opts: ExchangeOptions): Exchange {
         // reason to abandon the run already in progress for that peer.
         return;
       }
+
+      // A straggler has arrived, so "everyone has been ruled out" was wrong.
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
+      }
+
+      seen += 1;
+      if (opts.maxPeers !== undefined && seen > opts.maxPeers) {
+        // More peers than the broker is allowed to keep on a slot. Racing them
+        // would be handing an attacker extra tries at the code.
+        finish(opts.errors.tooManyPeers());
+        return;
+      }
+      outstanding += 1;
 
       const derived = opts.derive(msg);
       if ("reject" in derived) {

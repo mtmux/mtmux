@@ -16,7 +16,7 @@ import { cn } from "@repo/ui/lib/utils";
 import { Button } from "@repo/ui/components/ui/button";
 import { Badge } from "@repo/ui/components/ui/badge";
 import { useFileStore } from "@/stores/file-store";
-import { tryFileDownloadUrl } from "@/lib/file-url";
+import { downloadFile, filesAvailable } from "@/lib/file-url";
 import { useFileObjectUrl } from "@/hooks/use-file-object-url";
 import {
   getFileViewMode,
@@ -52,8 +52,7 @@ function DownloadLink({
   fileName: string;
   children: React.ReactNode;
 }) {
-  const href = tryFileDownloadUrl(path);
-  if (!href) {
+  if (!filesAvailable()) {
     return (
       <p className="text-xs text-muted-foreground">
         Downloads need a direct connection to the machine — this session is
@@ -61,10 +60,18 @@ function DownloadLink({
       </p>
     );
   }
+  // A button rather than an `<a href>`: the token authenticates the whole
+  // session, and a URL carrying it would be written to history and to every
+  // access log on the way. `downloadFile` sends it as a header instead.
   return (
-    <a href={href} download={fileName}>
+    <button
+      type="button"
+      onClick={() => {
+        void downloadFile(path, fileName).catch(() => {});
+      }}
+    >
       {children}
-    </a>
+    </button>
   );
 }
 

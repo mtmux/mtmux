@@ -2,7 +2,7 @@ import { resolveRelayHttpBase } from "@/lib/relay-url";
 
 import { loadDescriptor } from "@/lib/session-store";
 
-import { TOKEN_KEY, readStored } from "./storage-keys";
+import { readSelfHostedToken } from "./storage-keys";
 
 /**
  * Thrown when the current connection has no HTTP route to the relay.
@@ -27,7 +27,7 @@ export class FilesUnavailableError extends Error {
  */
 export function getStoredToken(): string {
   if (typeof window === "undefined") return "";
-  const stored = readStored(TOKEN_KEY);
+  const stored = readSelfHostedToken();
   if (stored) return stored;
   return loadDescriptor()?.directToken ?? "";
 }
@@ -52,9 +52,15 @@ export function getFileUrl(path: string, download?: boolean): string {
 }
 
 /**
- * Build a download URL. User-initiated downloads use an `<a href download>`
- * navigation, which cannot carry an `Authorization` header, so the token stays
- * in the query as a pragmatic exception for these transient, explicit actions.
+ * Build a download URL with the token in the query.
+ *
+ * @deprecated The credential here is the 256-bit `directToken` derived by the
+ * PAKE — the same one that authenticates the whole session — and a query string
+ * lands in browser history, `Referer` headers and every access log between the
+ * browser and the relay. Use `downloadFile`, which sends it as a header.
+ *
+ * Kept only so a client that predates the header path keeps working; nothing in
+ * this app calls it.
  */
 export function getFileDownloadUrl(path: string): string {
   const httpBase = resolveRelayHttpBase();
@@ -65,16 +71,30 @@ export function getFileDownloadUrl(path: string): string {
 }
 
 /**
- * Same as `getFileDownloadUrl` but null instead of throwing.
+ * Download a file, authenticating with a header rather than the URL.
  *
- * Download links are built during render, where a throw would take out the
- * whole subtree. Callers render the link only when there is one.
+ * An `<a href download>` navigation cannot carry an `Authorization` header,
+ * which is why the token used to travel in the query. Fetching the bytes and
+ * handing the browser an object URL gets the same "save as" behaviour with the
+ * credential never leaving the request headers.
  */
-export function tryFileDownloadUrl(path: string): string | null {
+export async function downloadFile(
+  path: string,
+  fileName: string,
+): Promise<void> {
+  const objectUrl = await fetchFileObjectUrl(path);
   try {
-    return getFileDownloadUrl(path);
-  } catch {
-    return null;
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    // Revoked on the next tick: revoking synchronously can beat the browser's
+    // own read of the URL and produce an empty file.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
   }
 }
 

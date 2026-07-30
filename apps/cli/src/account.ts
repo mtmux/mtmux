@@ -194,7 +194,20 @@ export type RegisterServerInput = {
 };
 
 export type RegisterServerResult =
-  | { ok: true; serverId: string; plan: string }
+  | {
+      ok: true;
+      serverId: string;
+      plan: string;
+      /**
+       * True only on the request that began the trial.
+       *
+       * The broker computes this rather than the CLI inferring it from
+       * `plan: "pro"`, because a paying customer is also "pro" and must not be
+       * told they have just started a trial.
+       */
+      trialStarted: boolean;
+      trialDaysLeft: number;
+    }
   | { ok: false; reason: string; upgradeUrl?: string };
 
 /**
@@ -224,10 +237,16 @@ export async function registerServer(
   const body = await readJson(res);
 
   if (res.ok) {
+    const trial =
+      body.trial && typeof body.trial === "object"
+        ? (body.trial as { justStarted?: unknown; daysLeft?: unknown })
+        : {};
     return {
       ok: true,
       serverId: str(body.serverId) ?? "",
       plan: str(body.plan) ?? "free",
+      trialStarted: trial.justStarted === true,
+      trialDaysLeft: typeof trial.daysLeft === "number" ? trial.daysLeft : 0,
     };
   }
   return {

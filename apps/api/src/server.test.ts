@@ -199,9 +199,7 @@ describe("websocket routing", () => {
       ad: "cli",
       sid: "b".repeat(32),
     });
-    expect((claim.body as { offered: number }).offered).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect((claim.body as { waiting: boolean }).waiting).toBe(true);
 
     const peerShare = await browser.waitFor("pair:peer-share");
     expect(peerShare.share).toBe("a".repeat(64));
@@ -298,7 +296,26 @@ describe("clientIp", () => {
       socket: { remoteAddress: remote },
     }) as unknown as Parameters<typeof clientIp>[0];
 
-  it("prefers the left-most X-Forwarded-For entry", () => {
+  it("prefers CF-Connecting-IP behind a trusted proxy", () => {
+    // In production the vhost sets `X-Forwarded-For $remote_addr`, and in front
+    // of nginx sits Cloudflare — so XFF holds the *PoP's* address. Bucketing on
+    // that put every visitor behind a PoP in one window: a denial of service
+    // against honest users, and a limiter isolating no attacker.
+    expect(
+      clientIp(
+        req(
+          {
+            "cf-connecting-ip": "203.0.113.7",
+            "x-forwarded-for": "162.158.1.1",
+          },
+          "127.0.0.1",
+        ),
+      ),
+    ).toBe("203.0.113.7");
+  });
+
+  it("falls back to the left-most X-Forwarded-For entry", () => {
+    // A self-hosted install behind a plain reverse proxy has no Cloudflare.
     expect(
       clientIp(
         req({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" }, "127.0.0.1"),
@@ -306,12 +323,35 @@ describe("clientIp", () => {
     ).toBe("203.0.113.7");
   });
 
+  it("ignores both headers from an untrusted peer", () => {
+    // Otherwise any direct caller picks its own rate-limit bucket — or someone
+    // else's — just by setting a header.
+    expect(
+      clientIp(
+        req(
+          {
+            "cf-connecting-ip": "203.0.113.7",
+            "x-forwarded-for": "203.0.113.8",
+          },
+          "198.51.100.4",
+        ),
+      ),
+    ).toBe("198.51.100.4");
+  });
+
   it("falls back to the socket peer", () => {
     expect(clientIp(req({}, "198.51.100.4"))).toBe("198.51.100.4");
   });
 
   it("never returns an empty string", () => {
-    expect(clientIp(req({ "x-forwarded-for": "  " }))).toBe("unknown");
+    // A blank header falls through to the peer, which behind the proxy is the
+    // proxy itself — one shared bucket, but never an empty key.
+    expect(clientIp(req({ "x-forwarded-for": "  " }, "127.0.0.1"))).toBe(
+      "127.0.0.1",
+    );
+    expect(clientIp(req({ "cf-connecting-ip": " " }, "127.0.0.1"))).toBe(
+      "127.0.0.1",
+    );
     expect(clientIp(req({}))).toBe("unknown");
   });
 });

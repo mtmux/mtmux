@@ -74,10 +74,17 @@ export async function handleAccountRoute(
   const method = req.method ?? "GET";
 
   if (pathname === "/v1/me" && method === "GET") {
+    // Resolved here, not taken from `user.plan`. That field was captured in
+    // `authenticate()` before this handler ran, and a trial that starts during
+    // the request — or simply expires between the two — would make it a stale
+    // read reporting "free" while entitlements say "pro".
+    const resolved = await deps.entitlements.resolveFor(user.id);
     sendJson(res, 200, {
       userId: user.id,
       email: user.email,
-      plan: user.plan,
+      plan: resolved.plan,
+      planSource: resolved.source,
+      trial: resolved.trial,
     });
     return true;
   }
@@ -96,14 +103,28 @@ export async function handleAccountRoute(
       return true;
     }
 
-    const outcome = await deps.registry.register(user.id, body.data, () =>
-      deps.entitlements.checkServerLimit(user.id),
+    // Captured from the decision rather than re-queried afterwards: the trial
+    // starts *because of* this check, and a second read could not tell "we
+    // just started it" from "it was already running".
+    let trialStarted = false;
+    const outcome = await deps.registry.register(
+      user.id,
+      body.data,
+      async () => {
+        const decision = await deps.entitlements.checkServerLimit(user.id);
+        trialStarted = decision.trialStarted === true;
+        return decision;
+      },
     );
 
     if (outcome.kind === "limited") {
       // 402 rather than 403: this is not a permission the account can be
       // granted by an administrator, it is one that costs money. The CLI
       // treats it as a normal outcome and keeps serving without an account.
+      //
+      // With the trial in place this is now a genuinely rare answer — it means
+      // the account has already spent its trial — which is why the copy on the
+      // CLI side leads with the upgrade rather than with the refusal.
       sendJson(res, 402, {
         error: outcome.reason,
         upgradeUrl: deps.config.upgradeUrl,
@@ -115,9 +136,12 @@ export async function handleAccountRoute(
       return true;
     }
 
+    const resolved = await deps.entitlements.resolveFor(user.id);
     sendJson(res, outcome.created ? 201 : 200, {
       serverId: outcome.serverId,
-      plan: user.plan,
+      plan: resolved.plan,
+      planSource: resolved.source,
+      trial: { ...resolved.trial, justStarted: trialStarted },
     });
     return true;
   }
@@ -138,7 +162,11 @@ export async function handleAccountRoute(
 
   const server = matchPath("/v1/servers/:id", pathname);
   if (server && method === "PATCH") {
-    const rename = deps.entitlements.checkRename(user.plan);
+    // `user.plan` is the value `authenticate()` captured before this handler
+    // ran; resolving again is what lets a rename be the thing that starts the
+    // trial, and stops an expiry in between being missed.
+    const current = await deps.entitlements.resolveFor(user.id);
+    const rename = await deps.entitlements.checkRename(user.id, current.plan);
     if (!rename.allowed) {
       sendJson(res, 402, {
         error: rename.reason,
@@ -162,7 +190,10 @@ export async function handleAccountRoute(
       sendJson(res, 404, { error: "No such server." });
       return true;
     }
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, {
+      ok: true,
+      trialStarted: rename.trialStarted === true,
+    });
     return true;
   }
 

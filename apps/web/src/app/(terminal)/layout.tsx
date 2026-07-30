@@ -7,7 +7,11 @@ import { cn } from "@repo/ui/lib/utils";
 import { ThemeToggle } from "@repo/ui/components/theme-toggle";
 import { ConnectionStatus } from "@repo/ui/components/connection-status";
 import { useWebSocket, getRelayClient } from "@/hooks/use-websocket";
-import { useConnectionStore } from "@/stores/connection-store";
+import {
+  filesDisabled,
+  isReadOnly,
+  useConnectionStore,
+} from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useStableMediaQuery } from "@repo/ui/hooks/use-media-query";
 import { MobileNav } from "@/components/mobile/mobile-nav";
@@ -26,6 +30,10 @@ import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog"
 import { ErrorBoundary } from "@/components/error-boundary";
 import { AlertBanner } from "@/components/alert-banner";
 import { ConnectionBanner } from "@/components/connection-banner";
+import { CapabilityBanner } from "@/components/capability-banner";
+import { LockGate } from "@/components/lock/lock-gate";
+import { LockEnrollPrompt } from "@/components/lock/lock-enroll-prompt";
+import { registerDisconnect } from "@/lib/lock-controller";
 import { VisualViewportSync } from "@/components/visual-viewport-sync";
 import { SessionTabs } from "@/components/session/session-tabs";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
@@ -40,13 +48,34 @@ import {
 import { sealedTransport, type TransportFactory } from "@/lib/transport";
 import { env } from "@/env";
 import { Terminal } from "lucide-react";
-import { LAST_SESSION_KEY, TOKEN_KEY, readStored } from "@/lib/storage-keys";
+import {
+  LAST_SESSION_KEY,
+  readSelfHostedToken,
+  readStored,
+} from "@/lib/storage-keys";
 
+/**
+ * The gate is outside the layout body on purpose.
+ *
+ * While locked, `loadSessionKeys()` cannot decrypt and returns null — which the
+ * auth guard below reads, correctly, as "no session" and bounces to /login. Put
+ * the gate inside and a locked device would round-trip through the login page
+ * instead of showing the lock screen. Outside, the inner component's effects
+ * never run at all until the device is open.
+ */
 export default function TerminalLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  return (
+    <LockGate>
+      <TerminalLayoutInner>{children}</TerminalLayoutInner>
+    </LockGate>
+  );
+}
+
+function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   // Set only for a session paired through the broker that fell back to the
@@ -62,13 +91,14 @@ export default function TerminalLayout({
 
   // Auth guard. Two accepted credentials:
   //
-  //   1. localStorage["mtmux-token"] — the self-hosted path, unchanged.
+  //   1. The self-hosted token — from localStorage, or from memory once a
+  //      device lock has taken it out of localStorage.
   //   2. A session paired through the broker, whose keys live in IndexedDB
   //      rather than localStorage so an XSS cannot read them. The relay is
   //      authenticated with the direct-path token both sides derived, so no
   //      long-lived secret was ever sent to this device.
   useEffect(() => {
-    const storedToken = readStored(TOKEN_KEY);
+    const storedToken = readSelfHostedToken();
     if (storedToken) {
       setToken(storedToken);
       return;
@@ -108,6 +138,18 @@ export default function TerminalLayout({
     };
   }, [router]);
 
+  // What this credential may do, per `auth:success`. Null on the self-hosted
+  // and full-grant paths, which is what unrestricted looks like.
+  const capabilities = useConnectionStore((s) => s.capabilities);
+
+  // A share with files off must not leave the browser sitting on a Files tab
+  // that no longer has a nav entry — including the case where the tab was
+  // restored from a previous, unscoped connection to the same machine.
+  const noFiles = filesDisabled(capabilities);
+  useEffect(() => {
+    if (noFiles && mobileTab === "files") setMobileTab("terminal");
+  }, [noFiles, mobileTab, setMobileTab]);
+
   // Auto-restore last session
   useEffect(() => {
     const lastSession = readStored(LAST_SESSION_KEY);
@@ -135,7 +177,9 @@ export default function TerminalLayout({
           useUiStore.getState().toggleSidebar();
         } else if (e.key === "e") {
           e.preventDefault();
-          useUiStore.getState().setMobileTab("files");
+          if (!filesDisabled(useConnectionStore.getState().capabilities)) {
+            useUiStore.getState().setMobileTab("files");
+          }
         }
       }
     };
@@ -165,6 +209,14 @@ export default function TerminalLayout({
     }
   }, []);
 
+  // Hand the lock the one thing it cannot reach on its own. Locking has to
+  // drop the socket as well as the keys: an authenticated connection left open
+  // behind a lock screen is a live capability a lock-screen XSS could drive.
+  useEffect(() => {
+    registerDisconnect(() => getRelayClient()?.disconnect());
+    return () => registerDisconnect(null);
+  }, []);
+
   // Register service worker
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -174,11 +226,9 @@ export default function TerminalLayout({
     }
   }, []);
 
-  const { send } = useWebSocket(
-    token ? resolveRelayWsUrl() : "",
-    token ?? "",
-    transport,
-  );
+  // Called for its effect: this is where the socket is opened and registered.
+  // Children reach it through `getRelayClient()`, not through a return value.
+  useWebSocket(token ? resolveRelayWsUrl() : "", token ?? "", transport);
 
   if (!token) {
     return null; // Redirecting to login
@@ -234,13 +284,20 @@ export default function TerminalLayout({
       {/* Part of the header, not an overlay, so a degraded connection pushes the
           terminal down instead of covering its first row. */}
       <ConnectionBanner />
+      <CapabilityBanner />
     </>
   );
 
+  // Both of these exist only to send input, so a read-only share should not
+  // carry them — a send button that does nothing is worse than no button.
+  const canType = !isReadOnly(capabilities);
+
   const toolbar = isMobile ? (
     <div>
-      {mobileTab === "terminal" && activeSessionId && <MobileCommandBar />}
-      {mobileTab === "terminal" && (
+      {mobileTab === "terminal" && activeSessionId && canType && (
+        <MobileCommandBar />
+      )}
+      {mobileTab === "terminal" && canType && (
         <KeyboardToolbar
           onSearchOpen={() => useUiStore.getState().setTerminalSearchOpen(true)}
           onCopy={handleCopySelection}
@@ -258,6 +315,7 @@ export default function TerminalLayout({
       </ErrorBoundary>
       <CommandPalette />
       <KeyboardShortcutsDialog />
+      <LockEnrollPrompt />
       <SessionCreateDialog
         open={showCreateDialog}
         onOpenChange={setShowCreateDialog}

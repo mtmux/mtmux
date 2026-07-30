@@ -1,6 +1,8 @@
 import type { WebSocket } from "ws";
-import type { ServerMessage, TerminalSize } from "@repo/protocol";
+import type { GrantRecord, ServerMessage, TerminalSize } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
+import { FULL_GRANT } from "./grant.js";
+import { destroyClone } from "./tmux-clone.js";
 import { sendJson } from "./ws-server.js";
 import type { PtyBridge } from "./pty-bridge.js";
 import type { DirectoryWatcher, UploadState } from "./file-service.js";
@@ -13,6 +15,15 @@ export interface ConnectionState {
   id: string;
   ws: WebSocket;
   authenticated: boolean;
+  /**
+   * What this connection's credential may do.
+   *
+   * Defaults to `FULL_GRANT` so that a connection which has not authenticated
+   * yet is never *narrower* than the code that reads it expects — every read
+   * of this is gated behind `authenticated` anyway, and a null here would only
+   * add optional-chaining to the paths that must not be wrong.
+   */
+  grant: GrantRecord;
   pty: PtyBridge | null;
   watchers: Map<string, DirectoryWatcher>;
   uploads: UploadState;
@@ -25,6 +36,15 @@ export interface ConnectionState {
    * flicker. Compare against this before resizing.
    */
   lastSize: TerminalSize | null;
+  /**
+   * The grouped clone this connection is attached *through*, if any.
+   *
+   * `attachedSession` stays the name of the real session the grant names — it
+   * is what every scope and broadcast check compares against — while this is
+   * the throwaway tmux session the PTY is actually talking to. Tracked so
+   * teardown can destroy it; a clone outliving its connection is a leak.
+   */
+  cloneSession: string | null;
   activeWindowId: string | null;
   remoteAddress: string | null;
   lastActivityAt: number;
@@ -89,12 +109,14 @@ export function createConnection(
     id,
     ws,
     authenticated: false,
+    grant: FULL_GRANT,
     pty: null,
     watchers: new Map(),
     uploads: new Map(),
     rateLimiter,
     attachedSession: null,
     lastSize: null,
+    cloneSession: null,
     activeWindowId: null,
     remoteAddress,
     lastActivityAt: Date.now(),
@@ -130,6 +152,13 @@ export async function removeConnection(conn: ConnectionState): Promise<void> {
     conn.pty = null;
   }
 
+  // Destroy the viewing clone, if this connection had one. Must happen after
+  // the PTY is dead, or tmux would simply reattach the dying client.
+  if (conn.cloneSession) {
+    await destroyClone(conn.cloneSession);
+    conn.cloneSession = null;
+  }
+
   // Clean up file watchers — await close() so chokidar releases fs handles
   // before we consider the connection fully torn down.
   try {
@@ -163,13 +192,48 @@ export function getAllConnections(): ConnectionState[] {
   return Array.from(connections.values());
 }
 
-export function broadcastToAll(
-  msg: ServerMessage,
+/**
+ * Send each connection its *own* view of an event, or nothing.
+ *
+ * This replaces a blanket `broadcastToAll`, which fanned session names to
+ * every authenticated connection regardless of scope. That is the single most
+ * likely thing in this change to be got wrong, because it is invisible until
+ * two browsers with different scopes are connected at the same moment — the
+ * ordinary single-user case never shows it.
+ *
+ * The builder returns null to skip a connection entirely, which is what makes
+ * "A's session was killed" reach A and be indistinguishable from silence for
+ * B. Returning a *different* message per connection is what makes a filtered
+ * `session:list` broadcast possible at all.
+ */
+export function broadcastWhere(
+  build: (conn: ConnectionState) => ServerMessage | null,
   excludeWs?: WebSocket,
 ): void {
   for (const conn of connections.values()) {
     if (!conn.authenticated) continue;
     if (excludeWs && conn.ws === excludeWs) continue;
-    sendJson(conn.ws, msg);
+    let msg: ServerMessage | null;
+    try {
+      msg = build(conn);
+    } catch (err) {
+      // One connection's builder throwing must not silence the others.
+      logger.error({ err, connId: conn.id }, "Broadcast builder failed");
+      continue;
+    }
+    if (msg) sendJson(conn.ws, msg);
   }
+}
+
+/**
+ * Send the same message to everyone.
+ *
+ * Kept for the handful of events that carry no session-identifying payload.
+ * Anything naming a session must go through `broadcastWhere` instead.
+ */
+export function broadcastToAll(
+  msg: ServerMessage,
+  excludeWs?: WebSocket,
+): void {
+  broadcastWhere(() => msg, excludeWs);
 }

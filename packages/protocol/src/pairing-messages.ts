@@ -39,6 +39,18 @@ export const StreamIdSchema = z.string().min(1).max(64);
 /** A single sealed frame's maximum size on the wire (1 MiB of plaintext). */
 export const MAX_FRAME_BYTES = 1024 * 1024 + 1024;
 
+/**
+ * Live mailboxes the broker will keep on one slot, and therefore the most
+ * peers a claimant should ever be offered.
+ *
+ * Shared rather than private to the broker because it is the claimant that
+ * benefits from checking it. A broker fanning one claim out to many mailboxes
+ * multiplies an attacker's guesses per pairing, so a claimant seeing more
+ * answers than this is looking at a broker breaking its own contract and
+ * should stop — the check costs nothing and does not depend on trusting it.
+ */
+export const MAX_PEERS_PER_SLOT = 2;
+
 // ---------------------------------------------------------------------------
 // Either end → broker (over WS /v1/pair/:mailboxId or WS /v1/claim/:claimId)
 //
@@ -298,8 +310,16 @@ export const PairClaimRequest = z.object({
 export const ClaimIdSchema = z.string().min(8).max(64);
 
 export const PairClaimResponse = z.object({
-  /** How many live mailboxes the claim was offered to. Never which. */
-  offered: z.number().int().nonnegative(),
+  /**
+   * Whether anything was waiting on that slot. Deliberately not a count.
+   *
+   * This used to report how many live mailboxes the claim was fanned out to,
+   * which handed any unauthenticated caller an exact read on how many pairings
+   * were in flight on a slot — free enumeration, repeatable, no crypto needed.
+   * A claimant only ever needed to know whether to open a socket; how many
+   * peers there are it discovers by counting the ones that answer.
+   */
+  waiting: z.boolean(),
   /**
    * Handle for `WS /v1/claim/:claimId`, where the CLI collects the replies.
    *

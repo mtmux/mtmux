@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import kleur from "kleur";
 import openBrowser from "open";
 import * as configStore from "../config-store.js";
+import * as grantsStore from "../grants-store.js";
 import * as serverState from "../server-state.js";
 import { banner, renderBannerLines, type PairingInvite } from "../banner.js";
 import { primaryLanAddress, type LanAddress } from "../lan.js";
@@ -17,7 +18,11 @@ import {
   localRelayConnector,
   type TunnelAgent,
 } from "../tunnel-agent.js";
-import { hostPairing, type HostedPairing } from "../pairing-client.js";
+import {
+  hostPairing,
+  PairingError,
+  type HostedPairing,
+} from "../pairing-client.js";
 import {
   buildCandidates,
   deviceLabel,
@@ -25,6 +30,8 @@ import {
   sealDescriptor,
 } from "./pair.js";
 import * as account from "../account.js";
+import { resolveShareSessions, shareBanner } from "../share-grants.js";
+import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
 
 // The whole CLI is bundled into dist/bin.js, so this module's own directory IS
 // dist/ at runtime — not dist/commands/, which is where tsc used to put it.
@@ -47,6 +54,36 @@ const HEARTBEAT_MS = 30_000;
 
 /** Long enough for a slow link, short enough that nobody stares at a blank screen. */
 const TUNNEL_READY_TIMEOUT_MS = 15_000;
+
+/**
+ * Codes that may expire untouched before arming stops.
+ *
+ * Five is roughly fifteen minutes of an unwatched terminal — long enough to
+ * cover a coffee, short enough that a machine left running for a week is not
+ * quietly issuing thousands of independent guesses at a four-digit secret.
+ */
+const MAX_UNATTENDED_EXPIRIES = 5;
+
+/**
+ * Whether a failed pairing should mint another code, and the running tally.
+ *
+ * The old rule was "always re-arm", which meant the window in which a code
+ * could be guessed was not its three minutes but the whole life of the process:
+ * a machine left running overnight supplied unlimited independent draws at a
+ * 10^4 secret. The distinction that fixes it is whether anyone engaged with the
+ * code at all. A wrong code, a dropped socket, a refused handshake — all mean
+ * somebody is there, so the budget resets. Only silence counts against it.
+ */
+export function rearmDecision(
+  err: unknown,
+  consecutiveExpiries: number,
+  max: number = MAX_UNATTENDED_EXPIRIES,
+): { rearm: boolean; expiries: number } {
+  const expired = err instanceof PairingError && err.kind === "expired";
+  if (!expired) return { rearm: true, expiries: 0 };
+  const expiries = consecutiveExpiries + 1;
+  return { rearm: expiries < max, expiries };
+}
 
 function cliVersion(): string {
   try {
@@ -73,6 +110,16 @@ export type StartOpts = {
   name?: string;
   api?: string;
   json: boolean;
+  /**
+   * Scope the printed code to these tmux sessions.
+   *
+   * `mtmux start --share work` is "serve this machine for me, and hand out a
+   * code that only reaches `work`". Without it the code means the whole
+   * machine, which is what it has always meant.
+   */
+  share?: string;
+  shareReadOnly?: boolean;
+  shareFiles?: GrantFiles;
 };
 
 /**
@@ -137,6 +184,8 @@ export function joinUrl(appOrigin: string, code: string): string {
 type Hosted = {
   agent: TunnelAgent;
   invite: PairingInvite;
+  /** Mint a code on demand, after arming has gone idle. */
+  rearm: () => Promise<PairingInvite>;
   stop: () => void;
 };
 
@@ -153,8 +202,21 @@ async function startHosted(opts: {
   base: string;
   cfg: configStore.Config;
   tunnelOnly: boolean;
+  /**
+   * Scope every code this loop arms, for `mtmux start --share`.
+   *
+   * A function rather than a value because a fresh grant id is minted per
+   * pairing — two people who scan the same-shaped share still get separately
+   * revocable credentials, which is the whole point of `share revoke`.
+   */
+  buildGrant?: (directToken: string) => GrantRecord;
   onPaired: (label: string) => void;
   onRearm: (invite: PairingInvite) => void;
+  /**
+   * Every code has expired untouched and no more will be minted until the user
+   * asks. Undefined means the caller does not care and arming simply stops.
+   */
+  onIdle?: () => void;
 }): Promise<Hosted> {
   const { key } = await configStore.ensureDeviceKey();
 
@@ -171,7 +233,7 @@ async function startHosted(opts: {
     apiBase: opts.base,
     deviceKey: key,
     connectBroker: brokerConnector(),
-    connectLocal: localRelayConnector(opts.port, opts.cfg.token),
+    connectLocal: localRelayConnector(opts.port),
     onTunnelReady: announce,
   });
   agent.start();
@@ -193,6 +255,18 @@ async function startHosted(opts: {
 
   const appOrigin = appOriginFor(opts.base);
 
+  /**
+   * Consecutive codes that expired with nobody ever touching them.
+   *
+   * Re-arming on every failure — including a plain timeout — meant the exposure
+   * window was not the code's three minutes but the process's whole lifetime: a
+   * machine left running overnight handed an attacker an unlimited supply of
+   * independent draws at a 10^4 secret. Counting un-scanned expiries separates
+   * the two cases that matter. Someone watching the terminal pairs, or gets it
+   * wrong, and the counter resets; an abandoned one runs out and stops.
+   */
+  let unattendedExpiries = 0;
+
   // One armed code at a time, re-minted after each successful pairing: a code
   // is single-use, and leaving a spent one on screen is worse than no code.
   const arm = async (): Promise<PairingInvite> => {
@@ -210,12 +284,30 @@ async function startHosted(opts: {
 
     void pairing.paired
       .then(async (result) => {
-        agent.addSessionKeys(result.keys);
-        await registerDirectToken(
+        // Registration BEFORE the agent will admit the keys, and this order is
+        // load-bearing now that the tunnel agent no longer injects the
+        // machine's own token. Admitting the keys first opens a window in
+        // which the browser can win the race, send its `auth` frame down the
+        // tunnel, and be refused because the relay has never been told about
+        // that token. A failure here must therefore *not* admit the keys.
+        const grant = opts.buildGrant?.(result.keys.directToken);
+        const registered = await registerDirectToken(
           opts.port,
           opts.cfg.token,
           result.keys.directToken,
+          grant,
         );
+        // A scoped pairing that could not be registered must not be admitted:
+        // the alternative is a browser that authenticates against a relay
+        // which has never heard of its token, and so falls through to nothing.
+        if (grant && !registered) {
+          console.log(
+            kleur.red("  ✗ Could not register the share. Nothing was shared."),
+          );
+          return;
+        }
+        agent.addSessionKeys(result.keys);
+        if (grant) await grantsStore.add(grant);
         await configStore.addPeer({
           deviceId: result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,
           publicKey: result.peerPublicKey ?? "",
@@ -225,9 +317,17 @@ async function startHosted(opts: {
           directToken: result.keys.directToken,
         });
         opts.onPaired(result.peerLabel);
+        unattendedExpiries = 0;
         opts.onRearm(await arm());
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        const decision = rearmDecision(err, unattendedExpiries);
+        unattendedExpiries = decision.expiries;
+        if (!decision.rearm) {
+          opts.onIdle?.();
+          return;
+        }
+
         // A failed handshake burns the code by design. Offer a fresh one
         // rather than leaving the server unreachable to the next device.
         void arm()
@@ -243,7 +343,16 @@ async function startHosted(opts: {
   };
 
   const invite = await arm();
-  return { agent, invite, stop: () => agent.stop() };
+  return {
+    agent,
+    invite,
+    /** Mint a code on demand, after arming has gone idle. */
+    rearm: async () => {
+      unattendedExpiries = 0;
+      return arm();
+    },
+    stop: () => agent.stop(),
+  };
 }
 
 /**
@@ -260,16 +369,26 @@ async function startHosted(opts: {
 async function restoreTrustedDevices(
   port: number,
   authToken: string,
-): Promise<number> {
+): Promise<{ restored: number; needRepair: number }> {
   const peers = await configStore.listPeers();
   let restored = 0;
+  let needRepair = 0;
   for (const peer of peers) {
-    if (!peer.directToken || configStore.isPeerExpired(peer)) continue;
+    if (configStore.isPeerExpired(peer)) continue;
+    if (!peer.directToken) {
+      // Paired before `directToken` was stored. These used to work over the
+      // tunnel *only* because the agent injected the machine's own token on
+      // the loopback socket — which is the hole that scoping closes, so they
+      // genuinely have no credential now. One-time, and re-pairing is six
+      // digits, but it must be said out loud rather than failing silently.
+      needRepair += 1;
+      continue;
+    }
     if (await registerDirectToken(port, authToken, peer.directToken)) {
       restored += 1;
     }
   }
-  return restored;
+  return { restored, needRepair };
 }
 
 /**
@@ -313,6 +432,15 @@ async function registerWithAccount(
         console.log(kleur.dim(`    ${result.upgradeUrl}`));
       }
       return null;
+    }
+    if (result.trialStarted) {
+      // The most important line of copy in this feature. What someone hits
+      // here used to be a 402 telling them to get out a card; it is now this.
+      console.log(
+        kleur.green(
+          `  ✓ Started your ${result.trialDaysLeft}-day Pro trial — no card needed.`,
+        ),
+      );
     }
     await configStore.setAccount({ ...signedIn, serverId: result.serverId });
     return startHeartbeat(base, signedIn.token, result.serverId);
@@ -369,7 +497,10 @@ export async function start(opts: StartOpts) {
   const localUrl = `http://localhost:${opts.port}`;
   const lanUrl = resolveLanUrl(host, opts.port, lan);
 
-  const restored = await restoreTrustedDevices(opts.port, cfg.token);
+  const { restored, needRepair } = await restoreTrustedDevices(
+    opts.port,
+    cfg.token,
+  );
 
   // Tokenless LAN sign-in only makes sense for a *different* device, so the
   // nonce is armed exactly when there is an address such a device could reach.
@@ -410,9 +541,83 @@ export async function start(opts: StartOpts) {
     }
   };
 
+  // Resolved once, before any code is armed, so a typo in --share is a clean
+  // refusal rather than a code that turns out to grant nothing.
+  let shareSessions: GrantSession[] | null = null;
+  if (opts.share) {
+    try {
+      shareSessions = await resolveShareSessions(
+        opts.port,
+        cfg.token,
+        opts.share,
+      );
+    } catch (err) {
+      console.error(kleur.red(`  ✗ ${(err as Error).message}`));
+      await stopServing();
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const buildGrant = shareSessions
+    ? (directToken: string): GrantRecord => ({
+        id: grantsStore.newGrantId(),
+        label: `start --share ${opts.share ?? ""}`.trim(),
+        scope: { kind: "sessions", sessions: shareSessions },
+        readOnly: opts.shareReadOnly === true,
+        files: opts.shareFiles ?? "none",
+        createdAt: Date.now(),
+        expiresAt: null,
+        revokedAt: null,
+        tmuxServerPid: null,
+        tokenHash: grantsStore.hashToken(directToken),
+      })
+    : undefined;
+
+  if (shareSessions && !opts.json) {
+    for (const line of shareBanner({
+      id: "grn_preview",
+      label: "",
+      scope: { kind: "sessions", sessions: shareSessions },
+      readOnly: opts.shareReadOnly === true,
+      files: opts.shareFiles ?? "none",
+      createdAt: Date.now(),
+      expiresAt: null,
+      revokedAt: null,
+      tmuxServerPid: null,
+      tokenHash: "0".repeat(64),
+    })) {
+      console.log(line);
+    }
+  }
+
+  /**
+   * Wait for a keypress, then mint one more code.
+   *
+   * Only ever armed after `onIdle`, so the common path never touches stdin. A
+   * non-interactive process — a service unit, a CI run — has nobody to press
+   * anything, so it simply stops arming, which is the safe direction: the whole
+   * point is that an unwatched terminal stops issuing draws at the secret.
+   */
+  const waitForRearm = () => {
+    if (!process.stdin.isTTY) return;
+    process.stdin.resume();
+    process.stdin.once("data", () => {
+      process.stdin.pause();
+      void hosted
+        ?.rearm()
+        .then((invite) => {
+          reprint(invite);
+          void serverState.write(record(invite.url)).catch(() => {});
+        })
+        .catch(() => {});
+    });
+  };
+
   if (!opts.local) {
     try {
       hosted = await startHosted({
+        buildGrant,
         port: opts.port,
         base,
         cfg,
@@ -426,6 +631,15 @@ export async function start(opts: StartOpts) {
           );
           reprint(invite);
           void serverState.write(record(invite.url)).catch(() => {});
+        },
+        onIdle: () => {
+          console.log(
+            kleur.dim(
+              "    No one used the last few codes, so I've stopped making them.",
+            ),
+          );
+          console.log(kleur.dim("    Press enter for a new code."));
+          waitForRearm();
         },
       });
     } catch (err) {
@@ -479,6 +693,20 @@ export async function start(opts: StartOpts) {
         `  ${restored} device${restored === 1 ? "" : "s"} already trusted — ` +
           `${restored === 1 ? "it does" : "they do"} not need the code.`,
       ),
+    );
+    console.log("");
+  }
+
+  if (needRepair > 0 && !opts.json) {
+    // Said plainly rather than left to fail as a mysterious auth error the
+    // next time someone opens the tab on that device.
+    console.log(
+      kleur.yellow(
+        `  ${needRepair} device${needRepair === 1 ? "" : "s"} need${needRepair === 1 ? "s" : ""} to pair again (one-time).`,
+      ),
+    );
+    console.log(
+      kleur.dim("    They were paired before mtmux stored a per-device token."),
     );
     console.log("");
   }

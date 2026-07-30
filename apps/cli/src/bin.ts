@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { start, type StartOpts } from "./commands/start.js";
 import { pair } from "./commands/pair.js";
+import { share, shareList, shareRevoke } from "./commands/share.js";
+import { parseFiles } from "./share-grants.js";
 import { tokenPrint, tokenRotate, tokenSet } from "./commands/token.js";
 import { version } from "./commands/version.js";
 import { doctor } from "./commands/doctor.js";
@@ -35,6 +37,9 @@ type StartFlags = {
   name?: string;
   api?: string;
   json?: boolean;
+  share?: string;
+  readOnly?: boolean;
+  files?: string;
 };
 
 const toStartOpts = (opts: StartFlags, local: boolean): StartOpts => ({
@@ -48,6 +53,9 @@ const toStartOpts = (opts: StartFlags, local: boolean): StartOpts => ({
   name: opts.name,
   api: opts.api,
   json: opts.json === true,
+  share: opts.share,
+  shareReadOnly: opts.readOnly === true,
+  shareFiles: parseFiles(opts.files) ?? "none",
 });
 
 /**
@@ -77,6 +85,12 @@ program
   .option("--no-open", "don't open the browser on this machine")
   .option("--api <url>", "pairing service base URL")
   .option("--json", "print a machine-readable startup record")
+  .option(
+    "--share <sessions>",
+    "scope the printed code to these tmux sessions (comma-separated)",
+  )
+  .option("--read-only", "with --share: they can watch, and cannot type")
+  .option("--files <level>", "with --share: none | ro | rw (default: none)")
   .action((opts: StartFlags) => start(toStartOpts(opts, false)));
 
 program
@@ -117,6 +131,94 @@ program
         api: opts.api,
         tunnelOnly: opts.tunnelOnly,
       }),
+  );
+
+/**
+ * `mtmux share` — one session, one code, not the whole machine.
+ *
+ * Defaults to read-write, which is what people mean when they say "share my
+ * terminal" and is *not* a security boundary. The banner printed before the
+ * code says so in as many words; see `shareBanner`. `--read-only` is the mode
+ * that is a boundary.
+ */
+const shareCmd = program
+  .command("share")
+  .description(
+    "Share one tmux session with someone, without sharing the machine",
+  );
+
+shareCmd
+  .command("list", { isDefault: false })
+  .description("Show every share created on this machine")
+  .action(() => shareList());
+
+shareCmd
+  .command("revoke")
+  .argument("<grantId>", "the grn_… id from `mtmux share list`")
+  .description("End a share immediately")
+  .option(
+    "-p, --port <number>",
+    "port mtmux is serving on",
+    (v) => parseInt(v, 10),
+    14100,
+  )
+  .action((grantId: string, opts: { port: number }) =>
+    shareRevoke(grantId, opts.port),
+  );
+
+shareCmd
+  .argument(
+    "[session]",
+    "the tmux session to share (comma-separate for several)",
+  )
+  .option(
+    "-p, --port <number>",
+    "port mtmux is serving on",
+    (v) => parseInt(v, 10),
+    14100,
+  )
+  .option("--api <url>", "pairing service base URL")
+  .option("--read-only", "they can watch, and cannot type — a real boundary")
+  .option("--files <level>", "none | ro | rw (default: none)", "none")
+  .option("--expires <duration>", "24h, 7d, or never", "7d")
+  .option("--label <text>", "what to call this share in `mtmux share list`")
+  .option("--no-qr", "print only the code, without the QR")
+  .action(
+    (
+      session: string | undefined,
+      opts: {
+        port: number;
+        api?: string;
+        readOnly?: boolean;
+        files: string;
+        expires: string;
+        label?: string;
+        qr: boolean;
+      },
+    ) => {
+      if (!session) {
+        shareCmd.help();
+        return;
+      }
+      const files = parseFiles(opts.files);
+      if (!files) {
+        console.error(
+          `Could not read --files "${opts.files}". Try none, ro, or rw.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      return share({
+        session,
+        port: opts.port,
+        api: opts.api,
+        readOnly: opts.readOnly === true,
+        files,
+        expires: opts.expires,
+        label: opts.label,
+        qr: opts.qr,
+      });
+    },
   );
 
 program

@@ -10,6 +10,9 @@ import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 import { SessionCard } from "./session-card";
 import { LAST_SESSION_KEY, writeStored } from "@/lib/storage-keys";
+import { RequireUnlockDialog } from "@/components/lock/require-unlock-dialog";
+import { isSessionLocked } from "@/lib/lock-store";
+import { getActiveServerId } from "@/lib/relay-registry";
 
 interface SessionListProps {
   onCreateClick: () => void;
@@ -35,7 +38,10 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
     getRelayClient()?.send({ type: "session:list" });
   }, []);
 
-  const handleAttach = useCallback(
+  /** Set while a session marked "require unlock" waits on its PIN. */
+  const [challenge, setChallenge] = useState<string | null>(null);
+
+  const attachNow = useCallback(
     (name: string) => {
       setActiveSession(name);
       if (typeof window !== "undefined") {
@@ -44,6 +50,21 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
       useUiStore.getState().setMobileTab("terminal");
     },
     [setActiveSession],
+  );
+
+  const handleAttach = useCallback(
+    (name: string) => {
+      // The same re-prompt the dashboard applies. Gating in both places is the
+      // point: a session marked here should not open just because you came at
+      // it from the sidebar instead.
+      const serverId = getActiveServerId();
+      if (serverId && isSessionLocked(serverId, name)) {
+        setChallenge(name);
+        return;
+      }
+      attachNow(name);
+    },
+    [attachNow],
   );
 
   const handleKill = useCallback((name: string) => {
@@ -160,6 +181,19 @@ export function SessionList({ onCreateClick, className }: SessionListProps) {
           )}
         </div>
       </ScrollArea>
+
+      <RequireUnlockDialog
+        open={challenge !== null}
+        onOpenChange={(open) => {
+          if (!open) setChallenge(null);
+        }}
+        sessionName={challenge ?? ""}
+        onUnlocked={() => {
+          const pending = challenge;
+          setChallenge(null);
+          if (pending) attachNow(pending);
+        }}
+      />
     </div>
   );
 }

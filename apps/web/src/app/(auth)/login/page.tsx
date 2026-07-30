@@ -20,8 +20,8 @@ import { redeemLocalPairingNonce } from "@/lib/local-pairing";
 import { hydrateDescriptor } from "@/lib/session-store";
 import {
   TOKEN_KEY,
+  readSelfHostedToken,
   clearStored,
-  readStored,
   writeStored,
 } from "@/lib/storage-keys";
 
@@ -120,7 +120,7 @@ export default function LoginPage() {
       // IndexedDB and outlive the tab. The terminal reads the descriptor
       // synchronously and sent us here because its sessionStorage mirror was
       // empty, so refilling it is the whole of "restore my session".
-      if (readStored(TOKEN_KEY)) return;
+      if (readSelfHostedToken()) return;
       setIsLoading(true);
       void hydrateDescriptor().then((session) => {
         setIsLoading(false);

@@ -1,5 +1,7 @@
 import type { SealedDescriptor } from "@repo/protocol";
-import type { SessionKeys } from "@repo/crypto";
+import type { SealedRecord, SessionKeys } from "@repo/crypto";
+import { openJson, recordAad, sealJson } from "@repo/crypto";
+import { cacheKeys, cachedKeys, isEnrolled, masterKey } from "./unlocked";
 
 /**
  * Where a paired session lives in the browser.
@@ -35,10 +37,23 @@ import type { SessionKeys } from "@repo/crypto";
  */
 
 const DB_NAME = "mtmux";
-/** v2 adds the descriptor store; v1 databases are upgraded in place. */
-const DB_VERSION = 2;
-const KEY_STORE = "session-keys";
+/**
+ * v2 added the descriptor store; v3 adds `lock` and `census`.
+ *
+ * Every upgrade here is store creation only. **No version of this may move
+ * data**: an upgrade that rewrites every record can half-fail — another tab
+ * blocking the upgrade, a phone killed mid-transaction — and the half-written
+ * state is a device that can no longer reach its own keys. The lock's sealed
+ * records are therefore a structurally-discriminated union read at access
+ * time, not a migration.
+ */
+const DB_VERSION = 3;
+export const KEY_STORE = "session-keys";
 const DESCRIPTOR_STORE = "descriptors";
+/** Wrapped master key and factor records for the device lock. See lock-store.ts. */
+export const LOCK_STORE = "lock";
+/** Cached per-server session lists for the dashboard. See session-census.ts. */
+export const CENSUS_STORE = "census";
 const DESCRIPTOR_KEY = "mtmux:session-descriptor";
 
 export type PairedSession = {
@@ -67,18 +82,44 @@ export type StoredKeys = {
   s2c: Uint8Array;
   confirm: Uint8Array;
   directToken: string;
+  /** Sessions the user asked to be re-prompted for. Only ever seen sealed. */
+  sessionLocks?: Record<string, true>;
 };
 
-function openDb(): Promise<IDBDatabase> {
+/**
+ * What is actually in the `session-keys` store: a plaintext record, or a sealed
+ * one once a device lock is enrolled.
+ *
+ * **Structurally discriminated, deliberately not migrated.** A version bump
+ * that had to rewrite every record could half-fail — a second tab blocking the
+ * upgrade, a phone killed mid-transaction — and a half-rewritten key store is a
+ * device that can no longer reach its own keys. Reading the shape at access
+ * time cannot half-fail. Existing plaintext records therefore read exactly as
+ * they did before this feature existed.
+ */
+export type KeyRecord = StoredKeys | SealedRecord;
+
+export function isSealed(record: unknown): record is SealedRecord {
+  return (
+    typeof record === "object" &&
+    record !== null &&
+    (record as { v?: unknown }).v === 1 &&
+    "ct" in record
+  );
+}
+
+export function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(KEY_STORE)) {
-        db.createObjectStore(KEY_STORE);
-      }
-      if (!db.objectStoreNames.contains(DESCRIPTOR_STORE)) {
-        db.createObjectStore(DESCRIPTOR_STORE);
+      for (const name of [
+        KEY_STORE,
+        DESCRIPTOR_STORE,
+        LOCK_STORE,
+        CENSUS_STORE,
+      ]) {
+        if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -86,7 +127,41 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-function tx<T>(
+/**
+ * One transaction spanning several stores, resolving when it *commits*.
+ *
+ * The single-store `tx` below resolves on the request, which is a different
+ * moment — enrolling the lock has to seal every key record and write the lock
+ * record atomically, and "the last put succeeded" is not the same promise as
+ * "the transaction committed". IndexedDB transactions really are atomic, so
+ * waiting for `oncomplete` is what makes a half-sealed, unopenable device
+ * impossible rather than merely unlikely.
+ */
+export function txMulti(
+  db: IDBDatabase,
+  storeNames: string[],
+  mode: IDBTransactionMode,
+  run: (stores: Record<string, IDBObjectStore>) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeNames, mode);
+    const stores: Record<string, IDBObjectStore> = {};
+    for (const name of storeNames) stores[name] = transaction.objectStore(name);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error("indexedDB"));
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error("indexedDB: aborted"));
+    try {
+      run(stores);
+    } catch (err) {
+      transaction.abort();
+      reject(err);
+    }
+  });
+}
+
+export function tx<T>(
   db: IDBDatabase,
   storeName: string,
   mode: IDBTransactionMode,
@@ -99,31 +174,97 @@ function tx<T>(
   });
 }
 
+/** The AAD slot every session-keys record is sealed under. */
+export function keysAad(serverId: string): string {
+  return recordAad("session-keys", serverId);
+}
+
+/**
+ * What actually goes inside a sealed record.
+ *
+ * Number arrays, not `Uint8Array`. `sealJson` goes through `JSON.stringify`,
+ * and a typed array stringifies to `{"0":1,"1":2,…}` — an object with no
+ * `length`, which `new Uint8Array(…)` silently turns into an empty array rather
+ * than failing. That would seal the keys and hand back zeroes on the way out.
+ * The plaintext (unsealed) shape keeps `Uint8Array`, because IndexedDB stores
+ * typed arrays structurally and there is no JSON step to lose them.
+ */
+type SealedKeys = {
+  c2s: number[];
+  s2c: number[];
+  confirm: number[];
+  directToken: string;
+  sessionLocks?: Record<string, true>;
+};
+
+export function toSealedKeys(keys: StoredKeys): SealedKeys {
+  return {
+    c2s: Array.from(keys.c2s),
+    s2c: Array.from(keys.s2c),
+    confirm: Array.from(keys.confirm),
+    directToken: keys.directToken,
+    ...(keys.sessionLocks ? { sessionLocks: keys.sessionLocks } : {}),
+  };
+}
+
+export function fromSealedKeys(sealed: SealedKeys): StoredKeys {
+  return {
+    c2s: Uint8Array.from(sealed.c2s),
+    s2c: Uint8Array.from(sealed.s2c),
+    confirm: Uint8Array.from(sealed.confirm),
+    directToken: sealed.directToken,
+    ...(sealed.sessionLocks ? { sessionLocks: sealed.sessionLocks } : {}),
+  };
+}
+
+/**
+ * Seal a record if — and only if — this device is both enrolled and unlocked.
+ *
+ * The awkward third case is enrolled-but-locked, which cannot happen here:
+ * writing keys means a pairing just completed, and pairing is only reachable
+ * from an unlocked app.
+ */
+function sealKeysIfUnlocked(serverId: string, plain: StoredKeys): KeyRecord {
+  const mk = isEnrolled() ? masterKey() : null;
+  if (!mk) return plain;
+  return sealJson(mk, toSealedKeys(plain), keysAad(serverId));
+}
+
 export async function saveSessionKeys(
   serverId: string,
   keys: SessionKeys,
 ): Promise<void> {
   const db = await openDb();
-  await tx(db, KEY_STORE, "readwrite", (store) =>
-    store.put(
-      {
-        c2s: keys.c2s,
-        s2c: keys.s2c,
-        confirm: keys.confirm,
-        directToken: keys.directToken,
-      },
-      serverId,
-    ),
-  );
+  const plain: StoredKeys = {
+    c2s: keys.c2s,
+    s2c: keys.s2c,
+    confirm: keys.confirm,
+    directToken: keys.directToken,
+  };
+  // Written sealed when a lock is enrolled and open, so pairing a second
+  // machine after enrolling does not quietly leave one record in the clear.
+  const record = sealKeysIfUnlocked(serverId, plain);
+  await tx(db, KEY_STORE, "readwrite", (store) => store.put(record, serverId));
   db.close();
+  if (isSealed(record)) cacheKeys(serverId, plain);
 }
 
+/**
+ * Read a paired machine's keys.
+ *
+ * Returns null when the record is sealed and the device is locked — which the
+ * callers already handle, because it is indistinguishable from "this browser
+ * has never paired with that machine". The lock screen is rendered by
+ * `LockGate` on the enrolled-but-locked state, not by anything here.
+ */
 export async function loadSessionKeys(
   serverId: string,
 ): Promise<SessionKeys | null> {
+  const cached = cachedKeys(serverId);
+  if (cached) return cached;
   try {
     const db = await openDb();
-    const stored = await tx<StoredKeys | undefined>(
+    const stored = await tx<KeyRecord | undefined>(
       db,
       KEY_STORE,
       "readonly",
@@ -131,6 +272,22 @@ export async function loadSessionKeys(
     );
     db.close();
     if (!stored) return null;
+
+    if (isSealed(stored)) {
+      const mk = masterKey();
+      if (!mk) return null;
+      const opened = fromSealedKeys(
+        openJson<SealedKeys>(mk, stored, keysAad(serverId)),
+      );
+      cacheKeys(serverId, opened);
+      return {
+        c2s: opened.c2s,
+        s2c: opened.s2c,
+        confirm: opened.confirm,
+        directToken: opened.directToken,
+      };
+    }
+
     return {
       c2s: new Uint8Array(stored.c2s),
       s2c: new Uint8Array(stored.s2c),
@@ -138,7 +295,8 @@ export async function loadSessionKeys(
       directToken: stored.directToken,
     };
   } catch {
-    // A private-mode browser with IndexedDB blocked simply has no session.
+    // A private-mode browser with IndexedDB blocked simply has no session; a
+    // tag failure here means a tampered record, which is equally "no session".
     return null;
   }
 }
@@ -158,7 +316,7 @@ export async function clearSessionKeys(serverId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** What actually survives a reload — see the note at the top of this file. */
-type StoredDescriptor = Omit<PairedSession, "directToken">;
+export type StoredDescriptor = Omit<PairedSession, "directToken">;
 
 function writeMirror(session: PairedSession): void {
   if (typeof window === "undefined") return;
@@ -316,6 +474,47 @@ export async function activateDescriptor(
     const session: PairedSession = { ...stored, directToken: keys.directToken };
     writeMirror(session);
     return session;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drop the tab's mirror without touching the durable record.
+ *
+ * What locking does: the descriptor stays on disk so the dashboard can still
+ * render "Locked — unlock to connect" rather than an empty list, but nothing in
+ * this tab can resolve a relay URL until the mirror is refilled.
+ * `resolveRelayWsUrl()` already falls through to `""` and `useWebSocket`
+ * early-returns on that, so no new code is needed downstream.
+ */
+export function clearDescriptorMirror(): void {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(DESCRIPTOR_KEY);
+}
+
+/**
+ * Read one machine's stored route without making it the active session.
+ *
+ * `activateDescriptor` writes the sessionStorage mirror, so using it merely to
+ * *look up* a machine's candidate URLs would silently repoint the terminal at
+ * whichever machine the dashboard happened to probe last. The census needs the
+ * read and not the switch, so it gets its own function.
+ */
+export async function loadDescriptorFor(
+  serverId: string,
+): Promise<StoredDescriptor | null> {
+  if (typeof indexedDB === "undefined") return null;
+  try {
+    const db = await openDb();
+    const stored = await tx<StoredDescriptor | undefined>(
+      db,
+      DESCRIPTOR_STORE,
+      "readonly",
+      (store) => store.get(serverId),
+    );
+    db.close();
+    return stored?.descriptor ? stored : null;
   } catch {
     return null;
   }

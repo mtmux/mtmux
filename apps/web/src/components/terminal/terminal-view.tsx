@@ -22,7 +22,7 @@ import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useAlertStore } from "@/stores/alert-store";
-import { useConnectionStore } from "@/stores/connection-store";
+import { isReadOnly, useConnectionStore } from "@/stores/connection-store";
 import { getRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
 import {
   IDLE,
@@ -105,9 +105,20 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
     // the toggle takes effect on the next mount/reload.
     const gpuRendering = useTerminalStore((s) => s.gpuRendering);
     const status = useConnectionStore((s) => s.status);
+    const readOnly = isReadOnly(useConnectionStore((s) => s.capabilities));
     // Mirrors the attach machine for rendering only: until the ack lands the
     // terminal is a blank black rectangle, for up to ATTACH_TIMEOUT_MS.
     const [attaching, setAttaching] = useState(false);
+
+    // Capabilities land with `auth:success`, after the init effect below has
+    // already built the terminal — so this is its own effect rather than a
+    // constructor option. It hides the cursor and stops mobile raising the
+    // keyboard; the `onData` guard is what actually enforces it.
+    useEffect(() => {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      terminal.options.disableStdin = readOnly;
+    }, [readOnly, status]);
 
     useImperativeHandle(ref, () => ({
       search: (term: string) => {
@@ -333,8 +344,14 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         retryFit();
       }
 
-      // Wire terminal input to WebSocket
+      // Wire terminal input to WebSocket.
+      //
+      // The read-only check is here rather than only in `disableStdin` because
+      // this effect runs once on mount, before `auth:success` has said what the
+      // credential may do. Reading the store at send time is the version that
+      // cannot be stale.
       const dataDisposable = terminal.onData((data) => {
+        if (isReadOnly(useConnectionStore.getState().capabilities)) return;
         getRelayClient()?.send({ type: "terminal:input", data });
       });
 

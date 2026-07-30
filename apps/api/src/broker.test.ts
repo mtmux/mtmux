@@ -15,6 +15,11 @@ import {
 } from "@repo/crypto";
 import type { PairingServerMessage, TunnelServerMessage } from "@repo/protocol";
 import { createBroker, type Socket } from "./broker.js";
+import {
+  createMailboxStore,
+  MAX_MAILBOXES_PER_SLOT,
+  OFFER_TTL_MS,
+} from "./mailbox.js";
 import { createRateLimiter } from "./rate-limit.js";
 
 /** A socket that records everything the broker sends it. */
@@ -45,6 +50,38 @@ function fakeSocket() {
 }
 
 const IP = "203.0.113.9";
+
+/**
+ * A broker whose store and clock the test drives directly.
+ *
+ * Slots are drawn at random, so reaching a chosen one through `pairNew` means
+ * hundreds of calls and a flaky test. Placing mailboxes through the store says
+ * exactly what the scenario is instead.
+ */
+function harness() {
+  const clock = { t: Date.now() };
+  const store = createMailboxStore();
+  const broker = createBroker({ store, now: () => clock.t });
+  return {
+    broker,
+    store,
+    advance: (ms: number) => {
+      clock.t += ms;
+    },
+    /** Park `count` mailboxes on one slot, each with its socket attached. */
+    openSlot(slot: string, count: number) {
+      const sockets: ReturnType<typeof fakeSocket>[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const mailbox = store.createMailbox(slot, clock.t);
+        expect(mailbox).not.toBeNull();
+        const s = fakeSocket();
+        broker.attachMailboxSocket(mailbox!.id, s.socket);
+        sockets.push(s);
+      }
+      return sockets;
+    },
+  };
+}
 
 describe("POST /v1/pair/new", () => {
   it("opens a mailbox with a two-digit slot and a future expiry", () => {
@@ -89,66 +126,161 @@ describe("POST /v1/pair/claim", () => {
     expect(broker.pairClaim(IP, undefined).status).toBe(400);
   });
 
-  it("reports zero offers when no mailbox holds the slot", () => {
+  it("says nothing is waiting when no mailbox holds the slot", () => {
     const broker = createBroker();
     const res = broker.pairClaim(IP, claimBody("49"));
     expect(res.status).toBe(200);
-    expect((res.body as { offered: number }).offered).toBe(0);
+    expect((res.body as { waiting: boolean }).waiting).toBe(false);
   });
 
-  it("fans a claim out to every live mailbox sharing the slot", () => {
-    const broker = createBroker();
-    const first = broker.pairNew(IP).body as {
-      slot: string;
-      mailboxId: string;
-    };
-    const slot = first.slot;
-
-    // Keep opening mailboxes until three share that slot. Slots collide on
-    // purpose — that is the whole point of fan-out.
-    const sockets: ReturnType<typeof fakeSocket>[] = [];
-    const ids: string[] = [first.mailboxId];
-    let guard = 0;
-    while (ids.length < 3 && guard++ < 5000) {
-      const body = broker.pairNew(`10.0.0.${guard % 250}`).body as {
-        slot: string;
-        mailboxId: string;
-      };
-      if (body.slot === slot) ids.push(body.mailboxId);
-    }
-    expect(ids.length).toBe(3);
-
-    for (const id of ids) {
-      const s = fakeSocket();
-      broker.attachMailboxSocket(id, s.socket);
-      sockets.push(s);
-    }
-
-    const res = broker.pairClaim(IP, claimBody(slot));
-    expect((res.body as { offered: number }).offered).toBe(3);
-    for (const s of sockets) {
-      expect(s.ofType("pair:peer-share")).toHaveLength(1);
-    }
-  });
-
-  it("never offers the same mailbox twice", () => {
+  it("reports only whether anything waits, never how many", () => {
+    // A live count on a slot is a free enumeration oracle for anyone who can
+    // POST, so the response is deliberately a boolean.
     const broker = createBroker();
     const { slot, mailboxId } = broker.pairNew(IP).body as {
       slot: string;
       mailboxId: string;
     };
-    const s = fakeSocket();
-    broker.attachMailboxSocket(mailboxId, s.socket);
+    broker.attachMailboxSocket(mailboxId, fakeSocket().socket);
+
+    const body = broker.pairClaim(IP, claimBody(slot)).body as Record<
+      string,
+      unknown
+    >;
+    expect(body.waiting).toBe(true);
+    expect(body).not.toHaveProperty("offered");
+  });
+
+  it("fans a claim out to every live mailbox sharing the slot", () => {
+    const h = harness();
+    const sockets = h.openSlot("49", MAX_MAILBOXES_PER_SLOT);
+
+    const res = h.broker.pairClaim(IP, claimBody("49"));
+    expect((res.body as { waiting: boolean }).waiting).toBe(true);
+    for (const s of sockets) {
+      expect(s.ofType("pair:peer-share")).toHaveLength(1);
+    }
+  });
+
+  it("caps live mailboxes on one slot", () => {
+    // Uncapped, an attacker parks M mailboxes on a slot with M different
+    // guessed secrets and every victim claim is tested against all of them at
+    // once — M tries per pairing for the price of M POSTs.
+    const h = harness();
+    h.openSlot("49", MAX_MAILBOXES_PER_SLOT);
+    expect(h.store.createMailbox("49")).toBeNull();
+
+    // And the fan-out a claim can buy is bounded by that same cap.
+    h.broker.pairClaim(IP, claimBody("49"));
+    expect(h.store.liveMailboxesForSlot("49").length).toBeLessThanOrEqual(
+      MAX_MAILBOXES_PER_SLOT,
+    );
+  });
+
+  it("draws a fresh slot when the one it picked is full", () => {
+    // A full slot is a collision, not a failure — pairing must not start
+    // failing just because two people are pairing at once.
+    const h = harness();
+    for (let i = 0; i < 40; i += 1) {
+      const res = h.broker.pairNew(`10.1.0.${i}`);
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("never offers the same mailbox twice once a claim has proved itself", () => {
+    const h = harness();
+    h.openSlot("49", 1);
+
+    const first = h.broker.pairClaim(IP, claimBody("49")).body as {
+      claimId: string;
+      waiting: boolean;
+    };
+    expect(first.waiting).toBe(true);
+
+    // The guess is spent when the claim attaches its socket, not when it POSTs.
+    h.broker.attachClaimSocket(first.claimId, fakeSocket().socket);
 
     expect(
-      (broker.pairClaim(IP, claimBody(slot)).body as { offered: number })
-        .offered,
-    ).toBe(1);
-    // Second claim on the same slot sees the mailbox as already spent.
+      (h.broker.pairClaim(IP, claimBody("49")).body as { waiting: boolean })
+        .waiting,
+    ).toBe(false);
+  });
+
+  it("does not burn a mailbox for a claim that never attaches a socket", () => {
+    // One unauthenticated POST used to retire every pairing on a slot — no
+    // crypto, no socket, no protocol participation. That is a service-wide
+    // outage for the price of a curl.
+    const h = harness();
+    h.openSlot("49", 1);
+
+    for (let i = 0; i < 5; i += 1) {
+      h.broker.pairClaim(`10.2.0.${i}`, claimBody("49"));
+      // Each bare POST holds the mailbox only until its offer lapses.
+      h.advance(OFFER_TTL_MS + 1);
+    }
+
+    // Still claimable by the person the code was actually meant for.
     expect(
-      (broker.pairClaim(IP, claimBody(slot)).body as { offered: number })
-        .offered,
-    ).toBe(0);
+      (h.broker.pairClaim(IP, claimBody("49")).body as { waiting: boolean })
+        .waiting,
+    ).toBe(true);
+  });
+
+  it("holds a mailbox for the claim in flight, then releases it", () => {
+    // Two claims must not each get a guess at one mailbox, so an offer is
+    // exclusive while it lasts — but it must not last, or a bare POST could
+    // take a code out of circulation for its whole three minutes.
+    const h = harness();
+    h.openSlot("49", 1);
+
+    h.broker.pairClaim(IP, claimBody("49"));
+    expect(
+      (h.broker.pairClaim(IP, claimBody("49")).body as { waiting: boolean })
+        .waiting,
+    ).toBe(false);
+
+    h.advance(OFFER_TTL_MS + 1);
+    expect(
+      (h.broker.pairClaim(IP, claimBody("49")).body as { waiting: boolean })
+        .waiting,
+    ).toBe(true);
+  });
+
+  it("caps claims against one slot regardless of source address", () => {
+    // The per-IP limiter isolates a client; behind a CDN or a botnet it
+    // isolates nobody. This is the budget that actually bounds guessing.
+    const h = harness();
+    const limit = 4;
+    const broker = createBroker({
+      store: h.store,
+      slotClaimLimiter: createRateLimiter(limit),
+    });
+    for (let i = 0; i < limit; i += 1) {
+      expect(broker.pairClaim(`10.3.0.${i}`, claimBody("49")).status).toBe(200);
+    }
+    const blocked = broker.pairClaim("10.3.0.99", claimBody("49"));
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers?.["Retry-After"]).toBeDefined();
+
+    // A different code is unaffected.
+    expect(broker.pairClaim("10.3.0.99", claimBody("50")).status).toBe(200);
+  });
+
+  it("charges a malformed claim to the slot it names", () => {
+    // Otherwise the per-slot budget is dodged by sending rubbish.
+    const broker = createBroker({ slotClaimLimiter: createRateLimiter(2) });
+    expect(broker.pairClaim(IP, { slot: "49" }).status).toBe(400);
+    expect(broker.pairClaim(IP, { slot: "49" }).status).toBe(400);
+    expect(broker.pairClaim(IP, claimBody("49")).status).toBe(429);
+  });
+
+  it("caps claims against the whole broker", () => {
+    const broker = createBroker({ globalClaimLimiter: createRateLimiter(3) });
+    // Different slots and different addresses; the ceiling is neither.
+    expect(broker.pairClaim("10.4.0.1", claimBody("11")).status).toBe(200);
+    expect(broker.pairClaim("10.4.0.2", claimBody("22")).status).toBe(200);
+    expect(broker.pairClaim("10.4.0.3", claimBody("33")).status).toBe(200);
+    expect(broker.pairClaim("10.4.0.4", claimBody("44")).status).toBe(429);
   });
 
   it("rate-limits claims per address", () => {
@@ -263,7 +395,7 @@ describe("end-to-end pairing", () => {
       share: bytesToHex(cliCpace.share),
       ad: cliAd,
       sid: bytesToHex(sid),
-    }).body as { claimId: string; offered: number };
+    }).body as { claimId: string; waiting: boolean };
 
     const cliSocket = fakeSocket();
     const cli = broker.attachClaimSocket(claim.claimId, cliSocket.socket)!;
@@ -793,12 +925,38 @@ describe("broker logging discipline", () => {
     broker = createBroker();
   });
 
-  it("reports only counts from health, never contents", () => {
+  it("reports liveness from health, never how much is in flight", () => {
+    // Live mailbox and tunnel counts told anyone who could curl the broker how
+    // many pairings were happening — the same enumeration `offered` leaked,
+    // without even needing a claim.
     broker.pairNew(IP);
     const body = broker.health().body as Record<string, unknown>;
     expect(body.status).toBe("ok");
-    expect(body.mailboxes).toBe(1);
+    expect(body).not.toHaveProperty("mailboxes");
+    expect(body).not.toHaveProperty("claims");
+    expect(body).not.toHaveProperty("tunnels");
     expect(JSON.stringify(body)).not.toContain(IP);
+
+    // Still available in-process, for diagnostics and these tests.
+    expect(broker.stats().mailboxes).toBe(1);
+  });
+
+  it("rate-limits discover", () => {
+    const limited = createBroker({ discoverLimiter: createRateLimiter(2) });
+    expect(limited.discover(IP).status).toBe(200);
+    expect(limited.discover(IP).status).toBe(200);
+    expect(limited.discover(IP).status).toBe(429);
+    expect(limited.discover("198.51.100.7").status).toBe(200);
+  });
+
+  it("rate-limits socket upgrades", () => {
+    // Every HTTP door is budgeted; the upgrade path had no limit at all, which
+    // made the rest of them bypassable for anything reachable over WS.
+    const limited = createBroker({ upgradeLimiter: createRateLimiter(2) });
+    expect(limited.allowUpgrade(IP)).toBe(true);
+    expect(limited.allowUpgrade(IP)).toBe(true);
+    expect(limited.allowUpgrade(IP)).toBe(false);
+    expect(limited.allowUpgrade("198.51.100.7")).toBe(true);
   });
 
   it("echoes the caller's address from discover without storing it", () => {
@@ -834,7 +992,7 @@ describe("end-to-end pairing, CLI-hosted", () => {
       share: bytesToHex(browserCpace.share),
       ad: browserAd,
       sid: bytesToHex(sid),
-    }).body as { claimId: string; offered: number };
+    }).body as { claimId: string; waiting: boolean };
 
     const browserSocket = fakeSocket();
     const browser = broker.attachClaimSocket(

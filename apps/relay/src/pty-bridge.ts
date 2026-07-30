@@ -22,13 +22,28 @@ export interface PtyBridge {
   readonly spawnError: Error | null;
 }
 
+export type PtyBridgeOptions = {
+  /**
+   * Attach with `-r`.
+   *
+   * On its own this is *not* a boundary — tmux still honours `detach-client`
+   * and `switch-client` under `-r`, and `(`/`)` are bound to the latter by
+   * default. It is only safe in combination with the locked-down grouped
+   * clone from `tmux-clone.ts`, which is why nothing outside that path sets
+   * it. See `createReadOnlyClone`.
+   */
+  readOnly?: boolean;
+};
+
 export function createPtyBridge(
   sessionName: string,
   size?: TerminalSize,
+  opts: PtyBridgeOptions = {},
 ): PtyBridge {
   const args = [
     ...(config.tmuxSocket ? ["-S", config.tmuxSocket] : []),
     "attach-session",
+    ...(opts.readOnly ? ["-r"] : []),
     "-t",
     sessionName,
   ];

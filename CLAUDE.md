@@ -54,9 +54,9 @@ pnpm release          # Bump, commit and tag the CLI
 
 Break these and the product's central claim is false.
 
-1. **The four-digit secret never reaches the broker** — not in a request, not as a hash. 10⁶ is an instant offline search.
+1. **The four-digit secret never reaches the broker** — not in a request, not as a hash. The secret is 10⁴ and the whole code is 10⁶; either is an instant offline search, which is why the broker must only ever be able to test a guess _online_, one per code. The online budget that enforces that lives in `apps/api/src/{mailbox,broker,config}.ts` — a per-slot mailbox cap, a claim that burns its guess only once it attaches a socket, and per-slot plus global claim ceilings that do not depend on the caller's IP.
 2. **The broker logs counts and outcomes only.** No code, slot, mailbox id, ciphertext, or IP-to-mailbox mapping. A breach or a subpoena must yield nothing useful.
-3. **Browser key material lives in IndexedDB**, never `localStorage`.
+3. **Browser key material lives in IndexedDB**, never `localStorage`. One deliberate exception, so it is not misread as a violation: the self-hosted relay bearer token (`TOKEN_KEY`) sits in `localStorage` until a device lock is enrolled, at which point the plaintext copy is deleted and it moves into the sealed record. Session _keys_ are never there. The trade is that a device with no lock can be read by anything with access to the origin — which is the same thing a device with no lock already concedes.
 4. **The self-hosted path stays fully functional with zero contact with our servers.** `mtmux start` with no route to `api.mtmux.com` must degrade to LAN serving, never fail. `--local` makes that explicit.
 5. **Accounts are optional forever.** Anonymous pairing must never regress.
 6. **Never hand-edit nginx.** See the `cloudflare-cfx` skill; `http.conf` is read-only, and `mtmux.com`'s vhost lives there.

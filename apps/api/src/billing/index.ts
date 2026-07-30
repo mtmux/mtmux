@@ -123,7 +123,13 @@ export function createBilling(
       const subscription = await readSubscription(db, userId);
       const usage = await entitlements.usageThisMonth(userId);
       return {
+        // `readSubscription` now resolves this rather than returning the raw
+        // `plan` column, so an account on a trial reports "pro" here exactly
+        // as the entitlement checks already treated it. Reading the column was
+        // a live bug: the dashboard said free while the broker said pro.
         plan: subscription.plan satisfies PlanId,
+        planSource: subscription.planSource,
+        trial: subscription.trial,
         status: subscription.status,
         currentPeriodEnd: subscription.currentPeriodEnd,
         cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,

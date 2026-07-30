@@ -84,6 +84,51 @@ const AccountsConfigSchema = z.object({
   /** Per-user sliding windows for the account API. */
   requestsPerMinute: z.coerce.number().int().positive().default(120),
   writesPerMinute: z.coerce.number().int().positive().default(30),
+  /**
+   * Its own bucket for `POST /v1/auth/lookup`, and much tighter than the write
+   * one.
+   *
+   * That route is an account-enumeration oracle by design — it has to say
+   * *which* sign-in methods an address has, or the UI shows a password box to
+   * a Google-only account. The leak is accepted; scraping it is not. At the
+   * write bucket's 30/min one IP could probe 43,000 addresses a day. Ten a
+   * minute is invisible to a person signing in and useless to a list.
+   */
+  lookupsPerMinute: z.coerce.number().int().positive().default(10),
+
+  /**
+   * Transactional email, via Resend. Empty means no mail at all: no
+   * verification, no password reset, and the magic-link plugin is never
+   * mounted. Self-hosted mtmux sends nothing and needs an account with nobody.
+   */
+  resendApiKey: z.string().default(""),
+  /** `From` header, e.g. `mtmux <hello@mtmux.com>`. Required for mail to send. */
+  emailFrom: z.string().default(""),
+  emailReplyTo: z.string().default(""),
+
+  /**
+   * Social sign-in. Each provider appears only when both halves are present,
+   * so a half-configured provider is off rather than broken at the callback.
+   *
+   * The redirect URIs live under *this* origin, not the app's:
+   *   https://api.mtmux.com/api/auth/callback/google
+   *   https://api.mtmux.com/api/auth/callback/github
+   * with `https://app.mtmux.com` as an authorized JS origin for Google.
+   * GitHub allows exactly one callback per OAuth App, so production and
+   * development need two separate apps.
+   */
+  googleClientId: z.string().default(""),
+  googleClientSecret: z.string().default(""),
+  githubClientId: z.string().default(""),
+  githubClientSecret: z.string().default(""),
+
+  /**
+   * The WebAuthn Relying Party ID. **Read the note in `config.passkeyRpId`
+   * below before changing this.** Empty means "derive it from APP_ORIGIN".
+   */
+  passkeyRpId: z.string().default(""),
+  /** What the browser's passkey prompt calls us. */
+  passkeyRpName: z.string().default("mtmux"),
 
   dodoApiKey: z.string().default(""),
   /**
@@ -134,6 +179,41 @@ export type AccountsConfig = z.infer<typeof AccountsConfigSchema> & {
   verificationUri: string;
   /** Whether billing is configured well enough to sell anything. */
   billingEnabled: boolean;
+  /**
+   * Whether mail can actually be sent.
+   *
+   * Gates three things that must move together: verification on sign-up,
+   * password reset, and whether the magic-link plugin is mounted at all. A
+   * mounted plugin with no mailer is worse than no plugin — the UI would offer
+   * "email me a sign-in link" and the button would silently do nothing.
+   */
+  emailEnabled: boolean;
+  /** Social providers configured well enough to offer. Order is UI order. */
+  socialProviderIds: Array<"google" | "github">;
+  /**
+   * The WebAuthn Relying Party ID — **a one-way door.**
+   *
+   * Every passkey a browser stores is bound to the rpID it was created under.
+   * Changing this later does not migrate anything; it silently invalidates
+   * every passkey that has ever been created, with no way to recover them.
+   *
+   * It must be a registrable-domain suffix of the origin the ceremony runs on.
+   * The ceremony runs in the browser, at `app.mtmux.com` — *not* at this API's
+   * `api.mtmux.com`, which is what better-auth would otherwise default to from
+   * `baseURL`. `app.mtmux.com` is not a suffix of `api.mtmux.com`, so that
+   * default makes every single registration fail with `SecurityError`.
+   *
+   * So: the hostname of `APP_ORIGIN` by default, which is right for `pnpm dev`
+   * (`localhost`) and right for every self-hoster, who serves one origin. The
+   * hosted deployment sets `PASSKEY_RP_ID=mtmux.com` in `ecosystem.config.cjs`,
+   * because that is deployment topology rather than a code default — the apex
+   * covers `app.` and anything else we later put under it.
+   *
+   * Consciously accepted cost of choosing the apex: any page on any
+   * `*.mtmux.com` subdomain can invoke these credentials. Never host untrusted
+   * user content on one.
+   */
+  passkeyRpId: string;
 };
 
 function build(env: NodeJS.ProcessEnv): AccountsConfig {
@@ -149,6 +229,16 @@ function build(env: NodeJS.ProcessEnv): AccountsConfig {
     deviceCodeMinutes: env.DEVICE_CODE_MINUTES,
     requestsPerMinute: env.ACCOUNT_REQUESTS_PER_MINUTE,
     writesPerMinute: env.ACCOUNT_WRITES_PER_MINUTE,
+    lookupsPerMinute: env.ACCOUNT_LOOKUPS_PER_MINUTE,
+    resendApiKey: env.RESEND_API_KEY,
+    emailFrom: env.EMAIL_FROM,
+    emailReplyTo: env.EMAIL_REPLY_TO,
+    googleClientId: env.GOOGLE_CLIENT_ID,
+    googleClientSecret: env.GOOGLE_CLIENT_SECRET,
+    githubClientId: env.GITHUB_CLIENT_ID,
+    githubClientSecret: env.GITHUB_CLIENT_SECRET,
+    passkeyRpId: env.PASSKEY_RP_ID,
+    passkeyRpName: env.PASSKEY_RP_NAME,
     dodoApiKey: env.DODO_PAYMENTS_API_KEY,
     dodoEnvironment: env.DODO_ENVIRONMENT,
     dodoWebhookKey: env.DODO_WEBHOOK_KEY,
@@ -190,12 +280,28 @@ function build(env: NodeJS.ProcessEnv): AccountsConfig {
     }
   }
 
+  const socialProviderIds: Array<"google" | "github"> = [];
+  if (parsed.googleClientId && parsed.googleClientSecret) {
+    socialProviderIds.push("google");
+  }
+  if (parsed.githubClientId && parsed.githubClientSecret) {
+    socialProviderIds.push("github");
+  }
+
   return {
     ...parsed,
     baseUrl,
     trustedOrigins,
     corsOrigins: [...new Set([parsed.appOrigin, ...brokerConfig.corsOrigins])],
     secureCookies,
+    emailEnabled: parsed.resendApiKey !== "" && parsed.emailFrom !== "",
+    socialProviderIds,
+    // Note the deliberate absence of a production fail-fast here, unlike the
+    // secret and the https origin above. A missing Resend key or OAuth client
+    // is a *feature that is off*, not a misconfiguration — invariant #5 in
+    // spirit — and refusing to boot over one would make the optional
+    // mandatory.
+    passkeyRpId: parsed.passkeyRpId || hostnameOf(parsed.appOrigin),
     // Must match the route apps/web actually serves; a 402 that links to a 404
     // is worse than no link at all.
     upgradeUrl: `${parsed.appOrigin}/settings/billing`,
@@ -203,6 +309,21 @@ function build(env: NodeJS.ProcessEnv): AccountsConfig {
     billingEnabled:
       parsed.dodoApiKey !== "" && parsed.dodoProductProMonthly !== "",
   };
+}
+
+/**
+ * The host part of an origin, with a safe fallback.
+ *
+ * `localhost` rather than a throw, because this feeds `passkeyRpId` and a
+ * malformed `APP_ORIGIN` should degrade to a passkey that only works locally,
+ * not stop the broker from brokering.
+ */
+function hostnameOf(origin: string): string {
+  try {
+    return new URL(origin).hostname;
+  } catch {
+    return "localhost";
+  }
 }
 
 /** Exported for tests, which need a config that is not the process's. */
