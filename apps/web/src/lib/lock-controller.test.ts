@@ -4,9 +4,7 @@ import {
   ceremonyInProgress,
   duringCeremony,
   lockNow,
-  markJustPaired,
   registerDisconnect,
-  takeEnrollmentPrompt,
 } from "./lock-controller";
 import { forget, isUnlocked, setEnrolled, setMasterKey } from "./unlocked";
 
@@ -95,21 +93,5 @@ describe("ceremony suppression", () => {
     vi.advanceTimersByTime(2000);
     expect(ceremonyInProgress()).toBe(false);
     vi.useRealTimers();
-  });
-});
-
-describe("the enrollment prompt", () => {
-  it("fires once after a pairing and never again", () => {
-    markJustPaired();
-    expect(takeEnrollmentPrompt()).toBe(true);
-    // A second mount — React strict mode does exactly this — must not reopen.
-    expect(takeEnrollmentPrompt()).toBe(false);
-
-    markJustPaired();
-    expect(takeEnrollmentPrompt()).toBe(false);
-  });
-
-  it("does not fire without a pairing", () => {
-    expect(takeEnrollmentPrompt()).toBe(false);
   });
 });

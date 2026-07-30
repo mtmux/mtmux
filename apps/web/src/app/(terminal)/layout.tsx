@@ -34,7 +34,6 @@ import { AlertBanner } from "@/components/alert-banner";
 import { ConnectionBanner } from "@/components/connection-banner";
 import { CapabilityBanner } from "@/components/capability-banner";
 import { LockGate } from "@/components/lock/lock-gate";
-import { LockEnrollPrompt } from "@/components/lock/lock-enroll-prompt";
 import { registerDisconnect } from "@/lib/lock-controller";
 import { VisualViewportSync } from "@/components/visual-viewport-sync";
 import { SessionTabs } from "@/components/session/session-tabs";
@@ -385,7 +384,6 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
       </ErrorBoundary>
       <CommandPalette />
       <KeyboardShortcutsDialog />
-      <LockEnrollPrompt />
       <SessionCreateDialog
         open={showCreateDialog}
         onOpenChange={setShowCreateDialog}

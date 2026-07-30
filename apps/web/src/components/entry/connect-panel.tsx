@@ -14,7 +14,6 @@ import {
   type PairingHandle,
   type PairingUpdate,
 } from "@/lib/pairing-client";
-import { markJustPaired } from "@/lib/lock-controller";
 import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
 
 /**
@@ -82,7 +81,6 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
       void (async () => {
         const { winner } = await persistPairing(update);
         toast.success(pairedMessage(update.descriptor, winner));
-        markJustPaired();
         router.push("/");
       })();
     },

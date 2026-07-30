@@ -98,41 +98,6 @@ function ensureChannel(): BroadcastChannel | null {
   return channel;
 }
 
-// ---------------------------------------------------------------------------
-// The one-time enrollment prompt
-// ---------------------------------------------------------------------------
-
-const JUST_PAIRED_KEY = "mtmux:just-paired";
-const PROMPTED_KEY = "mtmux:lock-prompted";
-
-/**
- * Offer the lock **exactly once**, at the end of a successful pairing.
- *
- * That is the only moment it is welcome: the user has just proved they can
- * re-pair in six digits, which is precisely the reassurance that makes an
- * unrecoverable PIN reasonable to accept. Asking again later — on every load,
- * in a banner, from a nag — would train people to dismiss it.
- */
-export function markJustPaired(): void {
-  try {
-    sessionStorage.setItem(JUST_PAIRED_KEY, "1");
-  } catch {
-    // Blocked storage just means no prompt.
-  }
-}
-
-export function takeEnrollmentPrompt(): boolean {
-  try {
-    if (localStorage.getItem(PROMPTED_KEY)) return false;
-    if (!sessionStorage.getItem(JUST_PAIRED_KEY)) return false;
-    sessionStorage.removeItem(JUST_PAIRED_KEY);
-    localStorage.setItem(PROMPTED_KEY, "1");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Listen for a lock in another tab. Returns an unsubscribe. */
 export function listenForCrossTabLock(): () => void {
   const bc = ensureChannel();

@@ -19,7 +19,6 @@ import {
   type PairingHandle,
   type PairingUpdate,
 } from "@/lib/pairing-client";
-import { markJustPaired } from "@/lib/lock-controller";
 import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
 
 type State =
@@ -70,9 +69,6 @@ export default function PairPage() {
       void (async () => {
         const { winner } = await persistPairing(update);
         toast.success(pairedMessage(update.descriptor, winner));
-        // Offer the device lock once, here and nowhere else — see
-        // `takeEnrollmentPrompt`.
-        markJustPaired();
         router.push("/");
       })();
     },
