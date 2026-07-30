@@ -36,7 +36,11 @@ import {
 } from "./pair.js";
 import * as account from "../account.js";
 import { resolveShareSessions, shareBanner } from "../share-grants.js";
-import { promptForAccess } from "../access-prompt.js";
+import { decideAccess } from "../access-prompt.js";
+import {
+  createApproveControl,
+  type ApproveControl,
+} from "../approve-control.js";
 import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
 
 // The whole CLI is bundled into dist/bin.js, so this module's own directory IS
@@ -203,6 +207,17 @@ type Hosted = {
  * a tunnel that already exists. Arming the code first would produce a race in
  * which a very fast phone pairs against a tunnel id that is still undefined.
  */
+/**
+ * The approval window, once `start` has bound the server.
+ *
+ * Module-level because the two halves live in different functions and start in
+ * a fixed order: `startHosted` creates the tunnel agent — and with it
+ * `onAccessRequest` — before `start` binds the port the control plane listens
+ * on. A parameter would mean either reordering the boot or handing the agent a
+ * value that is still null when it is captured.
+ */
+let approvals: ApproveControl | null = null;
+
 async function startHosted(opts: {
   port: number;
   base: string;
@@ -251,7 +266,12 @@ async function startHosted(opts: {
      * requested pairing and a scanned one produce an identical session.
      */
     onAccessRequest: async (request) => {
-      const answer = await promptForAccess(request);
+      // An open `mtmux approve` window decides; otherwise the TTY prompt;
+      // otherwise `no-tty`. See `decideAccess` for why "nobody is waiting" and
+      // "they said no" must stay distinguishable.
+      const answer = await decideAccess(request, {
+        offer: approvals ? (req) => approvals!.offer(req) : undefined,
+      });
       if (!answer.approved) {
         // Logged locally so a refusal leaves a trace on the machine that
         // refused it. The broker is told nothing beyond "denied".
@@ -591,12 +611,23 @@ export async function start(opts: StartOpts) {
   const app = nextFactory({ dev: false, dir: WEB_DIR });
   await app.prepare();
 
+  /**
+   * The loopback control plane for `mtmux approve`.
+   *
+   * Created before `serve` because the handler is wired into it, and reached by
+   * `onAccessRequest` above — which is why it is defined here rather than
+   * inside the tunnel agent's options.
+   */
+  const approveControl = createApproveControl({ authToken: cfg.token });
+  approvals = approveControl;
+
   const { shutdown: stopServing } = await serve({
     relay,
     requestHandler: app.getRequestHandler(),
     port: opts.port,
     host,
     portHintCommand: "mtmux start",
+    controlHandler: (req, res) => approveControl.handle(req, res),
   });
 
   const localUrl = `http://localhost:${opts.port}`;
@@ -860,6 +891,7 @@ export async function start(opts: StartOpts) {
     stopping = true;
     console.log("\n  Stopping…");
     stopHeartbeat?.();
+    approveControl.close();
     hosted?.stop();
     void serverState.clear();
     stopServing();

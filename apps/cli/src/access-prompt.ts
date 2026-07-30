@@ -57,11 +57,43 @@ export function renderAccessRequest(req: AccessPromptInput): string[] {
 }
 
 /**
+ * Who gets asked, in order of specificity.
+ *
+ * Three cases, and the first one is the whole reason this is a function rather
+ * than three lines inline: `offer` returning **null** means "nobody is waiting",
+ * which is emphatically not a refusal. Collapsing the two would mean a machine
+ * with an idle approval window silently stopped prompting in its own terminal —
+ * a regression that would look, from the outside, exactly like the feature
+ * working.
+ *
+ *   1. Somebody ran `mtmux approve` and is waiting → they decide.
+ *   2. There is a TTY → the prompt, unchanged.
+ *   3. Neither → deny `no-tty`. Silence is not consent.
+ *
+ * Everything downstream of the decision is untouched, so a requested pairing is
+ * identical however it was approved.
+ */
+export async function decideAccess(
+  req: AccessPromptInput,
+  deps: {
+    /** Returns null when no approval window is open. */
+    offer?: (req: AccessPromptInput) => Promise<boolean | null>;
+    prompt?: (req: AccessPromptInput) => Promise<AccessPromptResult>;
+  } = {},
+): Promise<AccessPromptResult> {
+  const offered = deps.offer ? await deps.offer(req) : null;
+  if (offered === null) {
+    return (deps.prompt ?? promptForAccess)(req);
+  }
+  return offered ? { approved: true } : { approved: false, reason: "refused" };
+}
+
+/**
  * Ask, and return what the human said.
  *
  * No TTY means deny, never auto-approve. A machine running as a service has
  * nobody to ask, and "nobody objected" is not consent — it is the difference
- * between a gate and a formality. Such machines queue the request instead; see
+ * between a gate and a formality. Such machines open a window instead; see
  * `mtmux approve`.
  */
 export async function promptForAccess(

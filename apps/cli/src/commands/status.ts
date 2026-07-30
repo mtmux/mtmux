@@ -1,5 +1,38 @@
 import kleur from "kleur";
 import * as serverState from "../server-state.js";
+import { load as loadConfig } from "../config-store.js";
+import { APPROVE_STATE_PATH } from "../approve-control.js";
+
+/**
+ * Whether an `mtmux approve` window is open, or null.
+ *
+ * Null on **any** failure — a 404, a 401, a refused connection, a parse error.
+ * A newer CLI is routinely pointed at an older daemon that has never heard of
+ * this endpoint, and `status` losing a row is the right way for that to look.
+ * An error message would make an upgrade seem broken.
+ */
+async function approvalWindow(port: number): Promise<string | null> {
+  try {
+    const cfg = await loadConfig();
+    const res = await fetch(`http://127.0.0.1:${port}${APPROVE_STATE_PATH}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      waiting?: boolean;
+      expiresAt?: number | null;
+    };
+    if (!body.waiting || !body.expiresAt) return null;
+    const left = Math.max(
+      0,
+      Math.round((body.expiresAt - Date.now()) / 60_000),
+    );
+    return kleur.green("open") + kleur.dim(`  ${left}m left`);
+  } catch {
+    return null;
+  }
+}
 
 function ago(since: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
@@ -28,6 +61,10 @@ export async function status(): Promise<void> {
   ];
   if (state.lanUrl) rows.push(["Network", state.lanUrl]);
   if (state.inviteUrl) rows.push(["Invite", state.inviteUrl]);
+
+  const window = await approvalWindow(state.port);
+  if (window) rows.push(["Approving", window]);
+
   rows.push(["Version", state.version]);
 
   const width = Math.max(...rows.map(([label]) => label.length));

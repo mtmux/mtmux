@@ -54,6 +54,21 @@ export type ServeOptions = {
   host: string;
   /** Command to suggest in the "port in use" hint, e.g. "mtmux start". */
   portHintCommand: string;
+  /**
+   * CLI-owned HTTP endpoints, tried before the relay's.
+   *
+   * This exists for `mtmux approve`, which is a second process and therefore
+   * cannot reach the daemon's memory any other way — the same problem
+   * `registerDirectToken` solves by POSTing to `/_pair/session`. Putting the
+   * hook here rather than in the relay keeps a CLI-only feature out of the
+   * relay package, which is also shipped standalone.
+   *
+   * Returns true when it handled the request.
+   */
+  controlHandler?: (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ) => Promise<boolean>;
 };
 
 export type Serving = {
@@ -71,6 +86,9 @@ export async function serve(opts: ServeOptions): Promise<Serving> {
   const { relay } = opts;
 
   const server = http.createServer(async (req, res) => {
+    // CLI control endpoints first — they are loopback-and-token guarded and
+    // must not be shadowed by anything the relay or Next might claim.
+    if (opts.controlHandler && (await opts.controlHandler(req, res))) return;
     // Relay HTTP endpoints take priority (/health, /file?...)
     const handled = await relay.handleRelayRequest(req, res);
     if (handled) return;

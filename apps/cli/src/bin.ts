@@ -11,6 +11,7 @@ import { tokenPrint, tokenRotate, tokenSet } from "./commands/token.js";
 import { version } from "./commands/version.js";
 import { doctor } from "./commands/doctor.js";
 import { status, stop } from "./commands/status.js";
+import { approve } from "./commands/approve.js";
 import { devicesList, devicesRevoke } from "./commands/devices.js";
 import { login, logout, servers, upgrade, whoami } from "./commands/account.js";
 
@@ -219,6 +220,34 @@ shareCmd
         qr: opts.qr,
       });
     },
+  );
+
+/**
+ * The way in for a machine nobody is sitting at.
+ *
+ * A dashboard access request needs a human to compare six digits, and a box
+ * running as a service has none — so it denies, correctly. This opens a window
+ * during which the request is shown *here* instead. Purely additive: without
+ * it, everything behaves exactly as it did.
+ */
+program
+  .command("approve")
+  .description("Wait for a browser's access request and approve it here")
+  .option(
+    "-t, --timeout <minutes>",
+    "how long to stay available",
+    (v) => parseInt(v, 10),
+    5,
+  )
+  .option(
+    "-p, --port <number>",
+    "port the server is on (default: whatever is running)",
+    (v) => parseInt(v, 10),
+    0,
+  )
+  .option("--keep", "stay open after the first decision", false)
+  .action((opts: { timeout: number; port: number; keep: boolean }) =>
+    approve({ timeout: opts.timeout, port: opts.port, keep: opts.keep }),
   );
 
 program
