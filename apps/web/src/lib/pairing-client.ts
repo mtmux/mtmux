@@ -27,6 +27,7 @@ import {
   tryDeserializePairingServerMessage,
   tryDeserializeRequestServerMessage,
 } from "@repo/protocol";
+import { deviceLabel } from "./device-label";
 
 /**
  * The browser half of hosted pairing, in both directions.
@@ -49,8 +50,29 @@ import {
  * initiator, because CPace defines it that way.
  */
 
+/**
+ * The *identity* labels, bound into key confirmation.
+ *
+ * These are keyed to who each end is and never move. `browserAd()` below is a
+ * different thing that happens to have overlapped with `AD_BROWSER` until now:
+ * the associated data transmitted with a CPace share, which both ends read from
+ * the wire rather than assume. Sending the literal "browser" there is why
+ * `mtmux start` printed "✓ browser connected."
+ */
 const AD_BROWSER = "browser";
 const AD_CLI = "cli";
+
+/**
+ * What this browser calls itself on the wire, for the machine to display.
+ *
+ * Computed once per pairing run and used in three places that must agree: the
+ * `ad` field, this side's own position in the CPace transcript, and nothing
+ * else. Get any one of them wrong and both ends derive different keys from a
+ * correct code, which is indistinguishable from a wrong one.
+ */
+function browserAd(): string {
+  return deviceLabel();
+}
 
 export type PairingPhase =
   | "requesting"
@@ -98,6 +120,8 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
 
   // Generated here and only here. It is never transmitted, hashed or logged.
   const secret = generateSecret();
+  // Transmitted, and read by the CLI as the name to print. Fixed for the run.
+  const ownAd = browserAd();
   let socket: WebSocket | null = null;
   let cancelled = false;
   let settled = false;
@@ -187,7 +211,7 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
         let isk: Uint8Array;
         try {
           isk = cpace.finish(hexToBytes(msg.share), {
-            own: utf8ToBytes(AD_BROWSER),
+            own: utf8ToBytes(ownAd),
             peer: utf8ToBytes(msg.ad),
             isInitiator: false,
           });
@@ -202,7 +226,7 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
             hexToBytes(msg.share),
             utf8ToBytes(msg.ad),
             cpace.share,
-            utf8ToBytes(AD_BROWSER),
+            utf8ToBytes(ownAd),
           ),
         );
 
@@ -211,7 +235,7 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
             type: "pair:share",
             peer: msg.peer,
             share: bytesToHex(cpace.share),
-            ad: AD_BROWSER,
+            ad: ownAd,
           }),
         );
         socket?.send(
@@ -289,7 +313,7 @@ const NO_MATCH_GRACE_MS = 3_000;
 /**
  * Claim a code the terminal is showing.
  *
- * A slot is two digits and deliberately shared, so this claim is offered to
+ * A slot is deliberately shared, so this claim is offered to
  * every live mailbox holding it and several may answer. Each gets its own CPace
  * run; the one whose confirmation tag verifies is the real terminal and the
  * rest are closed, which destroys their mailboxes. Answering is therefore no
@@ -299,6 +323,8 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
   const doFetch = opts.fetchImpl ?? fetch;
   const makeSocket = opts.socketImpl ?? ((url: string) => new WebSocket(url));
 
+  // Transmitted, and read by the CLI as the name to print. Fixed for the run.
+  const ownAd = browserAd();
   let socket: WebSocket | null = null;
   let cancelled = false;
   let settled = false;
@@ -352,7 +378,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
         body: JSON.stringify({
           slot,
           share: bytesToHex(cpace.share),
-          ad: AD_BROWSER,
+          ad: ownAd,
           sid: bytesToHex(sid),
         }),
       });
@@ -471,7 +497,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
         let isk: Uint8Array;
         try {
           isk = cpace.finish(hexToBytes(msg.share), {
-            own: utf8ToBytes(AD_BROWSER),
+            own: utf8ToBytes(ownAd),
             peer: utf8ToBytes(msg.ad),
             isInitiator: true,
           });
@@ -487,7 +513,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
             isk,
             transcriptIr(
               cpace.share,
-              utf8ToBytes(AD_BROWSER),
+              utf8ToBytes(ownAd),
               hexToBytes(msg.share),
               utf8ToBytes(msg.ad),
             ),

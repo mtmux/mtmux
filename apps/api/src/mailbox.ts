@@ -34,6 +34,13 @@ export const MAX_MAILBOXES_PER_SLOT = MAX_PEERS_PER_SLOT;
 /**
  * Live mailboxes across every slot. Bounds the store's memory; the per-IP
  * mailbox limiter is what stops one client getting near it.
+ *
+ * This has never actually been reachable, and now it is. The binding limit used
+ * to be `SLOT_COUNT × MAX_MAILBOXES_PER_SLOT` = 200, of which every `mtmux
+ * start` consumed two — one for the typed code and one for the QR — so the real
+ * ceiling was about 100 concurrent starts. Moving the QR onto its own
+ * four-digit space takes the typed ceiling to ~200 starts and adds 20,000 scan
+ * slots behind it, which is the first time this number has had anything to do.
  */
 export const MAX_LIVE_MAILBOXES = 10_000;
 

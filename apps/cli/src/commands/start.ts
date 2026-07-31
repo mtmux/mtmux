@@ -12,6 +12,8 @@ import { primaryLanAddress, type LanAddress } from "../lan.js";
 import { checkTmux, checkNode } from "../preflight.js";
 import { serve, type RelayRuntime } from "../serve.js";
 import { apiBase } from "../api.js";
+import { LOG_PATH, followLog, rotateIfNeeded } from "../log-file.js";
+import { formatLogLine } from "./logs.js";
 import {
   createTunnelAgent,
   brokerConnector,
@@ -223,6 +225,10 @@ export type StartOpts = {
   name?: string;
   api?: string;
   json: boolean;
+  /** Mirror the relay's log to stderr, at debug, while this runs. */
+  verbose?: boolean;
+  /** Override the level written to `~/.mtmux/logs/mtmux.log`. */
+  logLevel?: string;
   /**
    * Scope the printed code to these tmux sessions.
    *
@@ -713,6 +719,31 @@ const REARM_LINES: Record<RearmReason, string> = {
   lost: "Reconnected. Here's a fresh code:",
 };
 
+/**
+ * Whether the bottom of the screen is still the banner's "Waiting for a device…".
+ *
+ * The banner always ends with that line and a blank one, and the claim stops
+ * being true the moment something connects. Tracking it is what lets a
+ * confirmation *replace* the stale line rather than be printed underneath it,
+ * with both on screen at once saying opposite things.
+ */
+let waitingLineOnScreen = false;
+
+/**
+ * Erase the banner's trailing "Waiting…" block, if it is what is on screen.
+ *
+ * A pipe, a service unit or a `--json` run has no cursor to move, so there the
+ * line simply stays — which is correct: nothing is corrupted and the output is
+ * still append-only for anything reading it.
+ */
+function clearWaitingLine(): void {
+  if (!waitingLineOnScreen) return;
+  waitingLineOnScreen = false;
+  if (!process.stdout.isTTY) return;
+  // Up two (the blank line, then the waiting line) and erase to the end.
+  process.stdout.write("\x1b[2A\x1b[0J");
+}
+
 /** The reason wording for a failure that carried no warning of its own. */
 function failureKindReason(err: unknown): RearmReason {
   return err instanceof PairingError && err.kind === "expired"
@@ -835,6 +866,26 @@ export async function start(opts: StartOpts) {
   (process.env as Record<string, string>).NODE_ENV = "production";
   process.env.RELAY_HOST = host;
   process.env.RELAY_PORT = String(opts.port);
+
+  // The relay's logger reads its config once, at import, and writes to fd 1 —
+  // the same stream as the banner. Without this every pane click, split and
+  // resize prints raw NDJSON, pid and hostname included, straight through the
+  // QR code. This is the only place the redirect can be set: the dynamic import
+  // below is what evaluates `packages/logger`.
+  //
+  // `mtmux logs` is the other half of the trade; taking the output away without
+  // giving it somewhere would be a debuggability regression, not a fix.
+  await rotateIfNeeded();
+  process.env.LOG_FILE ??= LOG_PATH;
+  process.env.LOG_LEVEL ??= opts.logLevel ?? (opts.verbose ? "debug" : "info");
+
+  // `--verbose` puts the log back on screen, but on **stderr** — so `--json`
+  // stays a parseable document on stdout, and so the banner is still the only
+  // thing a user who did not ask for logs ever sees. Tailing the file rather
+  // than adding a second pino destination keeps one writer and one format.
+  const stopMirror = opts.verbose
+    ? followLog((line) => process.stderr.write(`${formatLogLine(line)}\n`))
+    : null;
   // Single-origin in CLI mode — no cross-origin requests possible. Set the
   // CORS allow-list to empty so the relay's prod gate doesn't reject the
   // localhost default.
@@ -903,6 +954,7 @@ export async function start(opts: StartOpts) {
   });
 
   const reprint = (invite: PairingInvite) => {
+    waitingLineOnScreen = true;
     for (const line of renderBannerLines({
       version,
       localUrl,
@@ -999,9 +1051,23 @@ export async function start(opts: StartOpts) {
         cfg,
         tunnelOnly: false,
         onPaired: (label) => {
+          // Redrawn, not appended. The banner's last line still says "Waiting
+          // for a device…", and printing underneath it leaves a stale claim on
+          // screen above the news that it is no longer true.
+          clearWaitingLine();
           console.log(kleur.green(`  ✓ ${label} connected.`));
+          console.log(
+            kleur.dim(`    It has the terminal at ${lanUrl ?? localUrl}.`),
+          );
+          console.log(
+            kleur.dim(
+              "    It stays paired across restarts — mtmux devices lists it.",
+            ),
+          );
+          console.log("");
         },
         onWarn: (notice) => {
+          clearWaitingLine();
           if (notice.warning === "broker-misbehaving") {
             console.log(
               kleur.red(
@@ -1047,6 +1113,7 @@ export async function start(opts: StartOpts) {
           void serverState.write(record(invite.url)).catch(() => {});
         },
         onIdle: () => {
+          clearWaitingLine();
           console.log(
             kleur.dim(
               "    No one used the last few codes, so I've stopped making them.",
@@ -1088,6 +1155,7 @@ export async function start(opts: StartOpts) {
       ),
     );
   } else {
+    waitingLineOnScreen = hosted !== null;
     banner({
       version,
       localUrl,
@@ -1099,6 +1167,12 @@ export async function start(opts: StartOpts) {
       token: cfg.token,
       note,
     });
+  }
+
+  if ((restored > 0 || needRepair > 0) && !opts.json) {
+    // Printed under the banner, so the "Waiting…" line is no longer the bottom
+    // of the screen and must not be erased later.
+    waitingLineOnScreen = false;
   }
 
   if (restored > 0 && !opts.json) {
@@ -1169,6 +1243,7 @@ export async function start(opts: StartOpts) {
     stopping = true;
     console.log("\n  Stopping…");
     stopHeartbeat?.();
+    stopMirror?.();
     approveControl.close();
     hosted?.stop();
     void serverState.clear();

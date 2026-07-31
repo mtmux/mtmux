@@ -18,6 +18,7 @@ import {
   type SessionKeys,
 } from "@repo/crypto";
 import { MAX_PEERS_PER_SLOT, type SealedDescriptor } from "@repo/protocol";
+import { deviceLabel } from "./device-label";
 import {
   joinPairing,
   requestAccess,
@@ -254,7 +255,11 @@ describe("joinPairing", () => {
     join(h, rec, `${SLOT}271638`);
     await rec.waitFor("failed");
     expect(JSON.stringify(h.claim)).not.toContain("271638");
-    expect(h.claim?.ad).toBe("browser");
+    // The associated data is a coarse device label — what the machine prints as
+    // "✓ Chrome on iOS connected." It is transmitted by design, so it must stay
+    // coarse: no version, no platform string, nothing near a fingerprint.
+    expect(h.claim?.ad).toBe(deviceLabel());
+    expect(h.claim?.ad.length).toBeLessThan(40);
   });
 
   it("pairs with the terminal and opens the sealed descriptor", async () => {

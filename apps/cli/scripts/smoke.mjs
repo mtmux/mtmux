@@ -146,7 +146,11 @@ const child = spawn(
 );
 
 const stderr = [];
-child.stdout.on("data", (b) => process.stdout.write(b));
+const stdout = [];
+child.stdout.on("data", (b) => {
+  stdout.push(b);
+  process.stdout.write(b);
+});
 child.stderr.on("data", (b) => {
   stderr.push(b);
   process.stderr.write(b);
@@ -167,6 +171,32 @@ await sleep(7000);
 if (exited) {
   console.error("✗ CLI exited before smoke probes ran");
   process.exit(1);
+}
+
+/**
+ * Run a CLI invocation to exit and hand back its stdout.
+ *
+ * `--json` and `logs` both terminate on their own; `start` without `--json`
+ * does not, so anything using this must be one of the two that does — or pass
+ * a deadline and accept whatever was printed by then.
+ */
+function runToCompletion(argv, killAfterMs) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("node", argv, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, NODE_ENV: "production" },
+    });
+    const chunks = [];
+    proc.stdout.on("data", (b) => chunks.push(b));
+    const timer = killAfterMs
+      ? setTimeout(() => proc.kill("SIGTERM"), killAfterMs)
+      : setTimeout(() => proc.kill("SIGKILL"), 20000);
+    proc.on("error", reject);
+    proc.on("exit", () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+  });
 }
 
 let failed = false;
@@ -287,6 +317,52 @@ await check("failed auth locks the address out after five tries", async () => {
   if (!/Too many failed attempts/.test(sixth.reason ?? ""))
     throw new Error(`expected a backoff message, got: ${sixth.reason}`);
   return sixth.reason;
+});
+
+// The banner used to compete with the embedded relay's NDJSON on fd 1 — every
+// pane click, split and resize printed straight through the QR code. The relay
+// now logs to ~/.mtmux/logs/mtmux.log, so stdout is banner and nothing else.
+await check("stdout carries no log lines", async () => {
+  const text = Buffer.concat(stdout).toString("utf8");
+  const ndjson = text
+    .split("\n")
+    .filter((line) => /^\s*\{.*"level"\s*:\s*\d+/.test(line));
+  if (ndjson.length > 0) {
+    throw new Error(`found ${ndjson.length} log lines, e.g. ${ndjson[0]}`);
+  }
+  return "clean";
+});
+
+// `--json` used to print a pretty document into a stream the relay was
+// concurrently writing NDJSON to, so it was never reliably parseable.
+await check(
+  "--json prints one parseable document and nothing else",
+  async () => {
+    const port = pickPort();
+    const out = await runToCompletion([
+      BIN,
+      "start",
+      "--port",
+      String(port),
+      "--no-open",
+      "--local",
+      "--json",
+    ]);
+    const parsed = JSON.parse(out.trim());
+    if (typeof parsed.localUrl !== "string") {
+      throw new Error(`no localUrl in ${out.slice(0, 120)}`);
+    }
+    return parsed.mode;
+  },
+);
+
+await check("mtmux logs reads back what left the terminal", async () => {
+  const out = await runToCompletion([BIN, "logs", "-n", "20"], 4000);
+  // Either real lines, or the honest "nothing yet" message — never a crash.
+  if (!/relay|No logs yet|mtmux/i.test(out)) {
+    throw new Error(`unexpected output: ${out.slice(0, 200)}`);
+  }
+  return out.split("\n").length + " lines";
 });
 
 console.log("→ shutting down");

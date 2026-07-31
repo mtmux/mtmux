@@ -29,7 +29,18 @@ type State =
   | { phase: "waiting"; code: string; expiresAt: number }
   | { phase: "verifying" }
   | { phase: "connecting" }
+  /**
+   * Paired, and held here for a beat before the terminal replaces the page.
+   *
+   * A toast fired immediately before `router.push` is a race the toast usually
+   * loses: the navigation tears down the page that was going to render it. The
+   * one moment worth confirming is the one that used to go unconfirmed.
+   */
+  | { phase: "connected"; message: string }
   | { phase: "failed"; message: string };
+
+/** Long enough to read one line, short enough not to feel like a wait. */
+const CONNECTED_DWELL_MS = 900;
 
 function secondsLeft(expiresAt: number): number {
   // `expiresAt` already arrives on this device's clock — `startPairing` runs
@@ -73,8 +84,11 @@ export default function PairPage() {
       setState({ phase: "connecting" });
       void (async () => {
         const { winner } = await persistPairing(update);
-        toast.success(pairedMessage(update.descriptor, winner));
-        router.push("/");
+        setState({
+          phase: "connected",
+          message: pairedMessage(update.descriptor, winner),
+        });
+        setTimeout(() => router.push("/"), CONNECTED_DWELL_MS);
       })();
     },
     [router],
@@ -136,7 +150,9 @@ export default function PairPage() {
           <CardDescription>
             {state.phase === "waiting"
               ? "Type this code into your terminal"
-              : "Setting up a secure channel"}
+              : state.phase === "connected"
+                ? "Paired"
+                : "Setting up a secure channel"}
           </CardDescription>
         </CardHeader>
 
@@ -215,6 +231,17 @@ export default function PairPage() {
             <p className="text-center text-sm text-muted-foreground">
               Connecting…
             </p>
+          )}
+
+          {state.phase === "connected" && (
+            <div className="space-y-1 text-center" role="status">
+              <p className="text-sm font-medium text-foreground">
+                {state.message}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Opening your terminal…
+              </p>
+            </div>
           )}
 
           {state.phase === "failed" && (

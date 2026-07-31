@@ -20,6 +20,7 @@ import {
   type PairingHandle,
 } from "@/lib/pairing-client";
 import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
+import { deviceLabel } from "@/lib/device-label";
 import { CopyCommand } from "./copy-command";
 import type { RegisteredServer } from "./server-row";
 
@@ -260,39 +261,4 @@ export function RequestAccessDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-/**
- * What the machine's screen calls this browser.
- *
- * Coarse on purpose. It is shown to a human deciding whether the request is
- * theirs, and "Chrome on macOS" answers that; a full user-agent string is both
- * unreadable and more than the question needs.
- */
-function deviceLabel(): string {
-  if (typeof navigator === "undefined") return "A browser";
-  const ua = navigator.userAgent;
-  const browser = /Edg\//.test(ua)
-    ? "Edge"
-    : /OPR\//.test(ua)
-      ? "Opera"
-      : /Firefox\//.test(ua)
-        ? "Firefox"
-        : /Chrome\//.test(ua)
-          ? "Chrome"
-          : /Safari\//.test(ua)
-            ? "Safari"
-            : "A browser";
-  const os = /iPhone|iPad/.test(ua)
-    ? "iOS"
-    : /Android/.test(ua)
-      ? "Android"
-      : /Mac OS X/.test(ua)
-        ? "macOS"
-        : /Windows/.test(ua)
-          ? "Windows"
-          : /Linux/.test(ua)
-            ? "Linux"
-            : null;
-  return os ? `${browser} on ${os}` : browser;
 }

@@ -14,6 +14,7 @@ import { status, stop } from "./commands/status.js";
 import { approve } from "./commands/approve.js";
 import { devicesList, devicesRevoke } from "./commands/devices.js";
 import { login, logout, servers, upgrade, whoami } from "./commands/account.js";
+import { logs } from "./commands/logs.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
@@ -25,7 +26,18 @@ const program = new Command();
 program
   .name("mtmux")
   .description("tmux in your browser. One command, any device.")
-  .version(pkg.version);
+  .version(pkg.version)
+  // Global, because the relay's log level is a property of the process rather
+  // than of any one command. Both write to stderr, never stdout, so `--json`
+  // stays a parseable document.
+  .option("--verbose", "mirror the relay log to stderr while running")
+  .option(
+    "--log-level <level>",
+    "trace | debug | info | warn | error | fatal (default: info)",
+  );
+
+/** Flags that belong to the program rather than to a command. */
+type GlobalFlags = { verbose?: boolean; logLevel?: string };
 
 type StartFlags = {
   port: number;
@@ -57,6 +69,7 @@ const toStartOpts = (opts: StartFlags, local: boolean): StartOpts => ({
   share: opts.share,
   shareReadOnly: opts.readOnly === true,
   shareFiles: parseFiles(opts.files) ?? "none",
+  ...(program.opts<GlobalFlags>() as GlobalFlags),
 });
 
 /**
@@ -106,9 +119,30 @@ program
   .option("--json", "print a machine-readable startup record")
   .action((opts: StartFlags) => start(toStartOpts(opts, true)));
 
+/**
+ * `mtmux logs` — where the relay's output went.
+ *
+ * It used to print over the banner, because the relay runs in this process and
+ * its logger writes to fd 1. Moving it to `~/.mtmux/logs/mtmux.log` is only
+ * defensible if there is a way to read it back.
+ */
+program
+  .command("logs")
+  .description("Show the relay log")
+  .option("-n, --lines <count>", "how many lines", (v) => parseInt(v, 10), 200)
+  .option("-f, --follow", "keep printing new lines until Ctrl+C")
+  .option("--json", "print the raw NDJSON instead of formatting it")
+  .action((opts: { lines: number; follow?: boolean; json?: boolean }) =>
+    logs({
+      lines: opts.lines,
+      follow: opts.follow === true,
+      json: opts.json === true,
+    }),
+  );
+
 program
   .command("pair")
-  .argument("[code]", "the six digits shown in the browser")
+  .argument("[code]", "the code shown in the browser")
   .description("Join a pairing that a browser started")
   .option(
     "-p, --port <number>",

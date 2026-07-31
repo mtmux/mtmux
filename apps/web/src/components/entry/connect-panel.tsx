@@ -40,7 +40,18 @@ type State =
   | { phase: "idle" }
   | { phase: "verifying" }
   | { phase: "connecting" }
+  /**
+   * Paired, and held for a beat before the terminal replaces the page.
+   *
+   * A toast fired immediately before `router.push` is a race the toast usually
+   * loses — the navigation tears down the page that was going to render it —
+   * so the one moment worth confirming went unconfirmed.
+   */
+  | { phase: "connected"; message: string }
   | { phase: "failed"; message: string };
+
+/** Long enough to read one line, short enough not to feel like a wait. */
+const CONNECTED_DWELL_MS = 900;
 
 export type ConnectPanelProps = {
   /**
@@ -80,8 +91,11 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
       setState({ phase: "connecting" });
       void (async () => {
         const { winner } = await persistPairing(update);
-        toast.success(pairedMessage(update.descriptor, winner));
-        router.push("/");
+        setState({
+          phase: "connected",
+          message: pairedMessage(update.descriptor, winner),
+        });
+        setTimeout(() => router.push("/"), CONNECTED_DWELL_MS);
       })();
     },
     [router],
@@ -146,7 +160,10 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
     join(digits);
   }
 
-  const busy = state.phase === "verifying" || state.phase === "connecting";
+  const busy =
+    state.phase === "verifying" ||
+    state.phase === "connecting" ||
+    state.phase === "connected";
 
   return (
     <div className="space-y-4">
@@ -173,6 +190,15 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
         <p className="text-center text-sm text-muted-foreground" role="status">
           Connecting…
         </p>
+      )}
+
+      {state.phase === "connected" && (
+        <div className="space-y-1 text-center" role="status">
+          <p className="text-sm font-medium text-foreground">{state.message}</p>
+          <p className="text-xs text-muted-foreground">
+            Opening your terminal…
+          </p>
+        </div>
       )}
 
       {state.phase === "failed" && (
