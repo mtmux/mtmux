@@ -7,13 +7,16 @@ import { Skeleton } from "@repo/ui/components/ui/skeleton";
 import { cn } from "@repo/ui/lib/utils";
 import {
   AlertCircle,
+  Loader2,
   Lock,
+  Plus,
   RefreshCw,
+  Search,
   Share2,
   TerminalSquare,
 } from "lucide-react";
 import { toast } from "sonner";
-import { apiFetch, hostedApiUrl, isHostedBuild } from "@/lib/auth-client";
+import { hostedApiUrl, isHostedBuild } from "@/lib/auth-client";
 import { getActive, getActiveServerId } from "@/lib/relay-registry";
 import {
   browserProbe,
@@ -29,7 +32,11 @@ import { activateDescriptor } from "@/lib/session-store";
 import { isSessionLocked, setSessionLock } from "@/lib/lock-store";
 import { isEnrolled, isUnlocked } from "@/lib/unlocked";
 import { RequireUnlockDialog } from "@/components/lock/require-unlock-dialog";
-import { LAST_SESSION_KEY, writeStored } from "@/lib/storage-keys";
+import {
+  LAST_SESSION_KEY,
+  OPEN_NEW_SESSION_KEY,
+  writeStored,
+} from "@/lib/storage-keys";
 import {
   filesDisabled,
   isReadOnly,
@@ -39,6 +46,10 @@ import { useSessionStore } from "@/stores/session-store";
 import { deviceIdForPublicKey } from "./connect-to-server";
 import { timeAgo } from "./format";
 import { ShareDialog } from "./share-dialog";
+import type { RegisteredServer } from "./server-row";
+import { MIN_PAIR_CLI_VERSION, semverGte } from "@/lib/semver-gte";
+import { CopyCommand } from "./copy-command";
+import { Input } from "@repo/ui/components/ui/input";
 
 /**
  * Everything running on every machine this browser can open.
@@ -60,24 +71,22 @@ import { ShareDialog } from "./share-dialog";
  * an empty list with nothing on it to act on.
  */
 
-type RawServer = { publicKey?: unknown; name?: unknown; online?: unknown };
-
-/** The account's view of the same machines, for names and an online hint. */
-async function fetchServers(): Promise<BrokerServer[] | null> {
+/**
+ * The account's view of the same machines, for names and an online hint.
+ *
+ * Built from what the page already fetched rather than from a second `GET
+ * /v1/servers`. Two requests for one answer was the small problem; two
+ * different normalizers for it was the real one, because a machine could be
+ * online in this list and offline in the one below it.
+ */
+function toBrokerServers(servers: RegisteredServer[]): BrokerServer[] | null {
   if (!isHostedBuild) return null;
-  const body = await apiFetch<{ servers?: RawServer[] }>("/v1/servers");
-  const servers = Array.isArray(body.servers) ? body.servers : [];
   return servers
     .map((raw) => {
-      const publicKey = typeof raw.publicKey === "string" ? raw.publicKey : "";
-      const serverId = publicKey ? deviceIdForPublicKey(publicKey) : null;
-      return serverId
-        ? {
-            serverId,
-            name: typeof raw.name === "string" ? raw.name : "",
-            online: raw.online === true,
-          }
+      const serverId = raw.publicKey
+        ? deviceIdForPublicKey(raw.publicKey)
         : null;
+      return serverId ? { serverId, name: raw.name, online: raw.online } : null;
     })
     .filter((s): s is BrokerServer => s !== null);
 }
@@ -116,8 +125,30 @@ function seedRow(target: CensusTarget): CensusRow {
   };
 }
 
-export function AllSessions() {
+export type AllSessionsProps = {
+  /** Fetched once by the page — see `hooks/use-servers.ts`. */
+  servers: RegisteredServer[];
+  /** Whether that fetch has landed, so skeletons can be the right shape. */
+  serversReady: boolean;
+  /**
+   * Open the access-request dialog for a machine.
+   *
+   * Owned by the page rather than by the card. The broker allows one live
+   * request per device, so N mounted dialogs are N ways to race into a 409 —
+   * which is exactly why the unpaired card used to point at an anchor instead
+   * of just doing the thing.
+   */
+  onRequestAccess: (server: RegisteredServer) => void;
+};
+
+export function AllSessions({
+  servers,
+  serversReady,
+  onRequestAccess,
+}: AllSessionsProps) {
   const [rows, setRows] = useState<CensusRow[]>([]);
+  /** Free-text filter over session and machine names. Only shown when it earns it. */
+  const [filter, setFilter] = useState("");
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [now, setNow] = useState(() => Date.now());
   const [opening, setOpening] = useState<string | null>(null);
@@ -135,11 +166,16 @@ export function AllSessions() {
   /** Only the newest run may paint; a Refresh mid-fan-out must not interleave. */
   const runId = useRef(0);
 
+  const serversRef = useRef(servers);
+  serversRef.current = servers;
+
   const refresh = useCallback(async (force = false) => {
     const id = ++runId.current;
     setPhase("loading");
     try {
-      const targets = await collectTargets({ fetchServers });
+      const targets = await collectTargets({
+        fetchServers: async () => toBrokerServers(serversRef.current),
+      });
       if (id !== runId.current) return;
 
       const byId = new Map(targets.map((t) => [t.serverId, seedRow(t)]));
@@ -165,9 +201,14 @@ export function AllSessions() {
     }
   }, []);
 
+  // Re-run when the machine list arrives or changes, since the census is built
+  // from it. `servers` is a fresh array each fetch, so the length+ids key keeps
+  // this from re-probing on every render.
+  const serverKey = servers.map((s) => `${s.id}:${s.online}`).join(",");
   useEffect(() => {
+    if (!serversReady) return;
     void refresh();
-  }, [refresh]);
+  }, [refresh, serversReady, serverKey]);
 
   // Keeps "3h ago" honest without re-probing anything.
   useEffect(() => {
@@ -201,6 +242,21 @@ export function AllSessions() {
     // The terminal layout restores this on mount, so the session you asked for
     // is the one that opens.
     writeStored(LAST_SESSION_KEY, session);
+    /*
+     * A full document load, deliberately, and this is the one place it is.
+     *
+     * `router.push` would keep the running client tree, and with it three
+     * Zustand stores holding the *previous* machine's state: `session-store`'s
+     * session list, `pane-store`'s panes, `connection-store`'s capabilities.
+     * None has a reset path, and all three are repopulated only once the new
+     * relay answers — so the terminal would paint another machine's session
+     * names for a beat before correcting itself. On a page whose entire premise
+     * is that session names never leave the device that owns them, a flash of
+     * the wrong machine's names is the wrong trade for a smoother transition.
+     *
+     * Making this a soft navigation means giving those stores a reset, which is
+     * a change to the terminal's lifecycle rather than to this page.
+     */
     window.location.assign("/");
   }
 
@@ -230,7 +286,60 @@ export function AllSessions() {
   const total = rows.reduce((sum, row) => sum + row.sessions.length, 0);
   const busy = phase === "loading" || rows.some((row) => row.pending);
 
-  if (phase === "loading" && rows.length === 0) return <SessionSkeletons />;
+  /**
+   * A filter, once there is enough on screen to need one.
+   *
+   * Below about eight sessions the box is a control that costs a row and earns
+   * nothing; above it, scrolling a phone to find `deploy-prod` among twenty is
+   * the actual task.
+   */
+  const showFilter = total > 8;
+  const needle = filter.trim().toLowerCase();
+  const visible = !needle
+    ? rows
+    : rows
+        .map((row) => {
+          // A machine matching by name keeps all of its sessions, so filtering
+          // by machine is a way to see everything on one box.
+          if (row.name.toLowerCase().includes(needle)) return row;
+          const sessions = row.sessions.filter((session) =>
+            session.name.toLowerCase().includes(needle),
+          );
+          return sessions.length > 0 ? { ...row, sessions } : null;
+        })
+        .filter((row): row is CensusRow => row !== null);
+
+  const serverFor = (serverId: string): RegisteredServer | null =>
+    servers.find((s) => deviceIdForPublicKey(s.publicKey) === serverId) ?? null;
+
+  /**
+   * Start a session without opening a terminal first.
+   *
+   * A strange gap on a page whose entire job is sessions: the only way to make
+   * one was to open an existing one and use the terminal's own UI, which is
+   * impossible on a machine with none.
+   */
+  async function handleNewSession(row: CensusRow) {
+    const paired = await activateDescriptor(row.serverId);
+    if (!paired) {
+      toast.info("Not available yet", {
+        description:
+          "This browser no longer holds keys for that machine. Run `mtmux` " +
+          "on it and scan the code once.",
+      });
+      return;
+    }
+    // Creating one needs a live relay connection, which this page has for no
+    // machine in particular. So the instruction travels instead: the terminal
+    // reads this flag once on arrival and opens the create dialog.
+    window.sessionStorage.setItem(OPEN_NEW_SESSION_KEY, "1");
+    window.location.assign("/");
+  }
+
+  if (phase === "loading" && rows.length === 0) {
+    // Shaped like what is arriving, so the first paint does not jump.
+    return <SessionSkeletons count={servers.length} />;
+  }
 
   if (phase === "error") {
     return (
@@ -260,13 +369,22 @@ export function AllSessions() {
   return (
     <>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground" role="status">
+        {/*
+          Not a live region. One `role="status"` alternating between "Checking…"
+          and a count re-announces the whole count on every 30-second tick, so a
+          screen reader user hears "4 sessions across 2 machines" twice a minute
+          forever. The transition is announced separately, once.
+        */}
+        <p className="text-sm text-muted-foreground">
           {busy
             ? "Checking your machines…"
             : `${total} session${total === 1 ? "" : "s"} across ${rows.length} machine${
                 rows.length === 1 ? "" : "s"
               }`}
         </p>
+        <span className="sr-only" role="status">
+          {busy ? "Checking your machines" : ""}
+        </span>
         <Button
           variant="ghost"
           className="h-11"
@@ -281,8 +399,29 @@ export function AllSessions() {
         </Button>
       </div>
 
-      <ul className="space-y-3">
-        {rows.map((row) => (
+      {showFilter && (
+        <div className="relative mb-3">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter sessions"
+            aria-label="Filter sessions by name or machine"
+            className="h-11 pl-9"
+          />
+        </div>
+      )}
+
+      <ul className="space-y-3" aria-label="Machines and their sessions">
+        {visible.length === 0 && (
+          <li className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+            Nothing matches &ldquo;{filter}&rdquo;.
+          </li>
+        )}
+        {visible.map((row) => (
           <MachineGroup
             key={row.serverId}
             row={row}
@@ -293,6 +432,9 @@ export function AllSessions() {
             onToggleLock={(session) => void toggleSessionLock(row, session)}
             lockTick={lockTick}
             onRetry={() => void refresh(true)}
+            onRequestAccess={onRequestAccess}
+            server={serverFor(row.serverId)}
+            onNewSession={() => void handleNewSession(row)}
           />
         ))}
       </ul>
@@ -331,6 +473,9 @@ function MachineGroup({
   onToggleLock,
   lockTick,
   onRetry,
+  onRequestAccess,
+  server,
+  onNewSession,
 }: {
   row: CensusRow;
   now: number;
@@ -341,6 +486,10 @@ function MachineGroup({
   /** Changes when a lock is toggled, so the icons re-read the sealed record. */
   lockTick: number;
   onRetry: () => void;
+  onRequestAccess: (server: RegisteredServer) => void;
+  /** The account's record for this machine, when there is one. */
+  server: RegisteredServer | null;
+  onNewSession: () => void;
 }) {
   /**
    * A machine on the account that this browser holds no keys for.
@@ -354,6 +503,17 @@ function MachineGroup({
   const unpaired = row.paired === false;
   const stale = !unpaired && row.source === "cache" && !row.pending;
   const reachable = !stale && !unpaired;
+  /**
+   * Whether to tell the user to upgrade.
+   *
+   * `semverGte` returns null for anything it cannot parse, and `=== false` is
+   * the point: `cliVersion` is free text the broker stores on a machine's
+   * behalf, so an unrecognised value must read as "unknown" and show nothing.
+   * Telling someone to upgrade a CLI that is already current is worse than
+   * saying nothing, because the upgrade changes nothing they can see.
+   */
+  const needsUpgrade =
+    semverGte(server?.cliVersion ?? null, MIN_PAIR_CLI_VERSION) === false;
 
   if (unpaired) {
     return (
@@ -378,10 +538,38 @@ function MachineGroup({
             This browser has no keys for {row.name}, so it cannot see what is
             running there yet.
           </p>
-          <Button asChild variant="outline" size="sm" className="h-9 shrink-0">
-            <a href="#your-machines">Pair this device</a>
+          {/*
+            Does the thing, rather than pointing at a second card for the same
+            machine that has a second button that does the thing. That anchor
+            cost two taps and a scroll for one action, and moved no focus.
+          */}
+          <Button
+            size="sm"
+            className="h-9 shrink-0"
+            disabled={!server || !row.online}
+            onClick={() => server && onRequestAccess(server)}
+          >
+            Pair this device
           </Button>
         </div>
+        {!row.online && (
+          <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+            It has to be online to be asked — the request travels over its own
+            tunnel.
+          </p>
+        )}
+        {needsUpgrade && (
+          <div className="space-y-2 border-t border-border px-4 py-3">
+            <p className="text-xs text-muted-foreground">
+              {/* The direct dependency between this section and the rest of the
+                  branch: `mtmux approve` does not exist before 0.6.0, and
+                  `mtmux pair` below it cannot read the code this app now shows. */}
+              This machine is on mtmux v{server?.cliVersion}. Update it to pair
+              from here.
+            </p>
+            <CopyCommand command="mtmux upgrade" />
+          </div>
+        )}
       </li>
     );
   }
@@ -430,6 +618,20 @@ function MachineGroup({
             Retry
           </Button>
         )}
+
+        {/* Creating a session used to require opening one first, which is
+            impossible on a machine that has none. */}
+        {reachable && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 shrink-0"
+            onClick={onNewSession}
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            New session
+          </Button>
+        )}
       </div>
 
       {row.error && (
@@ -447,7 +649,14 @@ function MachineGroup({
               : "Nothing running here yet."}
         </p>
       ) : (
-        <ul className={cn("divide-y divide-border", stale && "opacity-60")}>
+        // No `opacity-60` on a stale group. It landed under 4.5:1 against
+        // `text-muted-foreground`, and `theme-contrast.test.ts` cannot catch it
+        // because the tokens are fine and the opacity is not. Staleness is
+        // carried by the dated label and the dot in the header instead.
+        <ul
+          className="divide-y divide-border"
+          aria-label={`Sessions on ${row.name}`}
+        >
           {row.sessions.map((session) => {
             // `lockTick` is read so a toggle repaints; the value itself is a
             // module-level lookup, not React state.
@@ -477,14 +686,23 @@ function MachineGroup({
                 </div>
 
                 <div className="flex shrink-0 items-center gap-1">
+                  {/* Scoped to this row. It used to be `opening !== null`,
+                      which greyed out every Open button on the page while one
+                      session was being opened — on a dashboard whose whole job
+                      is a list of things to open. */}
                   <Button
                     className="h-11 px-5"
-                    disabled={opening !== null}
+                    disabled={opening === `${row.serverId}:${session.name}`}
                     onClick={() => onOpen(row, session.name)}
                   >
-                    {opening === `${row.serverId}:${session.name}`
-                      ? "Opening…"
-                      : "Open"}
+                    {opening === `${row.serverId}:${session.name}` ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                        Opening…
+                      </>
+                    ) : (
+                      "Open"
+                    )}
                   </Button>
                   <Button
                     variant="ghost"
@@ -533,10 +751,12 @@ function MachineGroup({
   );
 }
 
-function SessionSkeletons() {
+function SessionSkeletons({ count }: { count: number }) {
+  // Hardcoded 2 meant a user with five machines watched the list jump on every
+  // load. Capped at 3 because past that the skeleton is noise, not a preview.
   return (
     <div className="space-y-3" aria-hidden>
-      {[0, 1].map((i) => (
+      {Array.from({ length: Math.max(1, Math.min(count || 2, 3)) }, (_, i) => (
         <div key={i} className="rounded-lg border border-border">
           <div className="border-b border-border px-4 py-3">
             <Skeleton className="h-4 w-40" />
@@ -565,8 +785,9 @@ function EmptyState() {
       </h2>
       <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
         Sessions are read from this device, not from your account — so a machine
-        appears here once this browser has paired with it. Pair one below and it
-        shows up straight away.
+        appears here once this browser has paired with it. Run{" "}
+        <code className="font-mono text-xs">mtmux</code> on a machine and scan
+        the code once.
       </p>
     </div>
   );

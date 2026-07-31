@@ -50,16 +50,31 @@ following are especially welcome.
 
 ### Pairing
 
-- **Anything that lets the broker learn the four-digit secret.** It is generated
-  in the browser, is the CPace password, and must never reach the broker — not
-  even as a hash.
+- **Anything that lets the broker learn the secret half of the code.** It is
+  generated locally, is the CPace password, and must never reach the broker —
+  not even as a hash. Only the leading slot digits are ever transmitted.
 - Getting more than one guess per code. A failed key confirmation destroys the
   mailbox by design; a path that leaves it alive breaks the whole guessing
   bound.
+- **Getting an unbounded supply of codes to guess at.** One guess per code only
+  bounds anything if the supply of codes is finite. `mtmux start` spends from a
+  per-failure budget that nothing but a completed pairing resets, and backs off
+  from the fourth wrong code — a way around either is a way back to an unlimited
+  online search, whatever the code length.
+- Learning whether a pairing is live on a slot without spending a guess. The
+  claim endpoint answers identically either way, by design; anything that
+  distinguishes them is an enumeration oracle.
 - Defeating the claim or mailbox rate limits, including by forging
   `X-Forwarded-For`.
 - Pairing a victim's CLI to an attacker's browser, or the reverse.
 - Leaking the pairing code out of the URL fragment.
+
+**Known and accepted:** the one-guess bound rests on clients honestly sending
+`pair:close` after a failed confirmation. A malicious _holder_ that never closes
+keeps its own mailbox alive past a wrong guess. The broker cannot verify a
+confirmation it is unable to read — that is the same property that stops it
+impersonating either side — so this stays client-enforced. It costs an attacker
+nothing they do not already have: the mailbox in question is their own.
 
 ### The sealed tunnel
 

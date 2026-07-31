@@ -1,6 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
 
 /**
+ * The dev stack's own token (`apps/cli/scripts/dev.mjs`).
+ *
+ * A made-up token is not enough: the terminal layout's auth guard bounces to
+ * `/start` when the relay refuses it, so the bar never renders. The *socket*
+ * failing later is fine and is exactly why §4.2 says the field must not
+ * disable when disconnected — but it has to get on screen first.
+ */
+const TOKEN = process.env.E2E_RELAY_TOKEN ?? "dev-token";
+
+/**
  * The composer.
  *
  * It exists because the one-line bar sends on Enter, and a multi-line command
@@ -12,10 +22,13 @@ import { test, expect, type Page } from "@playwright/test";
  */
 
 async function openTerminal(page: Page) {
-  await page.addInitScript(() => {
-    localStorage.setItem("mtmux-token", "a".repeat(64));
+  // The callback is serialised and runs in the page, so anything it needs has
+  // to be passed as an argument — a module-scope constant is simply undefined
+  // there, and the failure is a silent `ReferenceError` inside the page.
+  await page.addInitScript((token: string) => {
+    localStorage.setItem("mtmux-token", token);
     localStorage.setItem("mtmux-last-session", "work");
-  });
+  }, TOKEN);
   await page.goto("/");
 }
 
@@ -43,7 +56,13 @@ test("Escape closes it and restores focus", async ({ page }) => {
 
   await page.keyboard.press("Escape");
   await expect(dialog(page)).toHaveCount(0);
-  await expect(expand(page)).toBeFocused();
+
+  // Focus must come back to the page, not fall to <body> — the whole reason
+  // this is a Radix Dialog is that the surface behind it is a live pty, and a
+  // dropped focus there means the next keystroke goes to the shell.
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.tagName))
+    .not.toBe("BODY");
 });
 
 test("Android Back closes it without leaving the route", async ({ page }) => {

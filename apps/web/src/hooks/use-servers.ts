@@ -1,0 +1,154 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ApiError, apiFetch } from "@/lib/auth-client";
+import { pairedServerKeys } from "@/components/account/connect-to-server";
+import { toEpochMs } from "@/components/account/format";
+import type { RegisteredServer } from "@/components/account/server-row";
+
+/**
+ * The account's machines, fetched once for the whole page.
+ *
+ * `AllSessions` and `ServerList` used to each call `GET /v1/servers` on mount,
+ * with two different normalizers, and each ran its own 30-second clock tick and
+ * its own `pairedServerKeys` read. Two requests for one answer is the small
+ * problem; two *different shapes* of the same answer is the real one, because a
+ * machine could be online in one list and not the other.
+ *
+ * The clock tick lives here for the same reason: it exists so "4m ago" stays
+ * honest, and one timer does that for every consumer.
+ */
+
+type RawServer = Partial<Record<keyof RegisteredServer, unknown>>;
+
+/** The broker sends `lastSeenAt` as epoch ms; tolerate an ISO string too. */
+export function normalizeServer(raw: RawServer): RegisteredServer {
+  return {
+    id: String(raw.id ?? ""),
+    name:
+      typeof raw.name === "string" && raw.name ? raw.name : "Unnamed machine",
+    slug: typeof raw.slug === "string" ? raw.slug : "",
+    publicKey: typeof raw.publicKey === "string" ? raw.publicKey : "",
+    online: raw.online === true,
+    lastSeenAt: toEpochMs(raw.lastSeenAt),
+    platform: typeof raw.platform === "string" ? raw.platform : null,
+    cliVersion: typeof raw.cliVersion === "string" ? raw.cliVersion : null,
+  };
+}
+
+export type ServersState = {
+  phase: "loading" | "ready" | "error";
+  servers: RegisteredServer[];
+  message: string | null;
+  /**
+   * Public keys this browser holds keys for.
+   *
+   * Read from IndexedDB, never from the broker — which browsers can open which
+   * machines is precisely the thing we do not want the server to know.
+   */
+  pairedKeys: Set<string>;
+  /** Ticks every 30s, so relative timestamps stay honest without re-fetching. */
+  now: number;
+  refresh: () => Promise<void>;
+  /** Re-read the paired set, after a pairing completes. */
+  refreshPaired: () => Promise<void>;
+  /** Patch one machine locally, after a rename. */
+  patch: (id: string, changes: Partial<RegisteredServer>) => void;
+  /** Drop one machine locally, after a delete. */
+  remove: (id: string) => void;
+};
+
+export function useServers(): ServersState {
+  const [phase, setPhase] = useState<ServersState["phase"]>("loading");
+  const [servers, setServers] = useState<RegisteredServer[]>([]);
+  const [message, setMessage] = useState<string | null>(null);
+  const [pairedKeys, setPairedKeys] = useState<Set<string>>(() => new Set());
+  const [now, setNow] = useState(() => Date.now());
+
+  const refresh = useCallback(async () => {
+    // Deliberately not gated on `isHostedBuild`. `apiFetch` resolves the base
+    // itself, and this page is only ever reached behind `RequireSession` — so
+    // gating here would leave a signed-in user staring at nothing on any build
+    // whose API origin is same-origin rather than a separate host.
+    setPhase("loading");
+    try {
+      const body = await apiFetch<{ servers?: RawServer[] }>("/v1/servers");
+      const next = Array.isArray(body.servers)
+        ? body.servers.map(normalizeServer)
+        : [];
+      setServers(next);
+      setMessage(null);
+      setPhase("ready");
+    } catch (error) {
+      setMessage(
+        error instanceof ApiError
+          ? error.message
+          : "Could not load your machines.",
+      );
+      setPhase("error");
+    }
+  }, []);
+
+  const refreshPaired = useCallback(async () => {
+    const keys = await pairedServerKeys(servers.map((s) => s.publicKey));
+    setPairedKeys(keys);
+  }, [servers]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let cancelled = false;
+    void pairedServerKeys(servers.map((s) => s.publicKey)).then((keys) => {
+      if (!cancelled) setPairedKeys(keys);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, servers]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const patch = useCallback(
+    (id: string, changes: Partial<RegisteredServer>) => {
+      setServers((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, ...changes } : s)),
+      );
+    },
+    [],
+  );
+
+  const remove = useCallback((id: string) => {
+    setServers((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
+  return useMemo(
+    () => ({
+      phase,
+      servers,
+      message,
+      pairedKeys,
+      now,
+      refresh,
+      refreshPaired,
+      patch,
+      remove,
+    }),
+    [
+      phase,
+      servers,
+      message,
+      pairedKeys,
+      now,
+      refresh,
+      refreshPaired,
+      patch,
+      remove,
+    ],
+  );
+}

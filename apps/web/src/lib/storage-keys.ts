@@ -23,6 +23,17 @@ import { localToken } from "./unlocked";
 export const TOKEN_KEY = "mtmux-token";
 export const LAST_SESSION_KEY = "mtmux-last-session";
 
+/**
+ * Set by the dashboard's "New session", read and cleared by the terminal.
+ *
+ * `sessionStorage`, not `localStorage`: it is a one-shot instruction for the
+ * next navigation, and a stale copy of it would pop a dialog at someone who
+ * opened the terminal a week later. Creating a session needs a live relay
+ * connection, which the dashboard does not have and the terminal does — so the
+ * dashboard's job is to say what to do on arrival, not to do it.
+ */
+export const OPEN_NEW_SESSION_KEY = "mtmux-open-new-session";
+
 const LEGACY = {
   [TOKEN_KEY]: "ccremote-token",
   [LAST_SESSION_KEY]: "ccremote-last-session",

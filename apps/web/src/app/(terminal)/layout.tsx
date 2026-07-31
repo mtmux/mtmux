@@ -54,6 +54,7 @@ import { markBounced } from "@/lib/bounce-guard";
 import { isHostedBuild } from "@/lib/auth-client";
 import {
   LAST_SESSION_KEY,
+  OPEN_NEW_SESSION_KEY,
   readSelfHostedToken,
   readStored,
 } from "@/lib/storage-keys";
@@ -102,6 +103,21 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   const [transport, setTransport] = useState<TransportFactory | undefined>();
   const { mobileTab, setMobileTab } = useUiStore();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+
+  /**
+   * "New session" on the dashboard lands here.
+   *
+   * Creating one needs a live relay connection, which the dashboard has for no
+   * machine in particular — so it activates the descriptor, leaves a one-shot
+   * flag, and this opens the dialog once the socket is up. Read and cleared
+   * immediately, so a back-navigation does not re-open it.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.sessionStorage.getItem(OPEN_NEW_SESSION_KEY) !== "1") return;
+    window.sessionStorage.removeItem(OPEN_NEW_SESSION_KEY);
+    setShowCreateDialog(true);
+  }, []);
   const isMobile = useStableMediaQuery("(max-width: 768px)");
   const { status, latency, reconnectCount } = useConnectionStore();
   const { activeSessionId } = useSessionStore();

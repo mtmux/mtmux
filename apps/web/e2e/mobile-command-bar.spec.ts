@@ -1,6 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
 
 /**
+ * The dev stack's own token (`apps/cli/scripts/dev.mjs`).
+ *
+ * A made-up token is not enough: the terminal layout's auth guard bounces to
+ * `/start` when the relay refuses it, so the bar never renders. The *socket*
+ * failing later is fine and is exactly why §4.2 says the field must not
+ * disable when disconnected — but it has to get on screen first.
+ */
+const TOKEN = process.env.E2E_RELAY_TOKEN ?? "dev-token";
+
+/**
  * The command bar on a phone.
  *
  * The reported problem was that it grew to four rows and ate the screen: with a
@@ -15,10 +25,13 @@ import { test, expect, type Page } from "@playwright/test";
  */
 
 async function openTerminal(page: Page) {
-  await page.addInitScript(() => {
-    localStorage.setItem("mtmux-token", "a".repeat(64));
+  // The callback is serialised and runs in the page, so anything it needs has
+  // to be passed as an argument — a module-scope constant is simply undefined
+  // there, and the failure is a silent `ReferenceError` inside the page.
+  await page.addInitScript((token: string) => {
+    localStorage.setItem("mtmux-token", token);
     localStorage.setItem("mtmux-last-session", "work");
-  });
+  }, TOKEN);
   await page.goto("/");
 }
 
@@ -93,14 +106,15 @@ test.describe("the one-line bar", () => {
 
 test.describe("the microphone", () => {
   test("is absent when the browser has no Web Speech", async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem("mtmux-token", "a".repeat(64));
+    await page.addInitScript((token: string) => {
+      localStorage.setItem("mtmux-token", token);
+      localStorage.setItem("mtmux-last-session", "work");
       // Firefox's situation. There is no action a user can take, so the right
       // answer is to render nothing rather than a permanently dead button.
       delete (window as unknown as Record<string, unknown>).SpeechRecognition;
       delete (window as unknown as Record<string, unknown>)
         .webkitSpeechRecognition;
-    });
+    }, TOKEN);
     await page.goto("/");
     await expect(bar(page)).toBeVisible();
     await expect(
@@ -109,8 +123,9 @@ test.describe("the microphone", () => {
   });
 
   test("appears purely from feature detection", async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem("mtmux-token", "a".repeat(64));
+    await page.addInitScript((token: string) => {
+      localStorage.setItem("mtmux-token", token);
+      localStorage.setItem("mtmux-last-session", "work");
       (window as unknown as Record<string, unknown>).webkitSpeechRecognition =
         function StubRecognition() {
           return {
@@ -122,7 +137,7 @@ test.describe("the microphone", () => {
             abort() {},
           };
         };
-    });
+    }, TOKEN);
     await page.goto("/");
     await expect(bar(page)).toBeVisible();
     await expect(

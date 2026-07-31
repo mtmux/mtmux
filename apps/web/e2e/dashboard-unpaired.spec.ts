@@ -92,9 +92,12 @@ test.describe("a dashboard with no pairings", () => {
 
     // The row is an invitation to pair, not a session list. A row you cannot
     // act on is the same dead end as no row at all.
+    // One per machine, not two. The page used to render every machine twice —
+    // once as a session group and once under "Your machines" — so this count
+    // was written against the duplicated layout.
     const pairButtons = page.getByRole("button", { name: "Pair this device" });
     await expect(pairButtons.first()).toBeVisible({ timeout: 15_000 });
-    await expect(pairButtons).toHaveCount(2);
+    await expect(pairButtons).toHaveCount(SERVERS.length);
 
     // "Open" would be a promise this browser cannot keep — it holds no keys.
     await expect(page.getByRole("button", { name: "Open" })).toHaveCount(0);

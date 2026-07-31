@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import {
   AlertDialog,
@@ -17,37 +17,29 @@ import { Skeleton } from "@repo/ui/components/ui/skeleton";
 import { AlertCircle, RefreshCw, Server, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, apiFetch } from "@/lib/auth-client";
-import { connectToServer, pairedServerKeys } from "./connect-to-server";
-import { toEpochMs } from "./format";
-import { RequestAccessDialog } from "./request-access-dialog";
+import type { ServersState } from "@/hooks/use-servers";
+import { connectToServer } from "./connect-to-server";
 import { ServerRow, type RegisteredServer } from "./server-row";
 import { InstallMachine } from "@/components/entry/install-machine";
 
-type Load =
-  | { state: "loading" }
-  | { state: "error"; message: string }
-  | { state: "ready"; servers: RegisteredServer[] };
-
-type RawServer = Partial<Record<keyof RegisteredServer, unknown>>;
-
-/** The broker sends `lastSeenAt` as epoch ms; tolerate an ISO string too. */
-function normalize(raw: RawServer): RegisteredServer {
-  return {
-    id: String(raw.id ?? ""),
-    name:
-      typeof raw.name === "string" && raw.name ? raw.name : "Unnamed machine",
-    slug: typeof raw.slug === "string" ? raw.slug : "",
-    publicKey: typeof raw.publicKey === "string" ? raw.publicKey : "",
-    online: raw.online === true,
-    lastSeenAt: toEpochMs(raw.lastSeenAt),
-    platform: typeof raw.platform === "string" ? raw.platform : null,
-    cliVersion: typeof raw.cliVersion === "string" ? raw.cliVersion : null,
-  };
-}
-
-export function ServerList() {
-  const [load, setLoad] = useState<Load>({ state: "loading" });
-  const [now, setNow] = useState(() => Date.now());
+/**
+ * The management section: rename, remove, share, install.
+ *
+ * No longer the only route to pairing, and no longer a second copy of the
+ * machine list — the cards above own that, and this owns what you do to a
+ * machine rather than with it. Its state comes from `useServers`, so there is
+ * one `GET /v1/servers`, one normalizer and one clock tick for the page.
+ */
+export function ServerList({
+  servers: state,
+  onRequestAccess,
+}: {
+  servers: ServersState;
+  /** Owned by the page — one dialog, because the broker allows one request. */
+  onRequestAccess: (server: RegisteredServer) => void;
+}) {
+  const { servers, phase, message, pairedKeys, now, refresh, patch, remove } =
+    state;
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notices, setNotices] = useState<Record<string, string>>({});
   const [pendingDelete, setPendingDelete] = useState<RegisteredServer | null>(
@@ -55,61 +47,6 @@ export function ServerList() {
   );
   const [deleting, setDeleting] = useState(false);
   const [upgrade, setUpgrade] = useState<string | null>(null);
-  /**
-   * The machine whose access request is in flight, or null.
-   *
-   * One piece of state for the whole list, not one dialog per row: the broker
-   * enforces a single live request per device, so N mounted dialogs would be N
-   * ways to race each other into a 409.
-   */
-  const [requesting, setRequesting] = useState<RegisteredServer | null>(null);
-  /**
-   * Machines this browser holds keys for.
-   *
-   * Read from IndexedDB, never from the broker — which browsers can open which
-   * machines is precisely the thing we do not want the server to know.
-   */
-  const [pairedKeys, setPairedKeys] = useState<Set<string>>(() => new Set());
-
-  const refresh = useCallback(async () => {
-    setLoad({ state: "loading" });
-    try {
-      const body = await apiFetch<{ servers?: RawServer[] }>("/v1/servers");
-      const servers = Array.isArray(body.servers)
-        ? body.servers.map(normalize)
-        : [];
-      setLoad({ state: "ready", servers });
-    } catch (error) {
-      setLoad({
-        state: "error",
-        message:
-          error instanceof ApiError
-            ? error.message
-            : "Could not load your machines.",
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if (load.state !== "ready") return;
-    let cancelled = false;
-    void pairedServerKeys(load.servers.map((s) => s.publicKey)).then((keys) => {
-      if (!cancelled) setPairedKeys(keys);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  // Keeps "4m ago" honest without polling the broker.
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   /**
    * Three outcomes, and only one of them used to work.
@@ -131,11 +68,15 @@ export function ServerList() {
     try {
       const result = await connectToServer(server.publicKey);
       if (result.ok) {
+        // A hard navigation, deliberately: `connectToServer` writes the active
+        // descriptor and the terminal reads it during store hydration on mount.
+        // `router.push` would reuse the running client tree, which has already
+        // hydrated against the previous machine.
         window.location.assign(result.href);
         return;
       }
       if (server.online) {
-        setRequesting(server);
+        onRequestAccess(server);
         return;
       }
       setNotices((prev) => ({ ...prev, [server.id]: result.reason }));
@@ -154,16 +95,7 @@ export function ServerList() {
         method: "PATCH",
         json: { name },
       });
-      setLoad((prev) =>
-        prev.state === "ready"
-          ? {
-              ...prev,
-              servers: prev.servers.map((s) =>
-                s.id === server.id ? { ...s, name } : s,
-              ),
-            }
-          : prev,
-      );
+      patch(server.id, { name });
       toast.success(`Renamed to ${name}`);
       return true;
     } catch (error) {
@@ -190,11 +122,7 @@ export function ServerList() {
       await apiFetch(`/v1/servers/${encodeURIComponent(target.id)}`, {
         method: "DELETE",
       });
-      setLoad((prev) =>
-        prev.state === "ready"
-          ? { ...prev, servers: prev.servers.filter((s) => s.id !== target.id) }
-          : prev,
-      );
+      remove(target.id);
       toast.success(`Removed ${target.name}`);
       setPendingDelete(null);
     } catch (error) {
@@ -210,9 +138,9 @@ export function ServerList() {
 
   return (
     <>
-      {load.state === "loading" && <ServerSkeletons />}
+      {phase === "loading" && <ServerSkeletons count={servers.length} />}
 
-      {load.state === "error" && (
+      {phase === "error" && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-center">
           <AlertCircle
             className="mx-auto h-6 w-6 text-destructive"
@@ -221,7 +149,7 @@ export function ServerList() {
           <h2 className="mt-3 text-base font-medium text-foreground">
             Couldn&apos;t load your machines
           </h2>
-          <p className="mt-1 text-sm text-muted-foreground">{load.message}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{message}</p>
           <Button
             variant="outline"
             className="mt-4 h-11"
@@ -233,11 +161,11 @@ export function ServerList() {
         </div>
       )}
 
-      {load.state === "ready" && load.servers.length === 0 && <EmptyState />}
+      {phase === "ready" && servers.length === 0 && <EmptyState />}
 
-      {load.state === "ready" && load.servers.length > 0 && (
-        <ul className="space-y-3">
-          {load.servers.map((server) => (
+      {phase === "ready" && servers.length > 0 && (
+        <ul className="space-y-3" aria-label="Machines on this account">
+          {servers.map((server) => (
             <ServerRow
               key={server.id}
               server={server}
@@ -252,20 +180,6 @@ export function ServerList() {
           ))}
         </ul>
       )}
-
-      <RequestAccessDialog
-        server={requesting}
-        onOpenChange={(open) => {
-          if (!open) setRequesting(null);
-        }}
-        onPaired={() => {
-          // Re-read which machines this browser holds keys for, so the row
-          // flips from "Pair this device" to "Open" without a reload.
-          void pairedServerKeys(
-            load.state === "ready" ? load.servers.map((s) => s.publicKey) : [],
-          ).then(setPairedKeys);
-        }}
-      />
 
       <AlertDialog
         open={pendingDelete !== null}
@@ -329,10 +243,16 @@ export function ServerList() {
   );
 }
 
-function ServerSkeletons() {
+/**
+ * Skeletons shaped like what is about to arrive.
+ *
+ * Two hardcoded rows meant a user with five machines watched the list jump on
+ * every load. `knownMachines` is whatever the previous fetch left behind.
+ */
+function ServerSkeletons({ count }: { count: number }) {
   return (
     <div className="space-y-3" aria-hidden>
-      {[0, 1].map((i) => (
+      {Array.from({ length: Math.max(1, Math.min(count || 2, 3)) }, (_, i) => (
         <div key={i} className="rounded-lg border border-border p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
             <div className="flex-1 space-y-2">

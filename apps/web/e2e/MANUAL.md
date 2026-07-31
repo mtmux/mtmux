@@ -55,3 +55,70 @@ property of tmux, not of our code.
 - [ ] `echo $((6*7))` through the sealed tunnel.
 - [ ] `grep` the broker log for any session name, code, slot or mailbox id.
       **Expect zero hits.**
+
+## Dictation
+
+Real dictation cannot be asserted in headless Chromium: there is no supported
+way to inject a transcript, and `--use-fake-device-for-media-stream` feeds
+`getUserMedia`, which is a different code path from the Web Speech service. The
+reducer, the capability detection and the transliteration are unit-tested
+instead; what is left is the half that only exists on a device.
+
+- [ ] Android Chrome over https: tap the mic, say "git checkout dash b
+      feature slash login". The field shows `git checkout -b feature/login`,
+      the caret sits after it, and **nothing runs**.
+- [ ] iOS Safari, as a tab: the same.
+- [ ] iOS, installed to the home screen: recognition frequently starts and then
+      never fires anything at all. Expect the watchdog message ("Dictation did
+      not start. Try the browser instead of the app.") rather than a button
+      that spins forever.
+- [ ] Deny the microphone. The button reports it and **stays** reporting it —
+      tapping again must not re-prompt, because a denial only clears in browser
+      settings.
+- [ ] Grant it again from browser settings, reload, and dictate. Works.
+- [ ] Airplane mode, then tap the mic: the message is about the connection, and
+      the permission prompt never appears.
+- [ ] On the LAN origin (`http://192.168.x.x:14100`): the button is disabled and
+      says dictation needs https, rather than doing nothing.
+- [ ] Firefox: the button is **absent**, not disabled.
+- [ ] Start dictating, then switch apps. The microphone stops.
+
+## The keyboard, on real hardware
+
+Detection is unit-tested against synthetic viewport samples; the e2e suite only
+asserts the CSS contract. Everything below is the part that needs a phone.
+
+- [ ] Pixel (Chrome): focus the command bar. The bottom nav disappears, the
+      keyboard toolbar stays — it is the only source of Esc, Tab, arrows and
+      `|`, which are needed precisely while typing.
+- [ ] Blur it. The nav comes back, once, without flickering.
+- [ ] Scroll so the URL bar collapses (~90px). The nav must **not** disappear.
+- [ ] Pinch to zoom with the keyboard closed. The nav must **not** disappear.
+- [ ] Rotate with the keyboard open, then closed. No stuck state either way.
+- [ ] iPhone (Safari): the same, plus — open the composer with the keyboard up
+      and confirm the Send button is above the keyboard, not under it.
+- [ ] iPhone, composer closed, keyboard closed: the bottom padding clears the
+      home indicator.
+
+## `mtmux start` with nobody at the machine
+
+- [ ] Run it under systemd (or `nohup`, or a detached tmux pane) so there is no
+      TTY. Press "Pair this device" in the dashboard.
+- [ ] The machine's output shows the request, the device, the account and the
+      SAS digits, and tells you to run `mtmux approve`.
+- [ ] Run `mtmux approve` in another shell within the window: the request is
+      handed over, the digits match, approving completes the pairing.
+- [ ] Do nothing instead. It denies on timeout, and the browser offers "Ask
+      again" — not the refusal copy.
+
+## The re-armed code
+
+- [ ] `mtmux start`. Confirm stdout holds the banner and nothing else; the
+      relay's log lines are in `mtmux logs`, not on screen.
+- [ ] Scan the QR from a phone. The machine prints a **named** device, e.g.
+      `✓ Chrome on iOS connected.`, over the "Waiting…" line rather than under it.
+- [ ] `mtmux logs -n 50` shows the relay output that used to be on screen.
+- [ ] Type a deliberately wrong code three times: each says so gently and a
+      fresh code appears immediately.
+- [ ] A fourth: the wording changes to name it as guessing, and the replacement
+      is five seconds late.

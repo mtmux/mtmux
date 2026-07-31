@@ -47,6 +47,45 @@ export function CommandComposer() {
   const close = useUiStore((s) => s.closeComposer);
   const open = draft !== null;
 
+  /**
+   * Where focus goes when this closes.
+   *
+   * Radix restores focus itself, but only for content still mounted when the
+   * close runs — and the body below is unmounted the instant `draft` becomes
+   * null, so its `onCloseAutoFocus` never fires and focus falls to `<body>`.
+   * What sits behind this dialog is a live pty, so a dropped focus means the
+   * next keystroke goes to the shell.
+   *
+   * Tracked continuously *while closed* rather than sampled on open: effects in
+   * the child run first, and Radix moves focus into the editor from one of
+   * them, so anything sampled here after the open records the editor and then
+   * finds it unmounted — the same dropped focus by a longer road.
+   */
+  const returnFocusTo = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (open) return;
+    const remember = () => {
+      const el = document.activeElement;
+      if (el instanceof HTMLElement && el !== document.body) {
+        returnFocusTo.current = el;
+      }
+    };
+    remember();
+    document.addEventListener("focusin", remember);
+    return () => document.removeEventListener("focusin", remember);
+  }, [open]);
+
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    const closing = wasOpen.current && !open;
+    wasOpen.current = open;
+    if (!closing) return;
+    const target = returnFocusTo.current;
+    // Deferred past the unmount, so the element is focusable again by the time
+    // this runs and Radix's own teardown has finished moving focus about.
+    if (target?.isConnected) requestAnimationFrame(() => target.focus());
+  }, [open]);
+
   return (
     <Dialog
       open={open}
