@@ -5,6 +5,15 @@ import kleur from "kleur";
 export const RELAY_PATH = "/_relay";
 
 /**
+ * How long shutdown may take before the process is killed outright.
+ *
+ * Generous enough for close frames and the server's own callback on a healthy
+ * box; short enough that Ctrl+C always feels like Ctrl+C. Nothing here is worth
+ * waiting on — there is no write to flush, and every client reconnects.
+ */
+const FORCE_EXIT_MS = 2_000;
+
+/**
  * The subset of `apps/relay/src/runtime.ts` this module needs. Passed in rather
  * than imported so the same assembly works against the esbuild bundle (`start`)
  * and the raw TypeScript source (`scripts/dev.mjs`, via tsx).
@@ -171,10 +180,33 @@ export async function serve(opts: ServeOptions): Promise<Serving> {
 
   return {
     server,
+    /**
+     * Stop, and be certain about it.
+     *
+     * `process.exit` used to live *only* inside `server.close`'s callback, and
+     * that callback fires only once every connection has gone. `wss.close()`
+     * does not hang up existing clients and `server.close()` does not touch
+     * keep-alives, so a single open browser tab meant Ctrl+C printed
+     * "Stopping…" and then hung forever — nothing on screen, nothing to do but
+     * Ctrl+C again harder.
+     *
+     * Three layers now, cheapest first: close the sockets we know about, tell
+     * Node to drop the rest, and hard-exit on a deadline if anything is still
+     * holding on. The deadline is the one that makes this a guarantee rather
+     * than an improvement — nothing a client does can keep the CLI alive.
+     */
     shutdown: () => {
       shutdownConnections();
-      server.close(() => process.exit(0));
       wss.close();
+
+      server.close(() => process.exit(0));
+      // Keep-alive sockets are not connections `server.close()` will wait out;
+      // they are connections it waits *for*. Node 18.2+ can drop them.
+      server.closeAllConnections?.();
+
+      const forced = setTimeout(() => process.exit(0), FORCE_EXIT_MS);
+      // Unref'd so it never delays an exit that happened on its own.
+      forced.unref?.();
     },
   };
 }

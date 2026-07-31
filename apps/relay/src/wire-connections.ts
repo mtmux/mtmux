@@ -42,6 +42,14 @@ const MAX_CONNECTIONS_PER_IP = 10;
 // longer than config.idleTimeoutMinutes are closed.
 const IDLE_SWEEP_MS = 60_000;
 
+/**
+ * How long a closing socket has to acknowledge before it is terminated.
+ *
+ * Long enough for a close frame to land on a healthy connection, short enough
+ * that a wedged one cannot hold Ctrl+C hostage.
+ */
+const CLOSE_GRACE_MS = 250;
+
 export type WireOptions = {
   monitor?: ReturnType<typeof createSessionMonitor>;
 };
@@ -248,9 +256,33 @@ export function wireConnections(
 
   return {
     monitor,
+    /**
+     * Stop serving, and actually let the process die.
+     *
+     * `wss.close()` alone does not do that. It stops *accepting* connections
+     * and then waits for the existing ones to disconnect on their own — and a
+     * connected browser has no reason to. With one tab open, `server.close()`
+     * never fired its callback and Ctrl+C hung the CLI forever.
+     *
+     * So every socket is closed explicitly, and any that has not gone a moment
+     * later is terminated. A terminal server is not a database: there is no
+     * write to drain, the pty is a child process the OS reaps, and the client
+     * reconnects. Waiting politely costs the user a hang and buys nothing.
+     */
     shutdown: () => {
       clearInterval(idleSweep);
       monitor.stop();
+      for (const conn of getAllConnections()) {
+        try {
+          conn.ws.close(1001, "Server shutting down");
+        } catch {
+          // Already gone; the terminate below is the backstop.
+        }
+      }
+      const forced = setTimeout(() => {
+        for (const conn of getAllConnections()) conn.ws.terminate();
+      }, CLOSE_GRACE_MS);
+      forced.unref?.();
       wss.close();
     },
   };
