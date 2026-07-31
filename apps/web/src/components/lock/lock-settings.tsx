@@ -284,8 +284,8 @@ export function LockSettings({ className }: { className?: string }) {
               Every key, descriptor and cached session list in this browser
               goes, along with the lock itself. There is no recovery — that is
               by design, and it is affordable because re-pairing is running{" "}
-              <code className="font-mono">mtmux</code> and typing six digits.
-              Your sessions keep running throughout.
+              <code className="font-mono">mtmux</code> and typing the code it
+              prints. Your sessions keep running throughout.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2">

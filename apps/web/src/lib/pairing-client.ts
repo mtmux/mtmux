@@ -6,6 +6,7 @@ import {
   transcriptIr,
   generateSecret,
   parseCode,
+  describeBadCode,
   bytesToHex,
   hexToBytes,
   randomBytes,
@@ -22,6 +23,7 @@ import {
 import {
   MAX_PEERS_PER_SLOT,
   SealedDescriptor,
+  codeDeadline,
   tryDeserializePairingServerMessage,
   tryDeserializeRequestServerMessage,
 } from "@repo/protocol";
@@ -30,10 +32,9 @@ import {
  * The browser half of hosted pairing, in both directions.
  *
  * `startPairing` shows a code and waits: the browser holds the mailbox and
- * generates the four-digit secret locally with crypto.getRandomValues.
- * `joinPairing` is the mirror image, used when the terminal is the one showing
- * a code — a QR scan lands on /j with the six digits in the fragment and the
- * browser claims them.
+ * generates the secret locally with crypto.getRandomValues. `joinPairing` is
+ * the mirror image, used when the terminal is the one showing a code — a QR
+ * scan lands on /j with the code in the fragment and the browser claims it.
  *
  * The secret is the PAKE password either way, and it is never sent anywhere:
  * not to the broker, not hashed, not in a URL the server would see. A broker
@@ -79,7 +80,7 @@ type CommonOptions = {
 export type BrowserPairingOptions = CommonOptions;
 
 export type JoinPairingOptions = CommonOptions & {
-  /** The six digits, however the user typed or scanned them. */
+  /** The whole code, however the user typed or scanned it. */
   code: string;
 };
 
@@ -112,6 +113,7 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
     let mailboxId: string;
     let slot: string;
     let expiresAt: number;
+    let ttlMs: number | undefined;
     try {
       const res = await doFetch(`${opts.apiBase}/v1/pair/new`, {
         method: "POST",
@@ -124,10 +126,11 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
         fail("The pairing service is unavailable. Try again shortly.");
         return;
       }
-      ({ mailboxId, slot, expiresAt } = (await res.json()) as {
+      ({ mailboxId, slot, expiresAt, ttlMs } = (await res.json()) as {
         mailboxId: string;
         slot: string;
         expiresAt: number;
+        ttlMs?: number;
       });
     } catch {
       fail("Could not reach the pairing service.");
@@ -138,7 +141,8 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
     opts.onUpdate({
       phase: "waiting",
       code: `${slot}${secret}`,
-      expiresAt,
+      // On this device's clock, not the broker's — see `codeDeadline`.
+      expiresAt: codeDeadline(expiresAt, ttlMs),
     });
 
     socket = makeSocket(`${wsBase(opts.apiBase)}/v1/pair/${mailboxId}`);
@@ -159,7 +163,7 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
         opts.onUpdate({
           phase: "waiting",
           code: `${slot}${secret}`,
-          expiresAt: msg.expiresAt,
+          expiresAt: codeDeadline(msg.expiresAt),
         });
         return;
       }
@@ -326,7 +330,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
   if (!parsedCode) {
     // Reported asynchronously so the caller sees it through `onUpdate` like
     // every other failure, rather than having to handle a throw as well.
-    queueMicrotask(() => fail("That is not a six-digit pairing code."));
+    queueMicrotask(() => fail(describeBadCode(opts.code)));
     return { cancel() {} };
   }
   const { slot, secret } = parsedCode;

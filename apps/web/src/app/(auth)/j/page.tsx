@@ -1,9 +1,9 @@
 import { ConnectPanel } from "@/components/entry/connect-panel";
 
 /**
- * The QR target for `mtmux start` — `/j#492716`.
+ * The QR target for `mtmux start` — `/j#49271638`.
  *
- * Deliberately short, because it is printed as a QR next to a six-digit code
+ * Deliberately short, because it is printed as a QR next to the typed code
  * and every character costs modules in the symbol. All the behaviour, including
  * the fragment handling that makes this zero-tap, lives in `ConnectPanel`; the
  * same component leads `/start`, so the two cannot drift.

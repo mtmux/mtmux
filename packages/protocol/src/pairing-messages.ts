@@ -29,8 +29,20 @@ const blob = (maxBytes: number) =>
     .max(Math.ceil((maxBytes * 4) / 3) + 4)
     .regex(/^[A-Za-z0-9_-]*$/, "expected base64url");
 
-/** The public two-digit routing half of the pairing code. */
-export const SlotSchema = z.string().regex(/^\d{2}$/);
+/**
+ * The public routing half of the pairing code.
+ *
+ * Two digits for a code a human types, four for the one a QR carries. They are
+ * separate spaces rather than one, because they are attacked differently: the
+ * typed space is small enough to sweep, and every sweep that lands on a live
+ * pairing costs its holder a code. Moving the QR out means a sweep of the typed
+ * slots cannot touch a scanned pairing at all, and doubles how many typed
+ * pairings the broker can hold at once.
+ *
+ * No namespacing is needed on the broker's side: slots are keyed on the exact
+ * string, and "49" and "0049" are distinct keys of distinct lengths.
+ */
+export const SlotSchema = z.string().regex(/^(\d{2}|\d{4})$/);
 /** Opaque broker-assigned identifiers. */
 export const MailboxIdSchema = z.string().min(8).max(64);
 export const TunnelIdSchema = z.string().min(8).max(64);
@@ -403,12 +415,60 @@ export const RequestServerMessage = z.discriminatedUnion("type", [
 // HTTP bodies
 // ---------------------------------------------------------------------------
 
-/** POST /v1/pair/new */
+/**
+ * POST /v1/pair/new
+ *
+ * `space` picks which slot space to draw from. The default is `typed` and must
+ * stay that way forever: every CLI up to 0.5 and every browser bundled inside
+ * one posts an empty body, and all of them expect a two-digit slot back.
+ */
+export const PairNewRequest = z.object({
+  space: z.enum(["typed", "scan"]).optional(),
+});
+
 export const PairNewResponse = z.object({
   mailboxId: MailboxIdSchema,
   slot: SlotSchema,
   expiresAt: z.number().int().positive(),
+  /**
+   * The mailbox's lifetime, as a duration rather than a deadline.
+   *
+   * Additive, so older clients ignore it. It exists because `expiresAt` is on
+   * the broker's clock and the countdown runs on the caller's: a machine three
+   * minutes fast subtracts its way to a negative timeout and burns its whole
+   * re-arm budget in milliseconds. A duration cannot skew.
+   */
+  ttlMs: z.number().int().positive().optional(),
 });
+
+/**
+ * Bounds on how long a hosted code may be believed to live.
+ *
+ * The floor is the one that matters. `expiresAt` is stamped on the broker's
+ * clock and every countdown — the CLI's re-arm deadline, the `/pair` page's
+ * timer — runs on the caller's. A device three minutes fast subtracts its way
+ * to a code that has already expired: the code is fine, the arithmetic is not.
+ * On the CLI that burned the whole re-arm budget in milliseconds; on the phone
+ * it showed a code that said 0s the instant it appeared.
+ */
+export const MIN_CODE_TTL_MS = 30_000;
+export const MAX_CODE_TTL_MS = 300_000;
+
+/**
+ * A hosted code's deadline, on the caller's clock.
+ *
+ * Prefers `ttlMs` — a duration cannot skew — and clamps either way, so the
+ * worst a wrong clock or a lying broker can do is make a code short or long
+ * rather than stillborn.
+ */
+export function codeDeadline(
+  expiresAt: number,
+  ttlMs?: number,
+  now: number = Date.now(),
+): number {
+  const raw = ttlMs ?? expiresAt - now;
+  return now + Math.min(Math.max(raw, MIN_CODE_TTL_MS), MAX_CODE_TTL_MS);
+}
 
 /** POST /v1/pair/claim */
 export const PairClaimRequest = z.object({
@@ -523,7 +583,10 @@ export type PairRevealMessage = z.infer<typeof PairRevealMessage>;
 export type PairApprovedMessage = z.infer<typeof PairApprovedMessage>;
 export type PairDeniedMessage = z.infer<typeof PairDeniedMessage>;
 export type PairRequestBody = z.infer<typeof PairRequestBody>;
+export type PairNewRequest = z.infer<typeof PairNewRequest>;
 export type PairNewResponse = z.infer<typeof PairNewResponse>;
+/** Which slot space a mailbox is drawn from. */
+export type SlotSpace = NonNullable<PairNewRequest["space"]>;
 export type PairClaimRequest = z.infer<typeof PairClaimRequest>;
 export type PairClaimResponse = z.infer<typeof PairClaimResponse>;
 export type DiscoverResponse = z.infer<typeof DiscoverResponse>;

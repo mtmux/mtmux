@@ -217,29 +217,43 @@ function join(
 }
 
 describe("joinPairing", () => {
-  it("rejects anything that is not six digits before contacting the broker", async () => {
-    const h = claimHarness({ answering: 1 });
+  it("rejects a code of the wrong length before contacting the broker", async () => {
+    for (const code of ["12345", "1234567", "123456789"]) {
+      const h = claimHarness({ answering: 1 });
+      const rec = recorder<PairingUpdate>();
+      join(h, rec, code);
+      const failed = await rec.waitFor("failed");
+      expect(failed).toMatchObject({ phase: "failed" });
+      expect(h.claim).toBeNull();
+    }
+  });
+
+  it("still reads a code minted by an older mtmux", async () => {
+    // Both lengths parse; only one is emitted. A CLI at 0.5 shows six digits
+    // and this page has to be able to claim them.
+    const h = claimHarness({ answering: 0 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, "12345");
-    const failed = await rec.waitFor("failed");
-    expect(failed).toMatchObject({ phase: "failed" });
-    expect(h.claim).toBeNull();
+    join(h, rec, `${SLOT}2716`);
+    await rec.waitFor("failed");
+    expect(h.claim?.slot).toBe(SLOT);
   });
 
   it("accepts spaced and dashed codes", async () => {
     const h = claimHarness({ answering: 0 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, "49 27-16");
+    join(h, rec, "49 271-638");
     await rec.waitFor("failed");
     expect(h.claim?.slot).toBe("49");
   });
 
-  it("never puts the four-digit secret in the claim", async () => {
+  it("never puts the secret in the claim", async () => {
+    // The most important assertion in this file. The claim body carries the
+    // slot and nothing else that could reconstruct the PAKE password.
     const h = claimHarness({ answering: 0 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}271638`);
     await rec.waitFor("failed");
-    expect(JSON.stringify(h.claim)).not.toContain("2716");
+    expect(JSON.stringify(h.claim)).not.toContain("271638");
     expect(h.claim?.ad).toBe("browser");
   });
 
@@ -461,7 +475,7 @@ describe("startPairing", () => {
     return { io, fetchImpl };
   }
 
-  it("shows a six-digit code whose first two digits are the broker's slot", async () => {
+  it("shows an eight-digit code whose first two digits are the broker's slot", async () => {
     const h = newHarness(Date.now() + 180_000);
     const rec = recorder<PairingUpdate>();
     startPairing({
@@ -474,7 +488,7 @@ describe("startPairing", () => {
       PairingUpdate,
       { phase: "waiting" }
     >;
-    expect(waiting.code).toMatch(/^\d{6}$/);
+    expect(waiting.code).toMatch(/^\d{8}$/);
     expect(waiting.code.slice(0, 2)).toBe(SLOT);
   });
 

@@ -154,7 +154,7 @@ export async function handleApiRequest(
   }
 
   if (url.pathname === "/v1/pair/new" && req.method === "POST") {
-    send(broker.pairNew(ip));
+    send(broker.pairNew(ip, await readJsonBody(req)));
     return;
   }
 

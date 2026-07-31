@@ -45,8 +45,16 @@ export const MAX_LIVE_MAILBOXES = 10_000;
  * claims could race the same mailbox and each get a guess; without the lapse a
  * bare POST would take a code out of circulation for its whole TTL. The window
  * only has to cover POST → upgrade on a live connection.
+ *
+ * Five rather than ten seconds because the reservation is itself a denial of
+ * service: a bare POST reserves every live mailbox on a slot, so at the
+ * per-slot claim rate an attacker blocks every honest claim with no socket and
+ * no crypto at all. Halving the window halves what that costs us, which is a
+ * mitigation and not a fix — the fix is for the reservation to require proof of
+ * a connection before it holds anything, which is a protocol change and is not
+ * this one.
  */
-export const OFFER_TTL_MS = 10 * 1000;
+export const OFFER_TTL_MS = 5 * 1000;
 
 /** Where broker-generated messages go once a socket is attached. */
 export type Sink = (message: PairingServerMessage) => void;

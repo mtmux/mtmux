@@ -24,7 +24,9 @@ export async function checkTmux(): Promise<void> {
 export function checkNode(): void {
   const major = parseInt(process.versions.node.split(".")[0]!, 10);
   if (major < 22) {
-    console.error(kleur.red(`✗ Node 22+ required (you have ${process.versions.node}).`));
+    console.error(
+      kleur.red(`✗ Node 22+ required (you have ${process.versions.node}).`),
+    );
     process.exit(1);
   }
 }

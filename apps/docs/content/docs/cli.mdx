@@ -18,7 +18,7 @@ flags.
 | Command | What it does |
 | --- | --- |
 | `mtmux` | Alias for `mtmux start` — the command you actually use |
-| `mtmux start` | Serve this machine's tmux, open a sealed tunnel, print a QR + six-digit code |
+| `mtmux start` | Serve this machine's tmux, open a sealed tunnel, print a QR + pairing code |
 | `mtmux local` | Alias for `mtmux start --local` |
 | `mtmux pair [code]` | The other direction: join a pairing a browser started |
 | `mtmux share <session>` | Share one tmux session without sharing the machine |
@@ -36,10 +36,10 @@ flags.
 
 Serves the web client and the relay WebSocket from one process on one port,
 opens a reverse tunnel to the pairing broker, re-admits previously paired
-devices, and arms a six-digit code.
+devices, and arms a pairing code.
 
 Scanning the QR it prints opens `app.mtmux.com/j` with the code in the URL
-fragment and connects with no further input. Typing the six digits at
+fragment and connects with no further input. Typing the code at
 `app.mtmux.com` does the same thing. This is the flow — you do not need a second
 command in a second terminal.
 
@@ -121,7 +121,7 @@ In local mode the QR encodes a LAN sign-in URL — `http://<lan>:<port>/login#n=
 
 The **other** direction. `mtmux start` prints a code for a browser to claim;
 `mtmux pair` claims a code a browser is already showing. Open
-`https://app.mtmux.com/pair` on the device, read the six digits, and quote them
+`https://app.mtmux.com/pair` on the device, read the code, and quote it
 here.
 
 ```bash

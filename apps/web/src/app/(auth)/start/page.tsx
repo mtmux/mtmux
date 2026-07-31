@@ -17,7 +17,7 @@ import { env } from "@/env";
  *
  * An earlier draft made this a three-way "how do you want to connect?" menu.
  * That is the wrong shape. Both documented routes in — the banner `mtmux start`
- * prints, and the quickstart on mtmux.com — put six digits in the user's hand
+ * prints, and the quickstart on mtmux.com — put a pairing code in the user's hand
  * *before* they open a browser. A chooser taxes the majority path with a
  * decision they have already made, in service of two minority paths that are
  * one line of text each.
@@ -28,10 +28,10 @@ import { env } from "@/env";
  *
  * Nothing. `/` sent any visitor with no token and no descriptor to `/login`,
  * which asks for the self-hosted 64-hex `AUTH_TOKEN` — a credential a hosted
- * visitor has no way to obtain. Typing the documented six digits into it opened
+ * visitor has no way to obtain. Typing the documented pairing code into it opened
  * a socket to `wss://app.mtmux.com/_relay`, a route that does not exist on that
  * origin, and hung for five seconds before blaming the relay server. The page
- * that actually takes six digits, `/j`, was linked from nowhere.
+ * that actually takes a pairing code, `/j`, was linked from nowhere.
  */
 export default function StartPage() {
   const [bounced, setBounced] = useState(false);
@@ -79,7 +79,7 @@ export default function StartPage() {
       )}
 
       {/*
-        A build with no broker has no six-digit path at all, so leading with a
+        A build with no broker has no pairing-code path at all, so leading with a
         code field there would be leading with a dead error and no input. That
         is a real configuration — `NEXT_PUBLIC_API_URL` is legitimately absent —
         and the honest front door for it is the token.
@@ -93,7 +93,7 @@ export default function StartPage() {
           </h1>
           <p className="text-sm text-muted-foreground">
             This build runs entirely on your own machine, so there are no
-            six-digit codes. Use the token <code>mtmux start</code> printed.
+            pairing codes. Use the token <code>mtmux start</code> printed.
           </p>
           <Button asChild className="h-11 w-full">
             <Link href="/login">Connect with a token</Link>

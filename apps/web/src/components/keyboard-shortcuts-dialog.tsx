@@ -51,8 +51,13 @@ export function KeyboardShortcutsDialog() {
         </DialogHeader>
         <div className="space-y-1.5">
           {shortcuts.map(({ keys, description }) => (
-            <div key={description} className="flex items-center justify-between py-1">
-              <span className="text-sm text-muted-foreground">{description}</span>
+            <div
+              key={description}
+              className="flex items-center justify-between py-1"
+            >
+              <span className="text-sm text-muted-foreground">
+                {description}
+              </span>
               <div className="flex items-center gap-1">
                 {keys.map((key) => (
                   <kbd

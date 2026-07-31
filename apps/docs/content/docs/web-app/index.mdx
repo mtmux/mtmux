@@ -34,8 +34,8 @@ serves. It talks to the relay over the typed WebSocket protocol in
 | `/login` | Paste a token, or auto-authenticate from a URL fragment |
 | `/settings` | Settings, and the only place with a logout button |
 
-`/j` reads the six digits from the fragment (`/j#482913`) and pairs with **zero
-taps**; with no fragment it falls back to a six-digit field for someone typing
+`/j` reads the code from the fragment (`/j#49271638`) and pairs with **zero
+taps**; with no fragment it falls back to a code field for someone typing
 the code by hand.
 
 `/j` and `/login` both strip the fragment with `history.replaceState` before

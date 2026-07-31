@@ -54,7 +54,9 @@ export const useFileStore = create<FileStore>((set) => ({
   // Only apply once per session so a reconnect's server:info doesn't yank the
   // user back to the home directory after they've navigated elsewhere.
   applyServerDefaultPath: (path) =>
-    set((s) => (s.serverPathApplied ? s : { currentPath: path, serverPathApplied: true })),
+    set((s) =>
+      s.serverPathApplied ? s : { currentPath: path, serverPathApplied: true },
+    ),
   setEntries: (entries) => set({ entries }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
   setFileContent: (fileContent) => set({ fileContent }),
@@ -63,8 +65,26 @@ export const useFileStore = create<FileStore>((set) => ({
   setViewMode: (viewMode) => set({ viewMode }),
   setSortBy: (sortBy) => set({ sortBy }),
   setIsOperating: (isOperating) => set({ isOperating }),
-  openEditor: (path) => set({ editorFile: path, editorTruncated: false, editorForceText: false, isSaving: false }),
-  openEditorAsText: (path) => set({ editorFile: path, editorTruncated: false, editorForceText: true, isSaving: false }),
-  closeEditor: () => set({ editorFile: null, editorTruncated: false, editorForceText: false, isSaving: false }),
+  openEditor: (path) =>
+    set({
+      editorFile: path,
+      editorTruncated: false,
+      editorForceText: false,
+      isSaving: false,
+    }),
+  openEditorAsText: (path) =>
+    set({
+      editorFile: path,
+      editorTruncated: false,
+      editorForceText: true,
+      isSaving: false,
+    }),
+  closeEditor: () =>
+    set({
+      editorFile: null,
+      editorTruncated: false,
+      editorForceText: false,
+      isSaving: false,
+    }),
   setIsSaving: (isSaving) => set({ isSaving }),
 }));

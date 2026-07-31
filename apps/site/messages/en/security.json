@@ -43,11 +43,11 @@
       },
       {
         "title": "The broker never sees the secret",
-        "description": "The six digits split into a 2-digit routing slot and a 4-digit secret. The slot routes; the secret is the PAKE password and is never transmitted, not even as a hash."
+        "description": "The code splits into a 2-digit routing slot and a 6-digit secret. The slot routes; the secret is the PAKE password and is never transmitted, not even as a hash. Only the first two digits reach our servers."
       },
       {
         "title": "One wrong guess ends it",
-        "description": "Each side proves it derived the same key before anything is sent. A failed confirmation destroys the pairing, so an online guesser gets exactly one attempt at 10,000."
+        "description": "Each side proves it derived the same key before anything is sent. A failed confirmation destroys the pairing, so an online guesser gets exactly one attempt at a million — and the machine says so, and slows down."
       },
       {
         "title": "Keys are derived, never sent",
@@ -78,7 +78,7 @@
         "A hostile or compromised broker reading or injecting session traffic.",
         "A broker that knows the whole code and tries to pair your CLI to its own browser.",
         "Passive network capture on hotel, café or cellular networks.",
-        "Someone who watches you scan and captures the six digits after they are spent.",
+        "Someone who watches you scan and captures the code after it is spent.",
         "Replay or reordering of captured frames, via the per-direction nonce counter.",
         "A lost phone: revoke its device id and its key is worthless."
       ]

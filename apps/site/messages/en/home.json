@@ -39,7 +39,7 @@
       },
       "scan": {
         "title": "Scan the code",
-        "description": "The QR carries a six-digit code in the URL fragment, which browsers never send to a server. Type the six digits by hand if you prefer."
+        "description": "The QR carries the code in the URL fragment, which browsers never send to a server. Type the code by hand if you prefer."
       },
       "attach": {
         "title": "You're attached",
@@ -185,7 +185,7 @@
       },
       {
         "question": "Is the relay a man in the middle?",
-        "answer": "It cannot be. The six-digit code splits into a routing half the broker sees and a secret half it never receives, and the session keys come out of a PAKE run between your machine and your browser. The broker forwards sealed frames and holds no key."
+        "answer": "It cannot be. The code splits into a routing half the broker sees and a secret half it never receives, and the session keys come out of a PAKE run between your machine and your browser. The broker forwards sealed frames and holds no key."
       },
       {
         "question": "Do I have to use your servers at all?",

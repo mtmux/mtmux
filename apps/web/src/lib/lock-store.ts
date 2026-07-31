@@ -519,7 +519,7 @@ export async function setSessionLock(
  * service worker and its caches.
  *
  * There is **no recovery**, by construction, and mtmux is the rare product
- * where that is fine: re-pairing is running `mtmux` and typing six digits. That
+ * where that is fine: re-pairing is running `mtmux` and typing one code. That
  * sentence belongs in the enrollment dialog above the PIN entry, before the
  * first keystroke — not in a toast afterwards.
  */

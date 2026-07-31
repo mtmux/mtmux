@@ -13,7 +13,8 @@ export const ConnectionState = {
   RECONNECTING: "reconnecting",
   DISCONNECTED: "disconnected",
 } as const;
-export type ConnectionState = (typeof ConnectionState)[keyof typeof ConnectionState];
+export type ConnectionState =
+  (typeof ConnectionState)[keyof typeof ConnectionState];
 
 export const SessionInfoSchema = z.object({
   name: z.string(),

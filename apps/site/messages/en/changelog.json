@@ -30,7 +30,7 @@
       "entries": [
         {
           "type": "new",
-          "text": "Hosted pairing: <cmd>mtmux</cmd> opens a sealed tunnel and prints a QR and a six-digit code, so a phone anywhere can attach without port forwarding."
+          "text": "Hosted pairing: <cmd>mtmux</cmd> opens a sealed tunnel and prints a QR and a pairing code, so a phone anywhere can attach without port forwarding."
         },
         {
           "type": "new",

@@ -63,7 +63,7 @@ mtmux start --host 0.0.0.0
 
 - The token is case-sensitive and must match exactly.
 - A `--local` LAN sign-in dies when the server restarts, because those tokens
-  live only in relay memory. Scan the new code. Devices paired with a six-digit
+  live only in relay memory. Scan the new code. Devices paired with a
   code are re-admitted automatically and are not affected.
 - After 5 failed attempts from one address, further attempts are refused for 30
   seconds, doubling up to 15 minutes — *including correct ones*. Wait it out.
@@ -91,7 +91,7 @@ mtmux start --host 0.0.0.0
 LAN nonces are single-use and only one is live at a time. Once a device signs
 in, mtmux prints a fresh code — use that one, not a screenshot.
 
-### The six-digit code failed
+### The pairing code failed
 
 A wrong guess destroys the code by design, and the page offers a new one. Get
 fresh digits and try again. Codes also expire.

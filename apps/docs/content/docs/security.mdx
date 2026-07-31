@@ -131,7 +131,7 @@ missed the previous pong.
 The full argument is in [How pairing works](/docs/pairing) and
 [The sealed tunnel](/docs/sealed-tunnel). In brief:
 
-- The six-digit code is **slot(2) + secret(4)**. The secret never reaches the
+- The pairing code is **slot(2) + secret(6)**. The secret never reaches the
   broker, not even as a hash.
 - Both halves are drawn by **rejection sampling**, so the guessing bound is not
   weakened by modulo bias.
@@ -204,7 +204,7 @@ stays the base factor, because neither WebAuthn nor `crypto.subtle` exists on a
 plain-HTTP LAN address and `mtmux start` prints exactly such a URL.
 
 **There is no recovery.** Deliberately, and it costs little: re-pairing is
-running `mtmux` on the machine and typing six digits. Nothing on the machine is
+running `mtmux` on the machine and typing one code. Nothing on the machine is
 lost — the tmux sessions never stopped.
 
 Individual sessions can be marked **"require unlock to open"**, which re-asks for

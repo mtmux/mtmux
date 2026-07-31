@@ -32,7 +32,7 @@
         "comment": "start is the default command"
       },
       {
-        "label": "Scan the QR, or type the six digits at app.mtmux.com",
+        "label": "Scan the QR, or type the code at app.mtmux.com",
         "comment": "the code is in the URL fragment, never sent to a server"
       },
       {
@@ -53,9 +53,9 @@
     },
     "descriptions": [
       "Alias for start. Running mtmux with no arguments is the normal way to use it.",
-      "Serve this machine's tmux, open a sealed tunnel, and print a QR and a six-digit code.",
+      "Serve this machine's tmux, open a sealed tunnel, and print a QR and a pairing code.",
       "LAN and loopback only. Contacts no broker at all — no traffic leaves your network.",
-      "Print the six-digit code without the QR block, for terminals that mangle it.",
+      "Print the pairing code without the QR block, for terminals that mangle it.",
       "What to call this machine in the dashboard. Pro plans only; Free shows the hostname.",
       "Port to serve on. Defaults to 14100.",
       "Bind address. Defaults to 0.0.0.0 when there is a real LAN, and 127.0.0.1 otherwise.",
@@ -91,7 +91,7 @@
       },
       {
         "problem": "The code isn't accepted",
-        "solution": "A code is single-use and one wrong guess destroys the pairing, by design. Stop and start mtmux to mint a fresh one, and check you typed all six digits."
+        "solution": "A code is single-use and one wrong guess destroys the pairing, by design. mtmux mints a fresh one on its own — check you typed every digit of the newest code on screen, not an earlier one."
       },
       {
         "problem": "It printed no code, only local addresses",

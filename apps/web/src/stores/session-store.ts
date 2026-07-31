@@ -30,7 +30,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const openedSessions = s.openedSessions.filter((n) => n !== name);
       const activeSessionId =
         s.activeSessionId === name
-          ? openedSessions[openedSessions.length - 1] ?? null
+          ? (openedSessions[openedSessions.length - 1] ?? null)
           : s.activeSessionId;
       return {
         sessions: s.sessions.filter((x) => x.name !== name),
@@ -40,7 +40,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }),
   updateSessionActivity: (name, activity) =>
     set((s) => ({
-      sessions: s.sessions.map((x) => (x.name === name ? { ...x, activity } : x)),
+      sessions: s.sessions.map((x) =>
+        x.name === name ? { ...x, activity } : x,
+      ),
     })),
   setActiveSession: (name) => {
     if (name) {
@@ -61,7 +63,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const openedSessions = s.openedSessions.filter((n) => n !== name);
       const activeSessionId =
         s.activeSessionId === name
-          ? openedSessions[openedSessions.length - 1] ?? null
+          ? (openedSessions[openedSessions.length - 1] ?? null)
           : s.activeSessionId;
       return { openedSessions, activeSessionId };
     }),

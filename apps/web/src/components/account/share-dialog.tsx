@@ -71,9 +71,9 @@ export function ShareDialog({
         <DialogHeader>
           <DialogTitle>Share a session on {serverName}</DialogTitle>
           <DialogDescription>
-            Run this on {serverName}. It prints a six-digit code the other
-            person enters at app.mtmux.com — they never get your machine, only
-            what you name here.
+            Run this on {serverName}. It prints a pairing code the other person
+            enters at app.mtmux.com — they never get your machine, only what you
+            name here.
           </DialogDescription>
         </DialogHeader>
 

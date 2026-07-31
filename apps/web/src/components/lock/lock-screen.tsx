@@ -200,7 +200,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
 
         Erasing is the honest answer and an affordable one: it destroys only
         what is in this browser. The sessions on the machine keep running, and
-        re-pairing is six digits.
+        re-pairing is one code.
       */}
       <div className="max-w-xs space-y-2 text-center">
         <p className="text-xs text-muted-foreground">
@@ -231,7 +231,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
               This browser forgets every machine it has paired with, and the
               lock goes with them. Nothing on the machines themselves changes —
               your sessions keep running, and pairing again is{" "}
-              <code className="font-mono">mtmux</code> and six digits.
+              <code className="font-mono">mtmux</code> and the code it prints.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2">

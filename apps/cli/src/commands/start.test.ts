@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { rearmDecision, resolveHost, resolveLanUrl } from "./start.js";
+import {
+  NO_FAILURES,
+  REARM_LIMITS,
+  rearmDecision,
+  resolveHost,
+  resolveLanUrl,
+  type RearmState,
+} from "./start.js";
 import { PairingError } from "../pairing-client.js";
 
 const LAN = { address: "192.168.1.5", iface: "wlp3s0" };
@@ -54,36 +61,155 @@ describe("resolveLanUrl", () => {
 describe("rearmDecision", () => {
   const expired = () => new PairingError("expired", undefined, "expired");
   const wrongCode = () => new PairingError("nope", undefined, "no-match");
+  const failed = () => new PairingError("burnt", undefined, "failed");
+  const lost = () => new PairingError("gone", undefined, "lost");
+  const tooMany = () =>
+    new PairingError("too many", undefined, "too-many-peers");
 
-  it("keeps arming while codes keep expiring, up to the budget", () => {
-    let expiries = 0;
-    for (let i = 1; i < 5; i += 1) {
-      const d = rearmDecision(expired(), expiries, 5);
-      expiries = d.expiries;
+  /** No jitter, so the backoff schedule is a fact rather than a range. */
+  const fixed = { jitter: () => 1 };
+
+  const state = (over: Partial<RearmState> = {}): RearmState => ({
+    ...NO_FAILURES,
+    ...over,
+  });
+
+  describe("expired — nobody ever touched the code", () => {
+    it("keeps arming up to the budget, instantly", () => {
+      let s = NO_FAILURES;
+      for (let i = 1; i < REARM_LIMITS.expiries; i += 1) {
+        const d = rearmDecision(expired(), s, fixed);
+        s = d.state;
+        expect(d.rearm).toBe(true);
+        expect(d.state.expiries).toBe(i);
+        expect(d.delayMs).toBe(0);
+        expect(d.warn).toBeNull();
+      }
+    });
+
+    it("stops once the budget is spent", () => {
+      const d = rearmDecision(expired(), state({ expiries: 4 }), fixed);
+      expect(d.rearm).toBe(false);
+      expect(d.state.expiries).toBe(5);
+    });
+
+    it("spends only its own counter", () => {
+      const d = rearmDecision(expired(), state({ wrong: 3, lost: 2 }), fixed);
+      expect(d.state).toEqual({ expiries: 1, wrong: 3, lost: 2 });
+    });
+  });
+
+  describe("wrong codes — the guessing budget", () => {
+    // This is the change the whole phase exists for. The old rule read a wrong
+    // code as proof that a human was there and reset the budget, so an attacker
+    // sweeping the slot space collected one guess per sweep forever.
+    it("never resets the expiry budget", () => {
+      const d = rearmDecision(wrongCode(), state({ expiries: 4 }), fixed);
+      expect(d.state.expiries).toBe(4);
+    });
+
+    it("walks the backoff schedule and then stops", () => {
+      const schedule = [0, 0, 0, 5_000, 15_000, 45_000, 120_000];
+      let s = NO_FAILURES;
+      schedule.forEach((delayMs, i) => {
+        const d = rearmDecision(wrongCode(), s, fixed);
+        s = d.state;
+        expect(d.state.wrong).toBe(i + 1);
+        expect(d.delayMs).toBe(delayMs);
+        expect(d.rearm).toBe(true);
+      });
+      // The eighth spends the last of the budget and arms nothing.
+      const last = rearmDecision(wrongCode(), s, fixed);
+      expect(last.state.wrong).toBe(REARM_LIMITS.wrong);
+      expect(last.rearm).toBe(false);
+    });
+
+    it("reads as a typo for three, then as guessing", () => {
+      let s = NO_FAILURES;
+      const warnings: (string | null)[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        const d = rearmDecision(wrongCode(), s, fixed);
+        s = d.state;
+        warnings.push(d.warn);
+      }
+      expect(warnings).toEqual([
+        "wrong-code",
+        "wrong-code",
+        "wrong-code",
+        "guessing",
+        "guessing",
+      ]);
+    });
+
+    it("charges a broker-reported failure the same as a wrong code", () => {
+      // Since a burn is announced, `failed` also covers "a claim attached and
+      // then vanished" — which is a spent code however it is dressed up.
+      const d = rearmDecision(failed(), NO_FAILURES, fixed);
+      expect(d.state.wrong).toBe(1);
+      expect(d.warn).toBe("wrong-code");
+    });
+
+    it("gives the scan half a far larger budget", () => {
+      // Its secret is 128 bits, so a failure there is a spin-loop guard rather
+      // than a guess worth rationing.
+      const d = rearmDecision(wrongCode(), state({ wrong: 7 }), {
+        wrong: 20,
+        ...fixed,
+      });
       expect(d.rearm).toBe(true);
-      expect(d.expiries).toBe(i);
-    }
+    });
   });
 
-  it("stops arming once the budget is spent", () => {
-    // The exposure window was the process lifetime, not the code's three
-    // minutes: an abandoned terminal handed out unlimited independent draws.
-    const d = rearmDecision(expired(), 4, 5);
+  describe("lost sockets", () => {
+    it("backs off exponentially to a 30s ceiling", () => {
+      let s = NO_FAILURES;
+      const delays: number[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const d = rearmDecision(lost(), s, fixed);
+        s = d.state;
+        delays.push(d.delayMs);
+      }
+      expect(delays).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+    });
+
+    it("jitters so agents do not reconnect in lockstep", () => {
+      const low = rearmDecision(lost(), NO_FAILURES, { jitter: () => 0 });
+      const high = rearmDecision(lost(), NO_FAILURES, { jitter: () => 1 });
+      expect(low.delayMs).toBe(1_000);
+      expect(high.delayMs).toBe(2_000);
+    });
+
+    it("stops after twenty", () => {
+      const d = rearmDecision(lost(), state({ lost: 19 }), fixed);
+      expect(d.rearm).toBe(false);
+    });
+
+    it("treats an unrecognised error as a dropped socket, not engagement", () => {
+      // Fail closed: an unclassifiable error must not be a licence to keep
+      // minting codes, which is what "not an expiry, so reset" used to mean.
+      const d = rearmDecision(new Error("socket died"), NO_FAILURES, fixed);
+      expect(d.state.lost).toBe(1);
+      expect(d.state.expiries).toBe(0);
+    });
+  });
+
+  it("stops dead when the broker offers too many peers", () => {
+    const d = rearmDecision(tooMany(), NO_FAILURES, fixed);
     expect(d.rearm).toBe(false);
-    expect(d.expiries).toBe(5);
+    expect(d.warn).toBe("broker-misbehaving");
   });
 
-  it("resets the budget when somebody actually tries", () => {
-    // A wrong code proves a human is at the other end. Only silence should
-    // count against an unwatched terminal.
-    const d = rearmDecision(wrongCode(), 4, 5);
-    expect(d.rearm).toBe(true);
-    expect(d.expiries).toBe(0);
-  });
-
-  it("treats an unknown failure as engagement rather than silence", () => {
-    const d = rearmDecision(new Error("socket died"), 4, 5);
-    expect(d.rearm).toBe(true);
-    expect(d.expiries).toBe(0);
+  it("only a completed pairing clears the budgets", () => {
+    // There is no err that resets, by construction — the reset lives in
+    // `startHosted`'s success path. Every failure kind spends.
+    for (const err of [expired(), wrongCode(), failed(), lost()]) {
+      const d = rearmDecision(
+        err,
+        state({ expiries: 2, wrong: 2, lost: 2 }),
+        fixed,
+      );
+      const total = d.state.expiries + d.state.wrong + d.state.lost;
+      expect(total).toBe(7);
+    }
   });
 });

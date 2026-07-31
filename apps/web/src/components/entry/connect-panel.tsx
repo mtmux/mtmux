@@ -7,7 +7,7 @@ import { Input } from "@repo/ui/components/ui/input";
 import { Label } from "@repo/ui/components/ui/label";
 import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { normalizeCode, parseCode } from "@repo/crypto";
+import { describeBadCode, normalizeCode, parseCode } from "@repo/crypto";
 import { env } from "@/env";
 import {
   joinPairing,
@@ -25,7 +25,7 @@ import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
  *
  * ## The fragment
  *
- * The six digits arrive in the URL *fragment* (`/j#492716`), never the query
+ * The code arrives in the URL *fragment* (`/j#49271638`), never the query
  * string. A fragment is not sent to any server, so the four-digit half that is
  * the PAKE password never reaches the web host's access log, a referrer header,
  * or a CDN — which is the entire reason the code can be short enough to read off
@@ -137,7 +137,10 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
     e.preventDefault();
     const digits = normalizeCode(code);
     if (!digits) {
-      toast.error("Enter the six digits shown in your terminal.");
+      // Names the lengths we accept rather than asserting one, so this survives
+      // the next change of length instead of becoming a lie about the code the
+      // terminal is showing.
+      toast.error(describeBadCode(code));
       return;
     }
     join(digits);
@@ -155,7 +158,7 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
           <p className="text-sm text-muted-foreground">
             {busy
               ? "Setting up a secure channel"
-              : "Enter the six digits shown by mtmux"}
+              : "Enter the code shown in your terminal"}
           </p>
         </div>
       )}
@@ -188,9 +191,12 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
               onChange={(e) => setCode(e.target.value)}
               inputMode="numeric"
               autoComplete="one-time-code"
-              placeholder="49 27 16"
+              placeholder="49 271 638"
               className="h-14 text-center font-mono text-2xl tracking-[0.3em] tabular-nums"
-              maxLength={12}
+              // Eight digits plus separators, and long enough to hold a pasted
+              // 26-character scan code — which is a thing people do when a QR
+              // will not focus and they copy the link out of the page.
+              maxLength={32}
               autoFocus
             />
           </div>
@@ -199,7 +205,7 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
             {state.phase === "failed" ? "Try again" : "Connect"}
           </Button>
           <p className="text-center text-xs text-muted-foreground">
-            The last four digits never leave this device.
+            Only the first two digits reach our servers.
           </p>
         </form>
       )}

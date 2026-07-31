@@ -22,7 +22,10 @@ export function tryDeserializeClientMessage(
     const message = deserializeClientMessage(raw);
     return { ok: true, message };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Unknown parse error" };
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Unknown parse error",
+    };
   }
 }
 
@@ -33,6 +36,9 @@ export function tryDeserializeServerMessage(
     const message = deserializeServerMessage(raw);
     return { ok: true, message };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Unknown parse error" };
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Unknown parse error",
+    };
   }
 }

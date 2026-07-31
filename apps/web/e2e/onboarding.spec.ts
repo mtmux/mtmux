@@ -120,28 +120,34 @@ test.describe("the CLI's own handoffs", () => {
     expect(token).toHaveLength(64);
   });
 
-  test("/j#<code> strips the code from the URL either way", async ({
-    page,
-  }) => {
-    await page.goto("/j#492716");
+  // Both lengths, because a big-bang length change still has to read codes
+  // minted by whatever mtmux is already installed on the machine.
+  for (const code of ["49271638", "492716"]) {
+    test(`/j#${code} strips the code from the URL either way`, async ({
+      page,
+    }) => {
+      await page.goto(`/j#${code}`);
 
-    // Unconditional, and it did not used to be: the strip sat *after* the
-    // "is a broker configured?" early return, so a build without one left a
-    // live pairing code in the address bar and in history. The obvious next
-    // move for someone who lands there is to open the same URL somewhere that
-    // does have a broker.
-    await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("");
+      // Unconditional, and it did not used to be: the strip sat *after* the
+      // "is a broker configured?" early return, so a build without one left a
+      // live pairing code in the address bar and in history. The obvious next
+      // move for someone who lands there is to open the same URL somewhere that
+      // does have a broker.
+      await expect
+        .poll(() => page.evaluate(() => window.location.hash))
+        .toBe("");
 
-    // And the fragment was actually acted on rather than dropped: the panel
-    // reports *something* — mid-handshake, an honest "nothing is waiting for
-    // that code", or "this build has no pairing service". Which one depends on
-    // whether a broker is configured and whether that code is live, neither of
-    // which this spec controls. What it must never do is render the blank
-    // manual form as if nothing had been passed.
-    await expect(
-      page.locator('[role="alert"], [role="status"]').first(),
-    ).toBeVisible();
-  });
+      // And the fragment was actually acted on rather than dropped: the panel
+      // reports *something* — mid-handshake, an honest "nothing is waiting for
+      // that code", or "this build has no pairing service". Which one depends on
+      // whether a broker is configured and whether that code is live, neither of
+      // which this spec controls. What it must never do is render the blank
+      // manual form as if nothing had been passed.
+      await expect(
+        page.locator('[role="alert"], [role="status"]').first(),
+      ).toBeVisible();
+    });
+  }
 });
 
 /**

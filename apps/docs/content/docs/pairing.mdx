@@ -34,7 +34,7 @@ command.
 
 If the QR will not scan — a cracked camera, a terminal that mangles block
 characters, someone reading the digits to you over the phone — go to
-**app.mtmux.com** and type the six digits into the field it shows. Same flow,
+**app.mtmux.com** and type the code into the field it shows. Same flow,
 same result.
 
 This works whether the device is on your wifi or on cellular in another country.
@@ -58,7 +58,7 @@ cannot resurrect a live code.
 Sometimes the browser is already open and the terminal is the thing you have to
 go and find. `mtmux pair` covers that:
 
-1. Open **`https://app.mtmux.com/pair`** on the device. It shows six digits.
+1. Open **`https://app.mtmux.com/pair`** on the device. It shows a code.
 2. Run **`mtmux pair 482913`** on the machine running mtmux.
 
 Same protocol, same guarantees — only the question of which side showed the code
@@ -99,21 +99,22 @@ restarts — see [Staying paired](#staying-paired).
 
 `--host 127.0.0.1` suppresses all of this and keeps the server on loopback.
 
-## What the six digits are
+## What the code is
 
 ```
-    4 8   2 9 1 3
-    └┬┘   └──┬──┘
-   slot     secret
+    4 9   2 7 1 6 3 8
+    └┬┘   └────┬────┘
+   slot       secret
 ```
 
 The split is the load-bearing design decision.
 
 - **The first two digits are a slot.** The broker assigns it, so it can route a
-  claim to the right pending mailbox.
-- **The last four are the secret.** They are generated locally and used as the
+  claim to the right pending mailbox. It is the *only* part that reaches our
+  servers.
+- **The last six are the secret.** They are generated locally and used as the
   password for a PAKE. They are **never sent to the broker — not even as a
-  hash.** A four-digit hash is an instant offline search, so hashing would give
+  hash.** A six-digit hash is an instant offline search, so hashing would give
   away exactly as much as sending the digits.
 
 A broker that knew the whole code would know the PAKE password, and could run
@@ -121,25 +122,52 @@ the protocol against both sides at once to pair your CLI to an attacker's
 browser. Splitting the code is what makes that impossible rather than merely
 forbidden.
 
-Both halves are drawn by rejection sampling, not `random % 10000`, because the
+Both halves are drawn by rejection sampling, not `random % 1000000`, because the
 modulo bias would measurably weaken the one-shot guessing bound the whole design
 rests on.
 
-Slots are **not scarce**. Many pairings can hold slot `48` at once. A claim is
+Slots are **not scarce**. Many pairings can hold slot `49` at once. A claim is
 fanned out to every live mailbox under that slot, and only the one whose secret
 matches produces a key confirmation that verifies. So slots never run out and
 reveal nothing.
 
-## Why six digits are enough
+### The QR carries something else entirely
+
+A QR is not a human. Nobody reads it aloud, so there is no reason for it to
+carry a secret a person could retype — it carries **128 bits**, and draws its
+routing slot from a separate four-digit space. A sweep of the small typed space
+cannot touch a scanned pairing at all.
+
+`mtmux start` therefore parks two mailboxes and races them: one for the code on
+screen, one behind the QR. Whichever is claimed first wins, and the other is
+destroyed.
+
+Codes are told apart by length alone — 6 or 8 digits typed, 24 or 26 characters
+scanned — with no prefix and no version byte. The shorter forms are still
+*parsed*, so a client can read a code minted by an older mtmux; only the longer
+ones are emitted.
+
+## Why the secret is enough
 
 A wrong guess is online, one-shot and loud.
 
 Each code may be claimed once, and a failed confirmation **destroys the
 mailbox** — the page says so and offers a new code. An attacker therefore gets a
-single 1-in-10,000 shot per code they burn, and burning one is visible to you.
-The broker additionally rate-limits claims to 5 per minute per address and new
-mailboxes to 10 per minute, which is what stops an attacker spraying claims
-across every slot to improve those odds.
+single 1-in-a-million shot per code they burn.
+
+Burning one is not free, and this is the part that matters more than the digit
+count. `mtmux start` used to read a wrong code as proof that a human was at the
+other end and reset its budget, which meant an attacker sweeping the slot space
+could force a fresh code out of every live pairing and collect a guess per
+sweep, indefinitely. It no longer does: every failure spends from a budget that
+**only a completed pairing resets**, the machine says out loud that someone
+entered a wrong code, and from the fourth in a row it slows the replacement down
+to two minutes.
+
+The broker additionally rate-limits claims to 5 per minute per address, 12 per
+minute against any one slot regardless of address, and 600 per minute across the
+whole service — which is what stops an attacker spraying claims across every
+slot to improve those odds.
 
 This is the same argument Bluetooth pairing and Magic Wormhole rest on.
 

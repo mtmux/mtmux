@@ -7,7 +7,12 @@ interface ConfirmActionOptions {
   destructive?: boolean;
 }
 
-export function confirmAction({ title, description, onConfirm, destructive }: ConfirmActionOptions) {
+export function confirmAction({
+  title,
+  description,
+  onConfirm,
+  destructive,
+}: ConfirmActionOptions) {
   toast(title, {
     description,
     duration: Infinity,

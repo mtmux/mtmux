@@ -17,7 +17,10 @@ interface ErrorBoundaryState {
   retryCount: number;
 }
 
-export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends React.Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null, retryCount: 0 };
@@ -47,7 +50,11 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   private handleRetry = () => {
     if (this.state.retryCount === 0) {
       // First retry: soft reset — just re-render without clearing state
-      this.setState((s) => ({ hasError: false, error: null, retryCount: s.retryCount + 1 }));
+      this.setState((s) => ({
+        hasError: false,
+        error: null,
+        retryCount: s.retryCount + 1,
+      }));
     } else {
       // Subsequent retries: hard reset — clear active session + panes
       useSessionStore.getState().setActiveSession(null);

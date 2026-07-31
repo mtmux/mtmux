@@ -26,7 +26,7 @@ import { PinPad } from "./pin-pad";
  *
  * Above the PIN entry, before the first keystroke — not in a toast afterwards.
  * There is no recovery, by construction, and mtmux is the rare product where
- * that is fine: re-pairing is running `mtmux` and typing six digits. Someone
+ * that is fine: re-pairing is running `mtmux` and typing one code. Someone
  * needs to know that *while deciding*, not after they have forgotten the PIN.
  *
  * ## Why the entropy numbers are on the buttons
@@ -149,7 +149,8 @@ export function LockEnrollDialog({
               <span>
                 <strong>There is no way to reset this PIN.</strong> Forget it
                 and this browser has to pair again — run <code>mtmux</code> on
-                the machine and type six digits. Nothing on the machine is lost.
+                the machine and type the code it prints. Nothing on the machine
+                is lost.
               </span>
             </p>
 

@@ -68,7 +68,10 @@ export function useStableMediaQuery(query: string): boolean {
     return () => {
       media.removeEventListener("change", handleMediaChange);
       window.removeEventListener("orientationchange", handleOrientationChange);
-      screen.orientation?.removeEventListener("change", handleOrientationChange);
+      screen.orientation?.removeEventListener(
+        "change",
+        handleOrientationChange,
+      );
     };
   }, [query]);
 

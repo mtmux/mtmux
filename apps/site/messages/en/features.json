@@ -100,7 +100,7 @@
     "sshValue": "0",
     "sshLabel": "SSH keys stored on your phone",
     "codeValue": "1",
-    "codeLabel": "times you enter the six-digit code",
+    "codeLabel": "times you enter the pairing code",
     "commandValue": "1",
     "commandLabel": "command to run on the machine"
   },

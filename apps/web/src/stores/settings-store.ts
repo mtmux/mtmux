@@ -39,7 +39,10 @@ interface SettingsStore {
   autoZoom: boolean;
   setToolbarKeys: (keys: ToolbarKey[]) => void;
   toggleToolbarKey: (id: string) => void;
-  setGesture: <K extends keyof GestureSettings>(key: K, value: GestureSettings[K]) => void;
+  setGesture: <K extends keyof GestureSettings>(
+    key: K,
+    value: GestureSettings[K],
+  ) => void;
   setHapticEnabled: (enabled: boolean) => void;
   setAutoZoom: (enabled: boolean) => void;
 }

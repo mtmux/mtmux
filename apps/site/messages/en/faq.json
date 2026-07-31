@@ -100,11 +100,11 @@
         },
         {
           "question": "Does the broker learn my pairing code?",
-          "answer": "Only half of it. The six digits split into a two-digit routing slot, which the broker assigns, and a four-digit secret generated in your browser that is never transmitted — not even as a hash. It is the password for the PAKE."
+          "answer": "Only the first two digits. The code splits into a two-digit routing slot, which the broker assigns, and a six-digit secret generated in your browser that is never transmitted — not even as a hash. It is the password for the PAKE."
         },
         {
-          "question": "What stops someone guessing four digits?",
-          "answer": "One wrong guess destroys the pairing. Both sides prove they derived the same key before anything else happens, and a failed confirmation ends it, so an attacker gets a single attempt at 10,000 rather than an offline search."
+          "question": "What stops someone guessing the secret?",
+          "answer": "One wrong guess destroys the pairing. Both sides prove they derived the same key before anything else happens, and a failed confirmation ends it, so an attacker gets a single attempt at a million rather than an offline search. Guessing also costs the machine a visible warning and a slower replacement code, so a sweep is loud as well as futile."
         },
         {
           "question": "Do I have to open a port?",

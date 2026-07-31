@@ -13,10 +13,17 @@ import { formatCodeForDisplay } from "@repo/crypto";
  */
 
 export type PairingInvite = {
-  /** Six digits. Rendered grouped, never as one run. */
-  code: string;
+  /**
+   * The digits to type. Rendered grouped, never as one run.
+   *
+   * Null once the typed half has stopped arming — the two halves have separate
+   * failure budgets and separate slot spaces, so a sweep that kills the typed
+   * code leaves the QR beside it perfectly good. A banner that could only draw
+   * both or neither would blank a working QR.
+   */
+  code: string | null;
   /** What the QR encodes: the join URL with the code in the fragment. */
-  url: string;
+  url: string | null;
   /** Origin shown to someone typing the code by hand, e.g. "app.mtmux.com". */
   host: string;
 };
@@ -165,7 +172,8 @@ export function renderBannerLines(opts: BannerOpts): string[] {
   const qr = showQr ? colorizeQr(qrLines(qrPayload!)) : [];
 
   const aside: string[] = [];
-  if (opts.invite) {
+  const typedCode = opts.invite?.code ?? null;
+  if (opts.invite && typedCode) {
     aside.push(
       kleur.bold(showQr ? "Scan to open your terminal" : "Open your terminal"),
     );
@@ -173,9 +181,14 @@ export function renderBannerLines(opts: BannerOpts): string[] {
     aside.push(
       kleur.dim(showQr ? "or go to  " : "Go to    ") + brand(opts.invite.host),
     );
-    aside.push(
-      kleur.dim("and enter ") + kleur.bold(renderCode(opts.invite.code)),
-    );
+    aside.push(kleur.dim("and enter ") + kleur.bold(renderCode(typedCode)));
+  } else if (opts.invite && showQr) {
+    // The typed half is spent but the QR is not. Say what is left rather than
+    // pointing at a code that no longer exists.
+    aside.push(kleur.bold("Scan to open your terminal"));
+    aside.push("");
+    aside.push(kleur.dim("There is no code to type"));
+    aside.push(kleur.dim("for this one."));
   } else if (opts.lanQrPayload && showQr) {
     aside.push(kleur.bold("Scan to sign in"));
     aside.push("");

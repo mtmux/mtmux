@@ -9,6 +9,8 @@ import {
   hexToBytes,
   utf8ToBytes,
   randomBytes,
+  generateLongSecret,
+  parseCode,
   type SessionKeys,
 } from "@repo/crypto";
 import { MAX_PEERS_PER_SLOT, type SealedDescriptor } from "@repo/protocol";
@@ -175,8 +177,8 @@ describe("code validation", () => {
     openClaimSocket: () => Promise.reject(new Error("should not be called")),
   };
 
-  it("refuses anything that is not six digits before contacting the broker", async () => {
-    for (const code of ["", "12345", "1234567", "abcdef", "12 34 5"]) {
+  it("refuses a code of any other length before contacting the broker", async () => {
+    for (const code of ["12345", "1234567", "123456789", "12 34 5"]) {
       await expect(
         pairWithCode({
           code,
@@ -184,7 +186,22 @@ describe("code validation", () => {
           buildDescriptor: () => DESCRIPTOR,
           seal: sealed,
         }),
-      ).rejects.toThrow(/six-digit/);
+        // The wrong-length message names what we accept rather than asserting
+        // one length, so the next change of length does not make it a lie.
+      ).rejects.toThrow(/pairing codes are 6 or 8/);
+    }
+  });
+
+  it("says something different when it is not digits at all", async () => {
+    for (const code of ["", "abcdef", "hello there", "49-27!6-38"]) {
+      await expect(
+        pairWithCode({
+          code,
+          transport,
+          buildDescriptor: () => DESCRIPTOR,
+          seal: sealed,
+        }),
+      ).rejects.toThrow(/doesn't look like a pairing code/);
     }
   });
 
@@ -424,13 +441,16 @@ function hostScenario(opts: { slot?: string; expiresInMs?: number } = {}) {
     close() {},
   };
 
+  const requestedSpaces: (string | undefined)[] = [];
   const transport: MailboxTransport = {
-    postMailbox: () =>
-      Promise.resolve({
+    postMailbox: (space) => {
+      requestedSpaces.push(space);
+      return Promise.resolve({
         mailboxId: "mbx-abcdefgh",
         slot,
         expiresAt: Date.now() + (opts.expiresInMs ?? 180_000),
-      }),
+      });
+    },
     openMailboxSocket: () => Promise.resolve(socket),
   };
 
@@ -496,7 +516,16 @@ function hostScenario(opts: { slot?: string; expiresInMs?: number } = {}) {
     };
   }
 
-  return { transport, sent, closedPeers, ready, deliver, claim, slot };
+  return {
+    transport,
+    sent,
+    closedPeers,
+    ready,
+    deliver,
+    claim,
+    slot,
+    requestedSpaces,
+  };
 }
 
 const hostOpts = (transport: MailboxTransport) => ({
@@ -506,13 +535,43 @@ const hostOpts = (transport: MailboxTransport) => ({
 });
 
 describe("hostPairing", () => {
-  it("shows six digits: the broker's slot plus a locally generated secret", async () => {
+  it("shows eight digits: the broker's slot plus a locally generated secret", async () => {
     const s = hostScenario({ slot: "07" });
     const hosted = await hostPairing(hostOpts(s.transport));
-    expect(hosted.code).toMatch(/^\d{6}$/);
+    expect(hosted.code).toMatch(/^\d{8}$/);
     expect(hosted.slot).toBe("07");
     expect(hosted.code.slice(0, 2)).toBe("07");
     expect(hosted.expiresAt).toBeGreaterThan(Date.now());
+    hosted.cancel();
+  });
+
+  it("takes the slot the broker gave it, whatever its width", async () => {
+    // A new CLI against a broker that has never heard of the scan space gets a
+    // two-digit slot back and must simply use it — which is what makes the
+    // four-digit space a free upgrade rather than a compatibility break.
+    const s = hostScenario({ slot: "0731" });
+    const hosted = await hostPairing({
+      ...hostOpts(s.transport),
+      space: "scan",
+      secret: generateLongSecret(),
+    });
+    expect(hosted.slot).toBe("0731");
+    expect(hosted.code.slice(0, 4)).toBe("0731");
+    expect(parseCode(hosted.code)).toEqual({
+      slot: "0731",
+      secret: hosted.code.slice(4),
+    });
+    hosted.cancel();
+  });
+
+  it("asks for the space its secret belongs to", async () => {
+    const s = hostScenario();
+    const hosted = await hostPairing({
+      ...hostOpts(s.transport),
+      space: "scan",
+      secret: generateLongSecret(),
+    });
+    expect(s.requestedSpaces).toEqual(["scan"]);
     hosted.cancel();
   });
 
@@ -617,7 +676,13 @@ describe("hostPairing", () => {
 
   it("gives up when the code expires unused", async () => {
     const s = hostScenario({ expiresInMs: 20 });
-    const hosted = await hostPairing(hostOpts(s.transport));
+    // Explicit, because the deadline derived from `expiresAt` is now clamped to
+    // a 30s floor — a broker that says a code has already expired is far more
+    // likely to be a skewed clock than a real 20ms code.
+    const hosted = await hostPairing({
+      ...hostOpts(s.transport),
+      timeoutMs: 20,
+    });
     await expect(hosted.paired).rejects.toThrow(/expired/);
   });
 

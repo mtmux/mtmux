@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { createLogger } from "@repo/logger";
 import {
   PairClaimRequest,
+  PairNewRequest,
   tryDeserializePairingClientMessage,
   tryDeserializeRequestClientMessage,
   tryDeserializeTunnelClientMessage,
@@ -16,6 +17,7 @@ import {
   randomBytes,
   bytesToHex,
   generateSlot,
+  generateQrSlot,
 } from "@repo/crypto";
 import {
   createMailboxStore,
@@ -29,11 +31,30 @@ import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 
 const logger = createLogger("api:broker");
 
-/** How many slots to try before reporting the broker full. */
-const SLOT_DRAWS = 8;
+/**
+ * How many slots to try before reporting the broker full.
+ *
+ * P(503) is the fill fraction to this power, so the difference between 8 and 12
+ * is the difference between 17% and 6.9% of honest callers turned away when the
+ * typed space is 80% full. The draws stay *random*: a deterministic "first free
+ * slot" fallback would let an attacker who fills slots steer the next victim
+ * onto a slot it knows, which is worth far more to it than a 503 costs us.
+ */
+const SLOT_DRAWS = 12;
 
 /** Bucket key for limits that are deliberately not per-caller. */
 const GLOBAL_KEY = "*";
+
+/**
+ * Seconds for a `Retry-After` on a busy broker, jittered.
+ *
+ * Every agent that gets a 503 reads the same number, so a fixed one brings them
+ * all back at the same instant and re-creates the collision they were told to
+ * wait out.
+ */
+function retryAfterSeconds(random: () => number = Math.random): number {
+  return 3 + Math.floor(random() * 5);
+}
 
 /**
  * How long a requested pairing may sit undecided.
@@ -313,7 +334,7 @@ export function createBroker(deps: BrokerDeps = {}) {
   // HTTP
   // -------------------------------------------------------------------------
 
-  function pairNew(ip: string): HttpResult {
+  function pairNew(ip: string, rawBody?: unknown): HttpResult {
     if (!mailboxLimiter.take(ip, now())) {
       return {
         status: 429,
@@ -326,29 +347,39 @@ export function createBroker(deps: BrokerDeps = {}) {
       };
     }
 
-    // A slot at capacity is a collision, not a failure: draw another. With 100
-    // slots and a small cap this converges immediately unless the broker is
+    // An unreadable body is treated as an empty one rather than a 400: every
+    // client up to 0.5 POSTs with no body at all, and all of them must keep
+    // getting a typed slot. `typed` is the default forever, for that reason.
+    const parsed = PairNewRequest.safeParse(rawBody ?? {});
+    const space = parsed.success ? (parsed.data.space ?? "typed") : "typed";
+    const draw = space === "scan" ? generateQrSlot : generateSlot;
+
+    // A slot at capacity is a collision, not a failure: draw another. With a
+    // small per-slot cap this converges immediately unless the space is
     // genuinely saturated, which is what the last `null` reports.
     let mailbox = null;
     for (let attempt = 0; attempt < SLOT_DRAWS && !mailbox; attempt += 1) {
-      mailbox = store.createMailbox(generateSlot(), now());
+      mailbox = store.createMailbox(draw(), now());
     }
     if (!mailbox) {
-      logger.warn("No slot available for a new mailbox");
+      logger.warn({ space }, "No slot available for a new mailbox");
       return {
         status: 503,
         body: { error: "Pairing is busy. Try again in a moment." },
-        headers: { "Retry-After": "5" },
+        headers: { "Retry-After": String(retryAfterSeconds()) },
       };
     }
 
-    logger.info("Mailbox opened");
+    logger.info({ space }, "Mailbox opened");
     return {
       status: 200,
       body: {
         mailboxId: mailbox.id,
         slot: mailbox.slot,
         expiresAt: mailbox.expiresAt,
+        // A duration as well as a deadline, because `expiresAt` is on this
+        // clock and the countdown runs on the caller's. See `mailboxTimeoutMs`.
+        ttlMs: mailbox.expiresAt - mailbox.createdAt,
       },
     };
   }
@@ -409,22 +440,24 @@ export function createBroker(deps: BrokerDeps = {}) {
     logger.info({ offered: targets.length }, "Claim fanned out");
     return {
       status: 200,
-      // Deliberately a boolean, not `targets.length`. The count told an
-      // unauthenticated caller exactly how many pairings were live on a slot,
-      // which is a free enumeration oracle; the claimant only ever needed to
-      // know whether to bother opening a socket.
+      // Both fields constant, and that is the whole point.
       //
-      // `offered` is kept, clamped to 0 or 1, purely for clients that predate
-      // `waiting`: mtmux <= 0.4.0 runs a strict schema parse on this response
-      // and a missing field would make `mtmux pair` throw outright. Clamped, it
-      // carries exactly what `waiting` carries and no more — an old client
-      // seeds "one peer to rule out", which is right in the common case and at
-      // worst gives up one peer early on a slot collision.
-      body: {
-        claimId: claim.id,
-        waiting: targets.length > 0,
-        offered: targets.length > 0 ? 1 : 0,
-      },
+      // A boolean was already better than a count, but it was still a free
+      // liveness oracle: one unauthenticated POST, no socket, no crypto and no
+      // guess spent, told the caller whether anything was live on that slot.
+      // A hundred POSTs mapped the entire typed space, and an attacker could
+      // then spend its real budget only where something was waiting.
+      //
+      // So the POST now says nothing at all, and the truth moved onto the
+      // socket — where it costs a rate-limited WebSocket upgrade and *burns*,
+      // which turns a sweep from free reconnaissance into the attack itself.
+      // See `attachClaimSocket`.
+      //
+      // `waiting` must stay present and stay `true`: both clients branch on it
+      // and would refuse to open a socket at all if it were false, and clients
+      // up to 0.4.0 parse this response strictly, so `offered` cannot simply be
+      // dropped either.
+      body: { claimId: claim.id, waiting: true, offered: 1 },
     };
   }
 
@@ -682,6 +715,23 @@ export function createBroker(deps: BrokerDeps = {}) {
       if (offered) store.burnOffer(offered, claim.id);
     }
 
+    // Nothing was waiting on that slot. This is the answer the POST used to
+    // give away for free; here it has cost an upgrade the limiter counted, and
+    // the claim it arrived on is spent either way.
+    if (claim.peers.size === 0) {
+      // `peer-gone` rather than a new enum member, deliberately. `reason` is a
+      // closed zod enum and both clients silently *drop* frames that fail to
+      // parse — a new value would make every deployed client hang to its 30s
+      // timeout instead of failing fast, which is a worse outcome than slightly
+      // imprecise wording. "The other device stopped waiting for this code" is
+      // true here in every sense that matters to the reader.
+      socket.send(JSON.stringify({ type: "pair:failed", reason: "peer-gone" }));
+      store.destroyClaim(claim.id);
+      claimPayloads.delete(claim.id);
+      socket.close(1000, "Nothing waiting on that slot");
+      return null;
+    }
+
     function mailboxFor(peer: string): Mailbox | null {
       const mailboxId = claim!.peers.get(peer);
       return mailboxId ? store.getMailbox(mailboxId, now()) : null;
@@ -769,6 +819,29 @@ export function createBroker(deps: BrokerDeps = {}) {
       },
 
       close() {
+        // A claim that attached spent its guess, and burned every mailbox it
+        // was offered. Whatever it did or failed to do afterwards, those codes
+        // are dead — so say so.
+        //
+        // Without this, POST a claim, attach a socket and disconnect: the code
+        // is permanently unclaimable and its holder never hears a thing. It
+        // sits out the full three minutes and then counts that as *unattended*,
+        // which is the counter meant to detect an abandoned terminal. A hundred
+        // POSTs killed every typed pairing on the service, silently, and the
+        // machines they killed responded by quietly giving up.
+        //
+        // A successful pairing removes its peer from `claim.peers` first, so
+        // this cannot fire on the happy path.
+        for (const [peer, mailboxId] of claim.peers) {
+          const mailbox = store.getMailbox(mailboxId, now());
+          if (!mailbox) continue;
+          store.deliver(mailbox, {
+            type: "pair:failed",
+            peer,
+            reason: "confirmation-failed",
+          });
+          store.destroyMailbox(mailbox.id);
+        }
         store.destroyClaim(claim.id);
         claimPayloads.delete(claim.id);
       },

@@ -25,7 +25,7 @@ mtmux
 
 `mtmux` on its own is the same as `mtmux start` — `start` is the default
 command. It checks Node and tmux, loads or generates an auth token, serves the
-terminal, and prints a six-digit code plus a QR block.
+terminal, and prints a pairing code plus a QR block.
 
 - **Requirements:** Node 22+ and `tmux` on your PATH.
 - **Port:** `14100` by default.
@@ -41,13 +41,13 @@ See [Getting started](/docs/getting-started) for the walkthrough and
 
 **Scan the QR that `mtmux` printed.** That is the whole flow — one command, one
 scan, and your terminal is on the phone. If the camera will not cooperate, go to
-`app.mtmux.com` and type the six digits instead.
+`app.mtmux.com` and type the code instead.
 
 It works the same on your own wifi and on cellular from another country. mtmux
 takes the direct path when the device can reach your machine and falls back to a
 relayed tunnel when it cannot, without asking you.
 
-The code is `slot(2) + secret(4)`. The last four digits are the password for a
+The code is `slot(2) + secret(6)`. The last six digits are the password for a
 PAKE and **never reach the broker**, not even as a hash; everything afterwards
 is AES-256-GCM under keys neither the broker nor anyone else on the path holds.
 The QR puts the code in a URL *fragment*, which browsers never send to a server.
@@ -77,6 +77,6 @@ with `MTMUX_API_URL`. See [Self-hosting](/docs/self-hosting).
 
 - [Getting started](/docs/getting-started) — install, first run, first device
 - [CLI reference](/docs/cli) — every command and flag
-- [How pairing works](/docs/pairing) — the six digits, and why they are enough
+- [How pairing works](/docs/pairing) — what the code is, and why it is enough
 - [Security](/docs/security) — the actual authentication model
 - [`mtmux doctor`](/docs/doctor) — the first thing to run when something is off

@@ -20,6 +20,9 @@ import {
   type PairingUpdate,
 } from "@/lib/pairing-client";
 import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
+import { CopyCommand } from "@/components/account/copy-command";
+import { MIN_PAIR_CLI_VERSION } from "@/lib/semver-gte";
+import { codeGroups } from "@repo/crypto";
 
 type State =
   | { phase: "requesting" }
@@ -29,6 +32,8 @@ type State =
   | { phase: "failed"; message: string };
 
 function secondsLeft(expiresAt: number): number {
+  // `expiresAt` already arrives on this device's clock — `startPairing` runs
+  // the broker's value through `codeDeadline` — so this is plain subtraction.
   return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
 }
 
@@ -107,6 +112,8 @@ export default function PairPage() {
   }, [state]);
 
   const code = state.phase === "waiting" ? state.code : "";
+  // Empty while there is no code; `codeGroups` throws on anything unparseable.
+  const groups = code ? codeGroups(code) : [];
 
   async function copyCode() {
     try {
@@ -148,15 +155,21 @@ export default function PairPage() {
                 aria-label={`Pairing code ${code.split("").join(" ")}, tap to copy`}
                 className="mx-auto flex w-full items-center justify-center gap-1 rounded-lg border border-border bg-muted/40 py-6 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {code.split("").map((digit, i) => (
+                {/* Grouped by `codeGroups` rather than sliced here, so this and
+                    the CLI banner cannot disagree about where the breaks go.
+                    The first group is the slot — the only part that reaches our
+                    servers — and is dimmed to make that visible. */}
+                {groups.map((group, g) => (
                   <span
-                    key={i}
+                    key={g}
                     className={`font-mono text-4xl tabular-nums tracking-tight sm:text-5xl ${
-                      i < 2 ? "text-muted-foreground" : "text-foreground"
+                      g === 0 ? "text-muted-foreground" : "text-foreground"
                     }`}
                   >
-                    {digit}
-                    {i === 1 && <span className="px-2 opacity-30">·</span>}
+                    {group}
+                    {g < groups.length - 1 && (
+                      <span className="px-2 opacity-30">·</span>
+                    )}
                   </span>
                 ))}
                 <span className="ml-3 text-muted-foreground">
@@ -175,11 +188,19 @@ export default function PairPage() {
                 <code className="block rounded bg-background px-3 py-2 font-mono text-sm">
                   mtmux pair {code}
                 </code>
+                {/* The one hard break in the length change. A CLI at 0.5 parses
+                    six digits and will tell the reader this eight-digit code is
+                    not a pairing code — a message we cannot fix retroactively,
+                    so the fix has to live here, before they try it. */}
+                <p className="text-xs text-muted-foreground">
+                  Needs mtmux {MIN_PAIR_CLI_VERSION} or newer.
+                </p>
+                <CopyCommand command="mtmux upgrade" />
               </div>
 
               <p className="text-center text-xs text-muted-foreground">
-                Expires in {remaining}s. The last four digits never leave this
-                device.
+                Expires in {remaining}s. Only the first two digits reach our
+                servers.
               </p>
             </>
           )}

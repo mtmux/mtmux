@@ -27,6 +27,7 @@ import {
   hostPairing,
   PairingError,
   type HostedPairing,
+  type PairingErrorKind,
 } from "../pairing-client.js";
 import {
   buildCandidates,
@@ -66,33 +67,135 @@ const HEARTBEAT_MS = 30_000;
 const TUNNEL_READY_TIMEOUT_MS = 15_000;
 
 /**
- * Codes that may expire untouched before arming stops.
+ * How many times each kind of failure may mint another code.
  *
- * Five is roughly fifteen minutes of an unwatched terminal — long enough to
- * cover a coffee, short enough that a machine left running for a week is not
- * quietly issuing thousands of independent guesses at a four-digit secret.
+ * The rule this replaces was "anything but a silent expiry resets the budget",
+ * on the reasoning that a wrong code proves somebody is at the other end. An
+ * attacker is also somebody. Sweeping the slot space forces a fresh code out of
+ * every live pairing and collects one guess per sweep, forever — which turns a
+ * bound that is supposed to be one guess per code into an unbounded online
+ * search, and no amount of extra digits fixes an unbounded search. So each
+ * failure mode now spends from its own budget and **only a completed pairing
+ * resets anything**.
+ *
+ * - `expiries` — nobody ever touched the code. Five is roughly fifteen minutes
+ *   of an unwatched terminal: long enough to cover a coffee, short enough that
+ *   a machine left running for a week is not quietly issuing thousands of
+ *   independent draws at the secret.
+ * - `wrong` — someone claimed the code and failed key confirmation. Eight, with
+ *   the backoff below, is generous for a human and ruinous for a sweep.
+ * - `lost` — the socket dropped. Not a guess at all; the budget is a spin-loop
+ *   guard so a broker outage cannot become a reconnect storm.
  */
-const MAX_UNATTENDED_EXPIRIES = 5;
+export type RearmLimits = {
+  expiries?: number;
+  wrong?: number;
+  lost?: number;
+};
+
+export const REARM_LIMITS: Required<RearmLimits> = {
+  expiries: 5,
+  wrong: 8,
+  lost: 20,
+};
 
 /**
- * Whether a failed pairing should mint another code, and the running tally.
+ * Delay before the code that follows the nth wrong one.
  *
- * The old rule was "always re-arm", which meant the window in which a code
- * could be guessed was not its three minutes but the whole life of the process:
- * a machine left running overnight supplied unlimited independent draws at a
- * 10^4 secret. The distinction that fixes it is whether anyone engaged with the
- * code at all. A wrong code, a dropped socket, a refused handshake — all mean
- * somebody is there, so the budget resets. Only silence counts against it.
+ * The first three are free, because three fumbles in a row is what a real typo
+ * looks like on a phone and charging for it would make the tool feel broken.
+ * From the fourth the likelier reading is a stranger, and the delay is the
+ * whole defence: it is what stops a sweep collecting guesses at line rate.
  */
+const WRONG_BACKOFF_MS = [0, 0, 0, 5_000, 15_000, 45_000, 120_000, 120_000];
+
+/** The wrong-code count from which the warning stops sounding like a typo. */
+const GUESSING_AT = 4;
+
+/** Consecutive failures of each kind, since the last completed pairing. */
+export type RearmState = { expiries: number; wrong: number; lost: number };
+
+/** A fresh budget. Handed out at boot and after every successful pairing. */
+export const NO_FAILURES: RearmState = { expiries: 0, wrong: 0, lost: 0 };
+
+export type RearmWarning = "wrong-code" | "guessing" | "broker-misbehaving";
+
+export type RearmDecision = {
+  rearm: boolean;
+  state: RearmState;
+  /** How long to wait before arming again. */
+  delayMs: number;
+  /** Something the human should be told, or null for the quiet path. */
+  warn: RearmWarning | null;
+};
+
+/**
+ * Anything that is not a `PairingError` came from the transport rather than
+ * from the protocol — a fetch that threw, a socket that refused to open.
+ * Counting it as `lost` keeps it bounded and backed off. Counting it as
+ * engagement, which is what the old code did, is exactly the unbounded loop
+ * this function exists to close.
+ */
+function failureKind(err: unknown): PairingErrorKind {
+  return err instanceof PairingError ? err.kind : "lost";
+}
+
+/** Whether to mint another code after a failure, and what it costs. */
 export function rearmDecision(
   err: unknown,
-  consecutiveExpiries: number,
-  max: number = MAX_UNATTENDED_EXPIRIES,
-): { rearm: boolean; expiries: number } {
-  const expired = err instanceof PairingError && err.kind === "expired";
-  if (!expired) return { rearm: true, expiries: 0 };
-  const expiries = consecutiveExpiries + 1;
-  return { rearm: expiries < max, expiries };
+  state: RearmState,
+  limits: RearmLimits & { jitter?: () => number } = {},
+): RearmDecision {
+  const max = { ...REARM_LIMITS, ...limits };
+  const jitter = limits.jitter ?? Math.random;
+
+  switch (failureKind(err)) {
+    case "expired": {
+      const expiries = state.expiries + 1;
+      return {
+        rearm: expiries < max.expiries,
+        state: { ...state, expiries },
+        delayMs: 0,
+        warn: null,
+      };
+    }
+
+    // A `failed` is a broker-reported `pair:failed`, which since the burn fix
+    // also covers "a claim attached and then vanished". Both mean the code was
+    // spent by somebody who could not confirm, so both cost the same.
+    case "no-match":
+    case "failed": {
+      const wrong = state.wrong + 1;
+      return {
+        rearm: wrong < max.wrong,
+        state: { ...state, wrong },
+        delayMs:
+          WRONG_BACKOFF_MS[wrong - 1] ??
+          WRONG_BACKOFF_MS[WRONG_BACKOFF_MS.length - 1]!,
+        warn: wrong >= GUESSING_AT ? "guessing" : "wrong-code",
+      };
+    }
+
+    case "lost": {
+      const lost = state.lost + 1;
+      const ceiling = Math.min(1_000 * 2 ** lost, 30_000);
+      return {
+        rearm: lost < max.lost,
+        state: { ...state, lost },
+        // Jittered because every agent on the service reconnects to the same
+        // broker: an unjittered backoff brings them all back in lockstep and
+        // knocks over the thing they were waiting for.
+        delayMs: Math.round(ceiling * (0.5 + jitter() * 0.5)),
+        warn: null,
+      };
+    }
+
+    // The broker offered more peers than the protocol allows. That is not a
+    // guess and not a network fault, so there is nothing to back off from —
+    // stop, and say why.
+    case "too-many-peers":
+      return { rearm: false, state, delayMs: 0, warn: "broker-misbehaving" };
+  }
 }
 
 function cliVersion(): string {
@@ -200,6 +303,31 @@ type Hosted = {
 };
 
 /**
+ * The two halves of an invite.
+ *
+ * `typed` is the digits a human reads off the screen; `scan` is the QR's
+ * 128-bit secret. They were once armed and re-armed as a unit, which stopped
+ * being right the moment they got separate slot spaces: a sweep of the typed
+ * slots kills the typed code and never touches the scanned one, and a shared
+ * fate would leave the machine silent until the untouched half timed out.
+ */
+type HalfKind = "typed" | "scan";
+
+/** Why a fresh code appeared, so the CLI can say something true about it. */
+export type RearmReason = "paired" | "expired" | "wrong-code" | "lost";
+
+/** What the human is told when a half fails, before the replacement arrives. */
+export type RearmNotice = {
+  warning: RearmWarning;
+  /** Which half failed. Only `typed` can be meaningfully guessed at. */
+  half: HalfKind;
+  /** Consecutive wrong codes for this half, for "wrong code again (4)". */
+  wrong: number;
+  /** How long until the replacement. */
+  delayMs: number;
+};
+
+/**
  * Bring up the tunnel and arm a pairing code.
  *
  * Ordering matters: the tunnel must be registered before a code is offered,
@@ -232,7 +360,13 @@ async function startHosted(opts: {
    */
   buildGrant?: (directToken: string) => GrantRecord;
   onPaired: (label: string) => void;
-  onRearm: (invite: PairingInvite) => void;
+  onRearm: (invite: PairingInvite, reason: RearmReason) => void;
+  /**
+   * A half failed in a way worth saying out loud, and its replacement is
+   * `delayMs` away. Fires before the delay, so the terminal is never silent
+   * for two minutes with no explanation.
+   */
+  onWarn?: (notice: RearmNotice) => void;
   /**
    * Every code has expired untouched and no more will be minted until the user
    * asks. Undefined means the caller does not care and arming simply stops.
@@ -340,144 +474,250 @@ async function startHosted(opts: {
   const appOrigin = appOriginFor(opts.base);
 
   /**
-   * Consecutive codes that expired with nobody ever touching them.
+   * Failure budgets, one set per half.
    *
-   * Re-arming on every failure — including a plain timeout — meant the exposure
-   * window was not the code's three minutes but the process's whole lifetime: a
-   * machine left running overnight handed an attacker an unlimited supply of
-   * independent draws at a 10^4 secret. Counting un-scanned expiries separates
-   * the two cases that matter. Someone watching the terminal pairs, or gets it
-   * wrong, and the counter resets; an abandoned one runs out and stops.
+   * Per-half because the halves stopped sharing a fate once the QR got its own
+   * slot space. A sweep of the two-digit typed space kills typed codes and
+   * cannot touch a four-digit scan slot, so a shared counter would either bill
+   * the QR for the typed code's attacker or let the typed code coast on the
+   * QR's silence. See `rearmDecision` for why nothing but a completed pairing
+   * resets these.
    */
-  let unattendedExpiries = 0;
+  const failures: Record<HalfKind, RearmState> = {
+    typed: { ...NO_FAILURES },
+    scan: { ...NO_FAILURES },
+  };
 
   /**
-   * Arm one pair of codes: six digits to type, and 128 bits to scan.
-   *
-   * Two mailboxes rather than one, because a mailbox commits to a single CPace
-   * password the moment it answers a claim — so a four-digit secret and a
-   * 128-bit one cannot share it. They are parked together and raced: whichever
-   * is claimed first wins and the other is cancelled, which destroys its
-   * mailbox immediately rather than leaving a live code nobody is watching.
-   *
-   * The point of the pair is that scanning a QR is not typing. Nobody reads the
-   * long secret off a screen, so there is no reason for the path almost
-   * everyone uses to carry the same 19.9 bits as the fallback.
+   * The scan half's secret is 128 bits, so a failure there is never a guess —
+   * it is a claim that could not confirm, i.e. a bug or a stray client. The
+   * budget exists only so a misbehaving peer cannot spin the loop.
    */
-  const arm = async (): Promise<PairingInvite> => {
-    const hostOpts = () => ({
-      apiBase: opts.base,
-      buildDescriptor: () => ({
+  const limitsFor = (half: HalfKind): RearmLimits =>
+    half === "scan" ? { wrong: 20 } : {};
+
+  /** The live pairing behind each half, or null once it has stopped arming. */
+  const live: Record<HalfKind, HostedPairing | null> = {
+    typed: null,
+    scan: null,
+  };
+
+  /**
+   * Which round each wired half belongs to.
+   *
+   * A successful pairing ends the round and cancels the other half, whose
+   * rejection then lands a microtask later. Without a token to check against,
+   * that late rejection would be read as a failure of the *new* round and
+   * re-arm on top of a code that had just been printed. This is the same job
+   * the old `decided` flag did, done in a way that survives the round being
+   * restarted immediately.
+   */
+  let round = 0;
+
+  /** Timers for delayed re-arms, so `stop()` does not leave one pending. */
+  const pending = new Set<NodeJS.Timeout>();
+
+  const hostOpts = () => ({
+    apiBase: opts.base,
+    buildDescriptor: () => {
+      // Read through to the agent rather than closing over the id captured at
+      // boot: `createTunnelAgent` reconnects on its own and comes back with a
+      // new id, so a code re-armed after a broker restart would otherwise seal
+      // a descriptor naming a tunnel that no longer exists — the browser pairs
+      // successfully and then cannot connect to anything.
+      const id = agent.tunnelId;
+      if (id === null) throw new PairingError("The tunnel is not connected.");
+      return {
         candidates: opts.tunnelOnly ? [] : buildCandidates(opts.port, null),
-        tunnelId,
+        tunnelId: id,
         deviceId: key.deviceId,
         publicKey: Buffer.from(key.publicKey).toString("hex"),
         label: deviceLabel(),
-      }),
-      seal: sealDescriptor,
+      };
+    },
+    seal: sealDescriptor,
+  });
+
+  const inviteNow = (): PairingInvite => ({
+    code: live.typed?.code ?? null,
+    // The QR carries the long secret; only `code` is meant to be read aloud.
+    url: live.scan ? joinUrl(appOrigin, live.scan.code) : null,
+    host: appOrigin.replace(/^https?:\/\//, ""),
+  });
+
+  /**
+   * Park one half's mailbox and wire up what happens when it settles.
+   *
+   * Two mailboxes rather than one, because a mailbox commits to a single CPace
+   * password the moment it answers a claim — so a typed secret and a 128-bit
+   * one cannot share it. They are raced: whichever is claimed first wins the
+   * round and the other is cancelled, which destroys its mailbox immediately
+   * rather than leaving a live code nobody is watching.
+   *
+   * The point of the pair is that scanning a QR is not typing. Nobody reads a
+   * 128-bit secret off a screen, so there is no reason for the path almost
+   * everyone uses to carry the entropy of the fallback.
+   */
+  const armHalf = async (half: HalfKind): Promise<HostedPairing> => {
+    const myRound = round;
+    const pairing = await hostPairing({
+      ...hostOpts(),
+      secret: half === "typed" ? generateSecret() : generateLongSecret(),
+      space: half,
     });
+    live[half] = pairing;
 
-    const [typed, scanned] = await Promise.all([
-      hostPairing({ ...hostOpts(), secret: generateSecret() }),
-      hostPairing({ ...hostOpts(), secret: generateLongSecret() }),
-    ]);
+    void pairing.paired
+      .then(async (result) => {
+        if (myRound !== round) return;
+        round += 1;
+        // The round is over, so the sibling code must stop being claimable.
+        const other: HalfKind = half === "typed" ? "scan" : "typed";
+        live[other]?.cancel();
+        live.typed = null;
+        live.scan = null;
 
-    // Exactly one of the two may settle the round.
-    let decided = false;
-    let failures = 0;
-
-    const wire = (self: HostedPairing, other: HostedPairing) => {
-      void self.paired
-        .then(async (result) => {
-          if (decided) return;
-          decided = true;
-          // The round is over, so the sibling code must stop being claimable.
-          other.cancel();
-          // Registration BEFORE the agent will admit the keys, and this order is
-          // load-bearing now that the tunnel agent no longer injects the
-          // machine's own token. Admitting the keys first opens a window in
-          // which the browser can win the race, send its `auth` frame down the
-          // tunnel, and be refused because the relay has never been told about
-          // that token. A failure here must therefore *not* admit the keys.
-          const grant = opts.buildGrant?.(result.keys.directToken);
-          const registered = await registerDirectToken(
-            opts.port,
-            opts.cfg.token,
-            result.keys.directToken,
-            grant,
+        // Registration BEFORE the agent will admit the keys, and this order is
+        // load-bearing now that the tunnel agent no longer injects the
+        // machine's own token. Admitting the keys first opens a window in
+        // which the browser can win the race, send its `auth` frame down the
+        // tunnel, and be refused because the relay has never been told about
+        // that token. A failure here must therefore *not* admit the keys.
+        const grant = opts.buildGrant?.(result.keys.directToken);
+        const registered = await registerDirectToken(
+          opts.port,
+          opts.cfg.token,
+          result.keys.directToken,
+          grant,
+        );
+        // A scoped pairing that could not be registered must not be admitted:
+        // the alternative is a browser that authenticates against a relay
+        // which has never heard of its token, and so falls through to nothing.
+        if (grant && !registered) {
+          console.log(
+            kleur.red("  ✗ Could not register the share. Nothing was shared."),
           );
-          // A scoped pairing that could not be registered must not be admitted:
-          // the alternative is a browser that authenticates against a relay
-          // which has never heard of its token, and so falls through to nothing.
-          if (grant && !registered) {
-            console.log(
-              kleur.red(
-                "  ✗ Could not register the share. Nothing was shared.",
-              ),
-            );
-            return;
-          }
-          agent.addSessionKeys(result.keys);
-          if (grant) await grantsStore.add(grant);
-          await configStore.addPeer({
-            deviceId:
-              result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,
-            publicKey: result.peerPublicKey ?? "",
-            label: result.peerLabel,
-            pairedAt: Date.now(),
-            lastSeenAt: Date.now(),
-            directToken: result.keys.directToken,
-          });
-          opts.onPaired(result.peerLabel);
-          unattendedExpiries = 0;
-          opts.onRearm(await arm());
-        })
-        .catch((err: unknown) => {
-          if (decided) return;
-          // Both codes must be spent before the round is. Otherwise cancelling
-          // the loser would itself look like a failure and re-arm on top of a
-          // pairing that had just succeeded.
-          failures += 1;
-          if (failures < 2) return;
-          decided = true;
-
-          const decision = rearmDecision(err, unattendedExpiries);
-          unattendedExpiries = decision.expiries;
-          if (!decision.rearm) {
-            opts.onIdle?.();
-            return;
-          }
-
-          // A failed handshake burns the code by design. Offer a fresh one
-          // rather than leaving the server unreachable to the next device.
-          void arm()
-            .then(opts.onRearm)
-            .catch(() => {});
+          return;
+        }
+        agent.addSessionKeys(result.keys);
+        if (grant) await grantsStore.add(grant);
+        await configStore.addPeer({
+          deviceId: result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,
+          publicKey: result.peerPublicKey ?? "",
+          label: result.peerLabel,
+          pairedAt: Date.now(),
+          lastSeenAt: Date.now(),
+          directToken: result.keys.directToken,
         });
-    };
+        opts.onPaired(result.peerLabel);
+        // The one thing that clears the budgets: a pairing that completed.
+        failures.typed = { ...NO_FAILURES };
+        failures.scan = { ...NO_FAILURES };
+        opts.onRearm(await armRound(), "paired");
+      })
+      .catch((err: unknown) => {
+        if (myRound !== round) return;
+        live[half] = null;
 
-    wire(typed, scanned);
-    wire(scanned, typed);
+        const decision = rearmDecision(err, failures[half], limitsFor(half));
+        failures[half] = decision.state;
 
-    return {
-      code: typed.code,
-      // The QR carries the long secret; only `code` is meant to be read aloud.
-      url: joinUrl(appOrigin, scanned.code),
-      host: appOrigin.replace(/^https?:\/\//, ""),
-    };
+        if (decision.warn) {
+          opts.onWarn?.({
+            warning: decision.warn,
+            half,
+            wrong: decision.state.wrong,
+            delayMs: decision.rearm ? decision.delayMs : 0,
+          });
+        }
+
+        if (!decision.rearm) {
+          // Nothing left to claim on either half — the invite is spent, and
+          // only a human may bring it back. On a machine with no TTY that is
+          // simply where arming stops, which is the fail-closed direction.
+          if (!live.typed && !live.scan) opts.onIdle?.();
+          return;
+        }
+
+        const reason: RearmReason =
+          decision.warn === null ? failureKindReason(err) : "wrong-code";
+        const again = () => {
+          void armHalf(half)
+            .then(() => opts.onRearm(inviteNow(), reason))
+            .catch((armErr: unknown) => {
+              // Arming itself failed — a 503, a dead tunnel. Say so and try
+              // again on the same budget rather than going quiet with no code.
+              console.log(
+                kleur.yellow(
+                  `  ! Could not get a fresh code (${(armErr as Error).message}).`,
+                ),
+              );
+              scheduleRearm(REARM_RETRY_MS);
+            });
+        };
+        const scheduleRearm = (delayMs: number) => {
+          if (delayMs <= 0) {
+            again();
+            return;
+          }
+          const timer = setTimeout(() => {
+            pending.delete(timer);
+            again();
+          }, delayMs);
+          timer.unref();
+          pending.add(timer);
+        };
+        scheduleRearm(decision.delayMs);
+      });
+
+    return pairing;
   };
 
-  const invite = await arm();
+  /** Arm both halves as one fresh round. */
+  const armRound = async (): Promise<PairingInvite> => {
+    await Promise.all([armHalf("typed"), armHalf("scan")]);
+    return inviteNow();
+  };
+
+  const invite = await armRound();
   return {
     agent,
     invite,
     /** Mint a code on demand, after arming has gone idle. */
     rearm: async () => {
-      unattendedExpiries = 0;
-      return arm();
+      round += 1;
+      failures.typed = { ...NO_FAILURES };
+      failures.scan = { ...NO_FAILURES };
+      live.typed?.cancel();
+      live.scan?.cancel();
+      live.typed = null;
+      live.scan = null;
+      return armRound();
     },
-    stop: () => agent.stop(),
+    stop: () => {
+      for (const timer of pending) clearTimeout(timer);
+      pending.clear();
+      agent.stop();
+    },
   };
+}
+
+/** How long to wait before retrying an arm that failed outright. */
+const REARM_RETRY_MS = 10_000;
+
+/** The dim line above a replacement code, chosen by what killed the last one. */
+const REARM_LINES: Record<RearmReason, string> = {
+  paired: "Here's a fresh code for the next device:",
+  expired: "That code expired. Here's another:",
+  "wrong-code": "Here's the fresh code:",
+  lost: "Reconnected. Here's a fresh code:",
+};
+
+/** The reason wording for a failure that carried no warning of its own. */
+function failureKindReason(err: unknown): RearmReason {
+  return err instanceof PairingError && err.kind === "expired"
+    ? "expired"
+    : "lost";
 }
 
 /**
@@ -761,10 +1001,48 @@ export async function start(opts: StartOpts) {
         onPaired: (label) => {
           console.log(kleur.green(`  ✓ ${label} connected.`));
         },
-        onRearm: (invite) => {
+        onWarn: (notice) => {
+          if (notice.warning === "broker-misbehaving") {
+            console.log(
+              kleur.red(
+                "  ! The pairing service offered more terminals than it should.",
+              ),
+            );
+            console.log(
+              kleur.dim(
+                "    Stopped arming rather than risk pairing with the wrong one.",
+              ),
+            );
+            return;
+          }
+          // Under four, the likeliest reading is a fumble on a phone keyboard,
+          // and saying anything heavier would be crying wolf at a typo.
+          if (notice.warning === "wrong-code") {
+            console.log(
+              kleur.yellow(
+                "  ! Someone entered a wrong code. That one is now dead.",
+              ),
+            );
+            console.log(
+              kleur.dim("    Here's a fresh one — the old code will not work."),
+            );
+            return;
+          }
+          // From the fourth, a stranger is likelier than a fumble. Say so, and
+          // name the delay so the pause reads as deliberate rather than broken.
           console.log(
-            kleur.dim("    Here's a fresh code for the next device:"),
+            kleur.yellow(
+              `  ! Wrong code again (${notice.wrong}). If that wasn't you, someone is guessing.`,
+            ),
           );
+          console.log(
+            kleur.dim(
+              `    Slowing down — next code in ${Math.round(notice.delayMs / 1000)}s.`,
+            ),
+          );
+        },
+        onRearm: (invite, reason) => {
+          console.log(kleur.dim(`    ${REARM_LINES[reason]}`));
           reprint(invite);
           void serverState.write(record(invite.url)).catch(() => {});
         },

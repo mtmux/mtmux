@@ -62,7 +62,12 @@ export function TerminalSearch({
         className="h-7 border-0 bg-transparent px-1 text-sm focus-visible:ring-0"
         autoFocus
       />
-      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onPrevious}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6"
+        onClick={onPrevious}
+      >
         <ChevronUp className="h-3 w-3" />
       </Button>
       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onNext}>

@@ -9,13 +9,16 @@ import {
   utf8ToBytes,
   generateSecret,
   parseCode,
+  describeBadCode,
   type SessionKeys,
 } from "@repo/crypto";
 import {
   MAX_PEERS_PER_SLOT,
   PairClaimResponse,
   PairNewResponse,
+  codeDeadline,
   type SealedDescriptor,
+  type SlotSpace,
 } from "@repo/protocol";
 import {
   AD_CLI,
@@ -32,16 +35,17 @@ import {
 /**
  * The CLI half of hosted pairing, in both directions.
  *
- * `pairWithCode` is the original: the user reads six digits off their phone and
- * types them here. `hostPairing` is the mirror image, which is what `mtmux
- * start` prints as a code and a QR — the CLI parks the mailbox and a browser
- * claims it, so nothing has to be typed on the machine at all.
+ * `pairWithCode` is the original: the user reads a code off their phone and
+ * types it here. `hostPairing` is the mirror image, which is what `mtmux start`
+ * prints as a code and a QR — the CLI parks the mailbox and a browser claims
+ * it, so nothing has to be typed on the machine at all.
  *
- * In both, the first two digits are the broker's routing slot and the last four
- * are the PAKE password. Whichever side generates the secret, it never leaves
- * that process — not to the broker, not hashed, not in a log line. 10⁶ is an
- * instant offline search, so a broker that learned the whole code could run the
- * PAKE against both ends at once and hand an attacker a shell.
+ * In both, only the leading slot digits are the broker's routing half; the rest
+ * is the PAKE password. Whichever side generates the secret, it never leaves
+ * that process — not to the broker, not hashed, not in a log line. Any secret a
+ * human could retype is an instant offline search, so a broker that learned the
+ * whole code could run the PAKE against both ends at once and hand an attacker
+ * a shell.
  *
  * The exchange itself — fan-out across candidate peers, key confirmation,
  * sealing the descriptor — lives in `pairing-exchange.ts` and is shared, so the
@@ -51,6 +55,7 @@ import {
 export type {
   PairingResult,
   PairingSocket,
+  PairingErrorKind,
   Attempt,
 } from "./pairing-exchange.js";
 export { PairingError } from "./pairing-exchange.js";
@@ -63,10 +68,11 @@ export type ClaimTransport = {
 
 /** Showing a code and waiting for someone to claim it. */
 export type MailboxTransport = {
-  postMailbox(): Promise<{
+  postMailbox(space?: SlotSpace): Promise<{
     mailboxId: string;
     slot: string;
     expiresAt: number;
+    ttlMs?: number;
   }>;
   openMailboxSocket(mailboxId: string): Promise<PairingSocket>;
 };
@@ -76,6 +82,22 @@ export type PairingTransport = ClaimTransport & MailboxTransport;
 
 /** How long a claimed pairing may sit half-finished before we give up. */
 const CLAIM_TIMEOUT_MS = 30_000;
+
+/**
+ * How long to wait on a hosted code, preferring a duration to a deadline.
+ *
+ * See `codeDeadline`: without the clamp, a CLI whose clock runs three minutes
+ * fast times out every code it arms the instant it arms it, burns its whole
+ * re-arm budget in milliseconds, and goes idle before the banner has finished
+ * printing.
+ */
+export function mailboxTimeoutMs(
+  expiresAt: number,
+  ttlMs?: number,
+  now: number = Date.now(),
+): number {
+  return codeDeadline(expiresAt, ttlMs, now) - now;
+}
 
 // ---------------------------------------------------------------------------
 // Claiming: `mtmux pair <code>`
@@ -98,8 +120,8 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
   const parsed = parseCode(opts.code);
   if (!parsed) {
     throw new PairingError(
-      "That is not a six-digit pairing code.",
-      "Open app.mtmux.com/pair on your phone and read the six digits.",
+      describeBadCode(opts.code),
+      "Open app.mtmux.com/pair on your phone and read the code it shows.",
     );
   }
   const { slot, secret } = parsed;
@@ -195,9 +217,9 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
 
 export type HostedPairing = {
   /**
-   * Slot and secret concatenated: six digits for the default four-digit
-   * secret, or slot + 22 base64url characters when `secret` was a long one.
-   * `mtmux start` shows the first and puts the second in the QR.
+   * Slot and secret concatenated: eight digits for a typed secret, or slot + 22
+   * base64url characters when `secret` was a long one. `mtmux start` shows the
+   * first and puts the second in the QR.
    */
   code: string;
   slot: string;
@@ -213,13 +235,18 @@ export type HostOptions = {
   /** Injected by tests, and by anything that is not talking to a real broker. */
   transport?: MailboxTransport;
   /**
-   * The PAKE password to park this mailbox under. Defaults to four digits.
+   * The PAKE password to park this mailbox under. Defaults to typed digits.
    *
    * `mtmux start` supplies a 128-bit one for the mailbox behind the QR, since
    * nothing has to read that off a screen. A mailbox commits to one password
    * when it answers, so the two forms need a mailbox each.
    */
   secret?: string;
+  /**
+   * Which slot space to park in. Defaults to `typed`, which is also what a
+   * broker that has never heard of the field will give you.
+   */
+  space?: SlotSpace;
   /** Built once the key is known, so the CLI can seal it for this peer. */
   buildDescriptor: () => SealedDescriptor;
   seal: (
@@ -260,7 +287,9 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
     throw new PairingError("hostPairing needs an apiBase or a transport.");
   }
   const transport = opts.transport ?? httpTransport(opts.apiBase!);
-  const { mailboxId, slot, expiresAt } = await transport.postMailbox();
+  const { mailboxId, slot, expiresAt, ttlMs } = await transport.postMailbox(
+    opts.space,
+  );
   const socket = await transport.openMailboxSocket(mailboxId);
   const channelId = utf8ToBytes(slot);
 
@@ -282,7 +311,7 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
     seal: opts.seal,
     // The mailbox stops existing at `expiresAt`, so a deadline past it would
     // only mean waiting on a socket the broker has already given up on.
-    timeoutMs: opts.timeoutMs ?? Math.max(0, expiresAt - Date.now()),
+    timeoutMs: opts.timeoutMs ?? mailboxTimeoutMs(expiresAt, ttlMs),
     derive: (msg): Derived => {
       if (msg.ad.length > AD_PEER_MAX) {
         return { reject: "oversized associated data" };
@@ -387,6 +416,31 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
 // Transport
 // ---------------------------------------------------------------------------
 
+/** How many times to ask for a mailbox before giving up on the broker. */
+const MAILBOX_POST_ATTEMPTS = 3;
+
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+
+/**
+ * How long to wait before asking again, from the broker's `Retry-After`.
+ *
+ * Jittered on top of whatever it says, because every agent on the service reads
+ * the same header at the same moment: honouring it exactly means they all come
+ * back together and collide on the slot space again.
+ */
+export function retryAfterMs(
+  header: string | null,
+  random: () => number = Math.random,
+): number {
+  const seconds = Number(header);
+  const base = Number.isFinite(seconds) && seconds > 0 ? seconds : 3;
+  return Math.round((base + random() * 5) * 1000);
+}
+
 /** Default transport: real HTTP + WebSocket against the broker. */
 export function httpTransport(apiBase: string): PairingTransport {
   function openSocket(path: string): Promise<PairingSocket> {
@@ -426,18 +480,36 @@ export function httpTransport(apiBase: string): PairingTransport {
       return PairClaimResponse.parse(await res.json());
     },
 
-    async postMailbox() {
-      const res = await fetch(`${apiBase}/v1/pair/new`, { method: "POST" });
-      if (res.status === 429) {
-        throw new PairingError(
-          "Too many pairing codes requested from this network.",
-          "Wait a minute and try again.",
-        );
+    async postMailbox(space) {
+      // Retried, because the failure this used to produce was badly
+      // disproportionate to its cause: at boot a single transient 503 dropped
+      // the whole process to LAN-only for its lifetime, and on the re-arm path
+      // it left the machine with no code and nothing on screen to say why.
+      let last: PairingError | null = null;
+      for (let attempt = 0; attempt < MAILBOX_POST_ATTEMPTS; attempt += 1) {
+        const res = await fetch(`${apiBase}/v1/pair/new`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(space ? { space } : {}),
+        });
+        if (res.status === 429) {
+          throw new PairingError(
+            "Too many pairing codes requested from this network.",
+            "Wait a minute and try again.",
+          );
+        }
+        if (res.ok) return PairNewResponse.parse(await res.json());
+
+        last = new PairingError(`Pairing service returned ${res.status}.`);
+        // 503 means every slot draw collided — a full broker, not a broken
+        // one, and the next draw is independent. Anything else is unlikely to
+        // fix itself, so it is reported straight away.
+        if (res.status !== 503) throw last;
+        if (attempt < MAILBOX_POST_ATTEMPTS - 1) {
+          await delay(retryAfterMs(res.headers.get("retry-after")));
+        }
       }
-      if (!res.ok) {
-        throw new PairingError(`Pairing service returned ${res.status}.`);
-      }
-      return PairNewResponse.parse(await res.json());
+      throw last ?? new PairingError("Pairing service is unavailable.");
     },
 
     openClaimSocket: (claimId) => openSocket(`/v1/claim/${claimId}`),

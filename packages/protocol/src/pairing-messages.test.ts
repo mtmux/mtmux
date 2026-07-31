@@ -6,6 +6,9 @@ import {
   TunnelServerMessage,
   PairClaimRequest,
   SealedDescriptor,
+  codeDeadline,
+  MIN_CODE_TTL_MS,
+  MAX_CODE_TTL_MS,
   tryDeserializePairingServerMessage,
   tryDeserializeTunnelServerMessage,
 } from "./pairing-messages";
@@ -88,16 +91,21 @@ describe("pairing server messages", () => {
     ).toBe(true);
   });
 
-  it("requires a two-digit slot, leading zeros allowed", () => {
+  it("accepts a two- or four-digit slot, leading zeros allowed", () => {
+    // Two spaces, not one: the typed code routes on two digits and the scanned
+    // one on four, so that a sweep of the small typed space cannot reach a
+    // scanned pairing. Widths in between are not a thing.
     const base = {
       type: "pair:ready" as const,
       mailboxId: "mailbox-123",
       expiresAt: 1,
     };
-    expect(
-      PairingServerMessage.safeParse({ ...base, slot: "00" }).success,
-    ).toBe(true);
-    for (const slot of ["0", "490", "4a", ""]) {
+    for (const slot of ["00", "49", "0000", "0049"]) {
+      expect(PairingServerMessage.safeParse({ ...base, slot }).success).toBe(
+        true,
+      );
+    }
+    for (const slot of ["0", "490", "00490", "4a", ""]) {
       expect(PairingServerMessage.safeParse({ ...base, slot }).success).toBe(
         false,
       );
@@ -250,14 +258,30 @@ describe("HTTP bodies", () => {
   });
 
   it("rejects a claim carrying anything secret-shaped in the slot", () => {
-    expect(
-      PairClaimRequest.safeParse({
-        slot: "492716",
-        share: HEX32,
-        ad: "cli",
-        sid: HEX16,
-      }).success,
-    ).toBe(false);
+    // A client that posted the whole code would hand the broker the PAKE
+    // password. Neither typed length is a valid slot width, so both bounce.
+    for (const slot of ["492716", "49271638"]) {
+      expect(
+        PairClaimRequest.safeParse({
+          slot,
+          share: HEX32,
+          ad: "cli",
+          sid: HEX16,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("clamps a code deadline into the range a mailbox can have", () => {
+    const now = 1_700_000_000_000;
+    // A broker whose clock is three minutes ahead of ours.
+    expect(codeDeadline(now - 180_000, undefined, now)).toBe(
+      now + MIN_CODE_TTL_MS,
+    );
+    // A duration is preferred, because a duration cannot skew.
+    expect(codeDeadline(now - 180_000, 120_000, now)).toBe(now + 120_000);
+    // And an absurd one is still bounded.
+    expect(codeDeadline(now, 86_400_000, now)).toBe(now + MAX_CODE_TTL_MS);
   });
 
   it("validates a sealed descriptor's plaintext shape", () => {

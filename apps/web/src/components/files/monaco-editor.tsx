@@ -10,20 +10,23 @@ import { useCallback, useRef } from "react";
 // instead of fetching from CDN
 loader.config({ monaco });
 
-const Editor = dynamic(() => import("@monaco-editor/react").then((m) => m.default), {
-  ssr: false,
-  loading: () => (
-    <div className="flex-1 space-y-2 p-4">
-      {Array.from({ length: 12 }).map((_, i) => (
-        <div
-          key={i}
-          className="h-4 animate-pulse rounded bg-muted"
-          style={{ width: `${40 + Math.random() * 50}%` }}
-        />
-      ))}
-    </div>
-  ),
-});
+const Editor = dynamic(
+  () => import("@monaco-editor/react").then((m) => m.default),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex-1 space-y-2 p-4">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <div
+            key={i}
+            className="h-4 animate-pulse rounded bg-muted"
+            style={{ width: `${40 + Math.random() * 50}%` }}
+          />
+        ))}
+      </div>
+    ),
+  },
+);
 
 interface MonacoEditorProps {
   content: string;

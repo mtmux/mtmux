@@ -40,7 +40,7 @@ thing. On start the CLI:
    `127.0.0.1` if it does not.
 4. Serves the web client and the relay WebSocket on one port (`14100`), with the
    socket same-origin at `/_relay`.
-5. Opens a sealed tunnel and arms a six-digit pairing code, unless you passed
+5. Opens a sealed tunnel and arms a pairing code, unless you passed
    `--local`.
 6. Re-admits every device that paired with this machine before.
 7. Prints the banner and opens a browser on this machine.
@@ -70,7 +70,7 @@ Press **Ctrl+C** to stop.
 already in it, and the terminal loads — no taps, no typing, no second command.
 
 If the camera will not cooperate, go to **app.mtmux.com** on the device and type
-the six digits into the field it shows. The code is grouped for reading aloud,
+the code into the field it shows. It is grouped for reading aloud,
 so `482913` prints as `48 29 13`.
 
 This works from your own wifi *and* from cellular in another country. mtmux
@@ -91,7 +91,7 @@ that is the only case left where someone has to authenticate by hand.
 ### If the browser is already open
 
 `mtmux pair` runs the same handshake from the other end: open
-`https://app.mtmux.com/pair` on the device, read the six digits it shows, and
+`https://app.mtmux.com/pair` on the device, read the code it shows, and
 quote them back on the machine.
 
 ```bash
@@ -174,6 +174,6 @@ See [CONTRIBUTING.md](https://github.com/GagnDeep/tmuxremote/blob/main/CONTRIBUT
 ## Next steps
 
 - [CLI reference](/docs/cli) — every command and flag
-- [How pairing works](/docs/pairing) — the six digits, and why they are enough
+- [How pairing works](/docs/pairing) — what the code is, and why it is enough
 - [Configuration](/docs/configuration) — every environment variable
 - [Mobile](/docs/web-app/mobile) — using mtmux from a phone

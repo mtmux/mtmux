@@ -23,7 +23,7 @@ import {
  *
  * This is **not** the front door, and it used to be — `/` sent every visitor
  * with no session here, including the majority who have a six-digit code and no
- * token at all. Typing six digits into this form opened a socket to
+ * token at all. Typing a pairing code into this form opened a socket to
  * `/_relay` on whatever origin served the page, which on app.mtmux.com is
  * nothing, and hung until it timed out. `/start` is the front door now; this
  * page is reached from a link there, or directly by the CLI's own `#token=`
@@ -51,7 +51,7 @@ export default function LoginPage() {
         clearStored(TOKEN_KEY);
         setIsLoading(false);
         toast.error(
-          "No relay answered on this origin. If you have a six-digit code, use Connect with a code instead.",
+          "No relay answered on this origin. If you have a pairing code, use Connect with a code instead.",
         );
       }, 5000);
 
@@ -191,10 +191,10 @@ export default function LoginPage() {
       </form>
 
       {/* The way out. This page used to have none, which is how someone who
-          arrived here with six digits and no token got stuck. */}
+          arrived here with a pairing code and no token got stuck. */}
       <div className="space-y-2 border-t border-border pt-5 text-sm">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-muted-foreground">Have a six-digit code?</span>
+          <span className="text-muted-foreground">Have a pairing code?</span>
           <Button asChild variant="outline" size="sm" className="h-9 shrink-0">
             <Link href="/start">Connect with a code</Link>
           </Button>
