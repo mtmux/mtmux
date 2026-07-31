@@ -79,6 +79,14 @@ export async function registerDirectToken(
    * token from `mtmux start` has always meant. Only `mtmux share` sends one.
    */
   grant?: GrantRecord,
+  /**
+   * Who just paired, and how, so already-connected browsers can be told.
+   *
+   * Optional because the relay defaults it: a caller that omits it still
+   * produces a notice, just an anonymous one. Nothing security-relevant rides
+   * on it — the token is what grants access, and this is only ever displayed.
+   */
+  notice?: { label: string; via: "code" | "request" },
 ): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/_pair/session`, {
@@ -87,7 +95,11 @@ export async function registerDirectToken(
         "Content-Type": "application/json",
         Authorization: `Bearer ${authToken}`,
       },
-      body: JSON.stringify({ token: directToken, ...(grant ? { grant } : {}) }),
+      body: JSON.stringify({
+        token: directToken,
+        ...(grant ? { grant } : {}),
+        ...(notice ?? {}),
+      }),
       signal: AbortSignal.timeout(3000),
     });
     return res.ok;

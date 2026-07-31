@@ -32,7 +32,7 @@ export type AccessPromptInput = {
 
 export type AccessPromptResult =
   | { approved: true }
-  | { approved: false; reason: "refused" | "no-tty" };
+  | { approved: false; reason: "refused" | "no-tty" | "timeout" };
 
 export type PromptDeps = {
   input?: NodeJS.ReadableStream & { isTTY?: boolean };
@@ -59,16 +59,25 @@ export function renderAccessRequest(req: AccessPromptInput): string[] {
 /**
  * Who gets asked, in order of specificity.
  *
- * Three cases, and the first one is the whole reason this is a function rather
- * than three lines inline: `offer` returning **null** means "nobody is waiting",
- * which is emphatically not a refusal. Collapsing the two would mean a machine
- * with an idle approval window silently stopped prompting in its own terminal —
- * a regression that would look, from the outside, exactly like the feature
- * working.
+ * Four cases now, and the first one is the whole reason this is a function
+ * rather than three lines inline: `offer` returning **null** means "nobody is
+ * waiting", which is emphatically not a refusal. Collapsing the two would mean
+ * a machine with an idle approval window silently stopped prompting in its own
+ * terminal — a regression that would look, from the outside, exactly like the
+ * feature working.
  *
  *   1. Somebody ran `mtmux approve` and is waiting → they decide.
  *   2. There is a TTY → the prompt, unchanged.
- *   3. Neither → deny `no-tty`. Silence is not consent.
+ *   3. Neither, and we can park → hold it for the offer window, tell the
+ *      terminal, and let them run `mtmux approve` in another shell.
+ *   4. Neither, and we cannot → deny `no-tty`. Silence is not consent.
+ *
+ * Case 3 is new, and it is the common case rather than the exotic one: `mtmux
+ * start` under systemd, `nohup`, or a detached tmux pane has no TTY, so
+ * pressing "Pair this device" was denied instantly while the user sat right
+ * there watching the output. Parking does not weaken anything — it still denies
+ * on timeout, and a human still has to type `y` somewhere. It only stops the
+ * question being asked and answered in the same millisecond.
  *
  * Everything downstream of the decision is untouched, so a requested pairing is
  * identical however it was approved.
@@ -78,14 +87,31 @@ export async function decideAccess(
   deps: {
     /** Returns null when no approval window is open. */
     offer?: (req: AccessPromptInput) => Promise<boolean | null>;
+    /** Hold the request open with nobody polling. Returns false on timeout. */
+    park?: (req: AccessPromptInput) => Promise<boolean>;
+    /** Called once, when a request is parked, so the terminal can say so. */
+    onParked?: (req: AccessPromptInput) => void;
     prompt?: (req: AccessPromptInput) => Promise<AccessPromptResult>;
   } = {},
 ): Promise<AccessPromptResult> {
   const offered = deps.offer ? await deps.offer(req) : null;
-  if (offered === null) {
-    return (deps.prompt ?? promptForAccess)(req);
+  if (offered !== null) {
+    return offered
+      ? { approved: true }
+      : { approved: false, reason: "refused" };
   }
-  return offered ? { approved: true } : { approved: false, reason: "refused" };
+
+  const asked = await (deps.prompt ?? promptForAccess)(req);
+  // Anything the prompt could actually decide is final. Only `no-tty` — which
+  // means it could not ask at all — falls through to parking.
+  if (asked.approved || asked.reason !== "no-tty") return asked;
+  if (!deps.park) return asked;
+
+  deps.onParked?.(req);
+  const approved = await deps.park(req);
+  // A parked request nobody answered is a timeout, not a refusal — and the
+  // browser offers a different way out for each.
+  return approved ? { approved: true } : { approved: false, reason: "timeout" };
 }
 
 /**

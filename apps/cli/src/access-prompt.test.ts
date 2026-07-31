@@ -83,6 +83,65 @@ describe("decideAccess", () => {
     expect(result).toEqual({ approved: false, reason: "refused" });
     expect(prompt).not.toHaveBeenCalled();
   });
+
+  describe("with no TTY to ask", () => {
+    const noTty = async () => ({ approved: false, reason: "no-tty" }) as const;
+
+    it("parks the request instead of denying instantly", async () => {
+      // The case this exists for. `mtmux start` under systemd, `nohup` or a
+      // detached pane has no TTY, so pressing "Pair this device" was denied in
+      // the same millisecond it was asked, while the user sat watching.
+      const onParked = vi.fn();
+      const park = vi.fn(async () => true);
+      const result = await decideAccess(REQUEST, {
+        prompt: noTty,
+        park,
+        onParked,
+      });
+
+      expect(onParked).toHaveBeenCalledOnce();
+      expect(park).toHaveBeenCalledOnce();
+      expect(result).toEqual({ approved: true });
+    });
+
+    it("reports a timeout, which is not a refusal", async () => {
+      // The browser offers a different way out for each: "ask again" for a
+      // timeout, and emphatically not for a refusal.
+      const result = await decideAccess(REQUEST, {
+        prompt: noTty,
+        park: async () => false,
+      });
+      expect(result).toEqual({ approved: false, reason: "timeout" });
+    });
+
+    it("still denies when there is nowhere to park it", async () => {
+      const result = await decideAccess(REQUEST, { prompt: noTty });
+      expect(result).toEqual({ approved: false, reason: "no-tty" });
+    });
+
+    it("never parks a decision the prompt could actually make", async () => {
+      // A human at the keyboard saying no is final. Parking after a refusal
+      // would be asking again until someone says yes, which is not a gate.
+      const park = vi.fn(async () => true);
+      const result = await decideAccess(REQUEST, {
+        prompt: async () => ({ approved: false, reason: "refused" }) as const,
+        park,
+      });
+      expect(park).not.toHaveBeenCalled();
+      expect(result).toEqual({ approved: false, reason: "refused" });
+    });
+
+    it("never parks when an approver already answered", async () => {
+      const park = vi.fn(async () => true);
+      const result = await decideAccess(REQUEST, {
+        offer: async () => false,
+        prompt: noTty,
+        park,
+      });
+      expect(park).not.toHaveBeenCalled();
+      expect(result).toEqual({ approved: false, reason: "refused" });
+    });
+  });
 });
 
 describe("promptForAccess", () => {

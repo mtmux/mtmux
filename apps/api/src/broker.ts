@@ -3,6 +3,10 @@ import { createLogger } from "@repo/logger";
 import {
   PairClaimRequest,
   PairNewRequest,
+  // Long enough to walk to the machine and read six digits; short enough that
+  // a request nobody answers does not hold a slot on that machine forever.
+  // Shared so the browser's countdown cannot drift from it.
+  REQUEST_TTL_MS,
   tryDeserializePairingClientMessage,
   tryDeserializeRequestClientMessage,
   tryDeserializeTunnelClientMessage,
@@ -55,14 +59,6 @@ const GLOBAL_KEY = "*";
 function retryAfterSeconds(random: () => number = Math.random): number {
   return 3 + Math.floor(random() * 5);
 }
-
-/**
- * How long a requested pairing may sit undecided.
- *
- * Long enough to walk to the machine and read six digits; short enough that a
- * request nobody answers does not hold a slot on that machine indefinitely.
- */
-const REQUEST_TTL_MS = 120_000;
 
 /** A request is four messages; more than this is a bug or an abuse. */
 const MAX_PENDING_REQUEST = 8;

@@ -58,6 +58,23 @@ export type ApprovalOffer = {
   accountEmail: string;
 };
 
+export type OfferOptions = {
+  /**
+   * Hold the request even though nobody is polling yet.
+   *
+   * For the case the old code failed hardest at: `mtmux start` under systemd,
+   * `nohup`, or a detached tmux pane has no TTY and usually no open approval
+   * window, so pressing "Pair this device" was denied instantly and silently
+   * while the user was sitting right there. Parking gives them the offer
+   * window to run `mtmux approve` in another shell, and `handleWait` flushes
+   * whatever is already pending the moment they do.
+   *
+   * It still denies on timeout. Parking changes how long the question stands,
+   * never the answer to silence.
+   */
+  park?: boolean;
+};
+
 export type ApproveState = {
   waiting: boolean;
   /** Epoch ms the window closes, or null when nobody is waiting. */
@@ -83,7 +100,7 @@ export type ApproveControl = {
    * because treating "no approver" as a refusal would stop `mtmux start` from
    * ever prompting in its own terminal.
    */
-  offer(input: ApprovalOffer): Promise<boolean | null>;
+  offer(input: ApprovalOffer, opts?: OfferOptions): Promise<boolean | null>;
   state(): ApproveState;
   /** Drop the approver and fail anything pending. Called on shutdown. */
   close(): void;
@@ -267,8 +284,11 @@ export function createApproveControl(deps: ApproveControlDeps): ApproveControl {
       }
     },
 
-    offer(input) {
-      if (!waiter || waiter.expiresAt <= now()) return Promise.resolve(null);
+    offer(input, opts = {}) {
+      const open = waiter !== null && waiter.expiresAt > now();
+      // `null` means "nobody is waiting, ask someone else" — the caller falls
+      // through to the TTY prompt. With `park` there is nobody else to ask.
+      if (!open && !opts.park) return Promise.resolve(null);
       // One at a time, matching the broker's own one-live-request-per-device
       // rule. A second offer while one is in front of a human is refused rather
       // than queued behind it, because it would expire before its turn came.

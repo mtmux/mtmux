@@ -47,6 +47,7 @@ import type { FileEntry } from "@repo/protocol";
 import { useFileStore } from "@/stores/file-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useUiStore } from "@/stores/ui-store";
+import { sendCommand } from "@/lib/send-command";
 import {
   getRelayClient,
   useRelayClient,
@@ -376,9 +377,9 @@ export function FileTree({
       useAlertStore.getState().push("error", "No active session");
       return;
     }
-    const client = getRelayClient();
-    if (!client) return;
-    client.send({ type: "command:send", command: `cd ${path}` });
+    // `record: false` — a generated `cd` is navigation, not something the
+    // user typed, and filling the palette's history with it buries what is.
+    if (!sendCommand(`cd ${path}`, { record: false })) return;
     useUiStore.getState().setMobileTab("terminal");
     useAlertStore
       .getState()

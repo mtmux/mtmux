@@ -27,6 +27,7 @@ import { getMonacoLanguage, getLanguageLabel } from "@/lib/file-utils";
 import { useFileStore } from "@/stores/file-store";
 import { useSessionStore } from "@/stores/session-store";
 import { getRelayClient } from "@/hooks/use-websocket";
+import { sendCommand } from "@/lib/send-command";
 import { useConnectionStore } from "@/stores/connection-store";
 
 export function FileEditor() {
@@ -199,9 +200,7 @@ export function FileEditor() {
 
   const handleSendToTerminal = useCallback(() => {
     if (!editorFile || !activeSessionId) return;
-    const client = getRelayClient();
-    if (!client) return;
-    client.send({ type: "command:send", command: `vim ${editorFile}` });
+    if (!sendCommand(`vim ${editorFile}`, { record: false })) return;
     closeEditor();
   }, [editorFile, activeSessionId, closeEditor]);
 

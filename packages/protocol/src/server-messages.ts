@@ -175,6 +175,27 @@ export const SessionWindowsResponse = z.object({
   panes: z.array(PaneInfoSchema),
 });
 
+/**
+ * Another device just paired with this machine.
+ *
+ * A security signal, and a cheap one. Everything else about pairing is visible
+ * only on the machine's own screen, so a browser already holding a session had
+ * no way to learn that a second device had been let in — which is exactly the
+ * event a user would want to hear about and exactly the one an attacker would
+ * want kept quiet.
+ *
+ * Deliberately carries no token, no key and no descriptor: it is a notice, and
+ * everything it names is already visible in `mtmux devices`.
+ */
+export const DevicePairedMessage = z.object({
+  type: z.literal("device:paired"),
+  /** Coarse, e.g. "Chrome on iOS". Never a full user-agent. */
+  label: z.string().max(128),
+  /** How the device got in, so the notice can say something true. */
+  via: z.enum(["code", "request"]),
+  at: z.number().int().positive(),
+});
+
 export const ServerMessage = z.discriminatedUnion("type", [
   AuthSuccessMessage,
   AuthFailureMessage,
@@ -200,9 +221,11 @@ export const ServerMessage = z.discriminatedUnion("type", [
   SessionAttachedMessage,
   PaneCapturedMessage,
   SessionWindowsResponse,
+  DevicePairedMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessage>;
+export type DevicePairedMessage = z.infer<typeof DevicePairedMessage>;
 export type AuthSuccessMessage = z.infer<typeof AuthSuccessMessage>;
 export type AuthFailureMessage = z.infer<typeof AuthFailureMessage>;
 export type PongMessage = z.infer<typeof PongMessage>;

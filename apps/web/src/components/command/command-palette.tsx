@@ -25,11 +25,11 @@ import {
 } from "lucide-react";
 import { useCommandStore } from "@/stores/command-store";
 import { getRelayClient } from "@/hooks/use-websocket";
+import { sendCommand } from "@/lib/send-command";
 import { isHostedBuild } from "@/lib/auth-client";
 
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, history, snippets, addToHistory } =
-    useCommandStore();
+  const { paletteOpen, setPaletteOpen, history, snippets } = useCommandStore();
 
   // Cmd+K / Ctrl+K trigger
   useEffect(() => {
@@ -45,13 +45,12 @@ export function CommandPalette() {
 
   const executeCommand = useCallback(
     (cmd: string) => {
-      const client = getRelayClient();
-      if (!client) return;
-      client.send({ type: "command:send", command: cmd });
-      addToHistory(cmd);
+      // `sendCommand` records it; this used to do both itself, which is how
+      // the mobile bar came to be the one send path that forgot to.
+      if (!sendCommand(cmd)) return;
       setPaletteOpen(false);
     },
-    [addToHistory, setPaletteOpen],
+    [setPaletteOpen],
   );
 
   const sendQuickAction = useCallback(

@@ -292,4 +292,52 @@ describe("offering a request", () => {
     expect(await control.offer(REQUEST)).toBeNull();
     controller.abort();
   });
+
+  describe("parking, for a machine with no TTY", () => {
+    it("holds a request with nobody polling, and hands it over on arrival", async () => {
+      // The round trip that had no coverage at all: request → parked → an
+      // approver arrives late → SAS → approve → paired.
+      const decision = control.offer(REQUEST, { park: true });
+      await settle();
+
+      const controller = new AbortController();
+      const polled = wait("s1", 5, controller.signal);
+      const body = (await (await polled).json()) as {
+        id: string;
+        sas: string;
+      };
+      // The digits the human compares are the ones the request carried.
+      expect(body.sas).toBe(REQUEST.sas);
+
+      const res = await call(APPROVE_DECIDE_PATH, {
+        body: { sessionId: "s1", id: body.id, approved: true },
+      });
+      expect(res.status).toBe(200);
+      expect(await decision).toBe(true);
+      controller.abort();
+    });
+
+    it("denies rather than waits when the offer window runs out", async () => {
+      // Parking changes how long the question stands, never the answer to
+      // silence. Nobody ever polls here.
+      const decision = control.offer(REQUEST, { park: true });
+      // The harness builds the control with a 400ms offer timeout.
+      await new Promise((r) => setTimeout(r, 500));
+      expect(await decision).toBe(false);
+    });
+
+    it("still returns null without park, so the TTY prompt is reached", async () => {
+      // The distinction the whole design rests on: "nobody is waiting" is not
+      // a refusal, and collapsing them would stop `mtmux start` prompting in
+      // its own terminal.
+      expect(await control.offer(REQUEST)).toBeNull();
+    });
+
+    it("refuses a second parked request rather than queueing it", async () => {
+      const first = control.offer(REQUEST, { park: true });
+      expect(await control.offer(REQUEST, { park: true })).toBe(false);
+      await new Promise((r) => setTimeout(r, 500));
+      expect(await first).toBe(false);
+    });
+  });
 });

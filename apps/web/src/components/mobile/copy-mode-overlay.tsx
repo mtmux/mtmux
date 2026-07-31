@@ -16,17 +16,7 @@ import { useUiStore } from "@/stores/ui-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useAlertStore } from "@/stores/alert-store";
 import { getRelayClient } from "@/hooks/use-websocket";
-
-const SHELL_COMMANDS = new Set([
-  "bash",
-  "zsh",
-  "fish",
-  "sh",
-  "dash",
-  "ksh",
-  "tcsh",
-  "csh",
-]);
+import { isShell } from "@/lib/shell-commands";
 
 function shortenPath(path: string): string {
   if (!path) return "";
@@ -34,7 +24,7 @@ function shortenPath(path: string): string {
 }
 
 function formatPaneName(command?: string, path?: string): string {
-  if (!command || SHELL_COMMANDS.has(command)) {
+  if (!command || isShell(command)) {
     return path ? shortenPath(path) : command || "shell";
   }
   return path ? `${command} · ${shortenPath(path)}` : command;

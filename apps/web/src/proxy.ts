@@ -27,6 +27,22 @@ export function proxy(_request: NextRequest) {
   response.headers.set("X-Frame-Options", "DENY");
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  /*
+   * A tripwire rather than a fix.
+   *
+   * Nothing is broken today — this app sends no Permissions-Policy at all, so
+   * the microphone is allowed by default. But `apps/site` sets
+   * `microphone=()`, and the day somebody consolidates the two header blocks
+   * dictation dies with no console message and no obvious cause. Stating the
+   * grant explicitly means that consolidation is a diff someone has to read.
+   *
+   * `camera` and `geolocation` are denied because this app has no use for
+   * either and never should.
+   */
+  response.headers.set(
+    "Permissions-Policy",
+    "microphone=(self), camera=(), geolocation=()",
+  );
   response.headers.set(
     "Content-Security-Policy",
     `default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:${apiOrigin}; font-src 'self' data:; img-src 'self' data: blob:${relayOrigin}; media-src 'self'${relayOrigin}; frame-src 'self'${relayOrigin};`,

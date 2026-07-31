@@ -14,6 +14,7 @@ import {
   revokeGrant,
 } from "./pairing-local.js";
 import { FULL_GRANT } from "./grant.js";
+import { broadcastToAll } from "./connection-manager.js";
 import { isCloneSession } from "./tmux-clone.js";
 import { listSessions } from "./tmux-manager.js";
 import { GrantRecord } from "@repo/protocol";
@@ -135,7 +136,13 @@ async function handleSessionRegistration(
   }
 
   const raw = await readBody(req);
-  let body: { token?: unknown; ttlMs?: unknown; grant?: unknown } = {};
+  let body: {
+    token?: unknown;
+    ttlMs?: unknown;
+    grant?: unknown;
+    label?: unknown;
+    via?: unknown;
+  } = {};
   try {
     body = raw ? (JSON.parse(raw) as typeof body) : {};
   } catch {
@@ -178,6 +185,24 @@ async function handleSessionRegistration(
     { grant: grant.id, readOnly: grant.readOnly, files: grant.files },
     "Session token registered for a paired device",
   );
+
+  /**
+   * Tell everyone already connected that another device just got in.
+   *
+   * Pairing is otherwise only ever visible on the machine's own screen, so a
+   * browser holding a live session had no way to learn a second device had been
+   * admitted — the one event a user most wants to hear about, and the one an
+   * attacker most wants kept quiet. It carries a coarse label and nothing else.
+   */
+  broadcastToAll({
+    type: "device:paired",
+    label:
+      typeof body.label === "string" && body.label.length > 0
+        ? body.label.slice(0, 128)
+        : "A device",
+    via: body.via === "request" ? "request" : "code",
+    at: Date.now(),
+  });
   res.writeHead(200, {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",

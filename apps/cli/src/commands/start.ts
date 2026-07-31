@@ -22,6 +22,7 @@ import {
 } from "../tunnel-agent.js";
 import {
   bytesToBase64Url,
+  formatSas,
   generateLongSecret,
   generateSecret,
 } from "@repo/crypto";
@@ -411,6 +412,44 @@ async function startHosted(opts: {
       // "they said no" must stay distinguishable.
       const answer = await decideAccess(request, {
         offer: approvals ? (req) => approvals!.offer(req) : undefined,
+        // Reached only when the TTY prompt could not ask at all, which is the
+        // common case rather than the exotic one: a machine started by systemd,
+        // by `nohup`, or left in a detached pane. Rather than denying instantly
+        // while the user sits there watching the output, hold the request for
+        // the offer window and tell them how to answer it.
+        park: approvals
+          ? (req) =>
+              approvals!.offer(req, { park: true }).then((v) => v === true)
+          : undefined,
+        onParked: (req) => {
+          clearWaitingLine();
+          console.log("");
+          console.log(
+            kleur.bold("  A browser wants to pair with this machine"),
+          );
+          console.log("");
+          console.log(
+            `    ${kleur.dim("Device ")}  ${req.deviceLabel || "unknown device"}`,
+          );
+          console.log(
+            `    ${kleur.dim("Account")}  ${req.accountEmail || "unknown account"}`,
+          );
+          console.log(
+            `    ${kleur.dim("Code   ")}  ${kleur.bold(formatSas(req.sas))}`,
+          );
+          console.log("");
+          console.log(
+            kleur.dim(
+              "    Nothing is attached to this terminal, so I cannot ask here.",
+            ),
+          );
+          console.log(
+            kleur.dim("    Run ") +
+              kleur.bold("mtmux approve") +
+              kleur.dim(" in another shell, then compare the code."),
+          );
+          console.log("");
+        },
       });
       if (!answer.approved) {
         // Logged locally so a refusal leaves a trace on the machine that
@@ -430,6 +469,8 @@ async function startHosted(opts: {
         opts.port,
         opts.cfg.token,
         request.keys.directToken,
+        undefined,
+        { label: request.deviceLabel, via: "request" },
       );
       if (!registered) {
         console.log(
@@ -595,6 +636,7 @@ async function startHosted(opts: {
           opts.cfg.token,
           result.keys.directToken,
           grant,
+          { label: result.peerLabel, via: "code" },
         );
         // A scoped pairing that could not be registered must not be admitted:
         // the alternative is a browser that authenticates against a relay

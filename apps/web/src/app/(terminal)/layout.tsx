@@ -17,6 +17,7 @@ import {
 import { useSessionStore } from "@/stores/session-store";
 import { useStableMediaQuery } from "@repo/ui/hooks/use-media-query";
 import { MobileNav } from "@/components/mobile/mobile-nav";
+import { CommandComposer } from "@/components/mobile/command-composer";
 import { KeyboardToolbar } from "@/components/mobile/keyboard-toolbar";
 import { MobileCommandBar } from "@/components/mobile/mobile-command-bar";
 import { useUiStore } from "@/stores/ui-store";
@@ -372,7 +373,11 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
           onCopy={handleCopySelection}
         />
       )}
-      <MobileNav activeTab={mobileTab} onTabChange={setMobileTab} />
+      {/* Hidden by CSS while the keyboard is up — see globals.css. The
+          wrapper exists so the nav itself stays a plain component. */}
+      <div className="mtmux-hide-when-keyboard">
+        <MobileNav activeTab={mobileTab} onTabChange={setMobileTab} />
+      </div>
     </div>
   ) : undefined;
 
@@ -383,6 +388,7 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
         {children}
       </ErrorBoundary>
       <CommandPalette />
+      <CommandComposer />
       <KeyboardShortcutsDialog />
       <SessionCreateDialog
         open={showCreateDialog}

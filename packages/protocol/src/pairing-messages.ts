@@ -470,6 +470,17 @@ export function codeDeadline(
   return now + Math.min(Math.max(raw, MIN_CODE_TTL_MS), MAX_CODE_TTL_MS);
 }
 
+/**
+ * How long a requested pairing may sit undecided.
+ *
+ * Shared with the browser rather than private to the broker, so the dialog can
+ * show a countdown that means something. The three budgets nest deliberately:
+ * this 120s, the CLI's 110s TTY prompt, and the 100s a request may sit in front
+ * of `mtmux approve`. A decision that arrives after the request has expired is
+ * worse than no decision, because the human believes they approved something.
+ */
+export const REQUEST_TTL_MS = 120_000;
+
 /** POST /v1/pair/claim */
 export const PairClaimRequest = z.object({
   slot: SlotSchema,

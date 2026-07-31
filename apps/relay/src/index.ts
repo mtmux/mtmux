@@ -27,7 +27,9 @@ async function main() {
 
   await startHttpServer(httpServer);
 
-  logger.info(`ccremote relay v${SERVER_VERSION} ready on ${config.host}:${config.port}`);
+  logger.info(
+    `ccremote relay v${SERVER_VERSION} ready on ${config.host}:${config.port}`,
+  );
 
   const shutdown = () => {
     logger.info("Shutting down...");

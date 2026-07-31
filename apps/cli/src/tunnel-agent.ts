@@ -113,7 +113,7 @@ export type AccessRequest = {
 
 export type AccessDecision =
   | { approved: true; sealedDescriptor: string }
-  | { approved: false; reason?: "refused" | "no-tty" };
+  | { approved: false; reason?: "refused" | "no-tty" | "timeout" };
 
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;

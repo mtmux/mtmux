@@ -102,8 +102,20 @@ const DialogDescription = React.forwardRef<
 ));
 DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
+/**
+ * The unstyled Radix `Content`, for dialogs that own their own geometry.
+ *
+ * `DialogContent` above centres itself, caps its width and injects a close
+ * button — right for a settings dialog, wrong for anything sized to the visual
+ * viewport, such as the mobile command composer. Exporting the primitive is
+ * better than each app taking its own direct `@radix-ui/react-dialog`
+ * dependency and drifting to a different version of the focus trap.
+ */
+const DialogContentRaw = DialogPrimitive.Content;
+
 export {
   Dialog,
+  DialogContentRaw,
   DialogPortal,
   DialogOverlay,
   DialogTrigger,

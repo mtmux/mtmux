@@ -218,6 +218,30 @@ export function useWebSocket(
         case "session:windows":
           // Handled by SessionCard via direct onMessage subscription
           break;
+        case "device:paired": {
+          /*
+           * A security signal, surfaced rather than swallowed.
+           *
+           * Pairing is otherwise only visible on the machine's own screen, so
+           * a browser already holding a session had no way to learn that a
+           * second device had been let in — which is precisely the event worth
+           * knowing about, and precisely the one an attacker would want quiet.
+           *
+           * `warning` rather than `success`: from *this* browser's point of
+           * view someone else getting access is news to check, not news to
+           * celebrate. The device that just paired sees it too, where it reads
+           * as a confirmation.
+           */
+          useAlertStore
+            .getState()
+            .push(
+              "warning",
+              msg.via === "request"
+                ? `${msg.label} was approved on this machine.`
+                : `${msg.label} paired with this machine.`,
+            );
+          break;
+        }
         case "error":
           useAlertStore.getState().push("error", msg.message);
           break;

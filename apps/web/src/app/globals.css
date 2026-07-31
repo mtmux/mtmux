@@ -14,3 +14,21 @@
 .mtmux-hidden body {
   filter: blur(18px);
 }
+
+/*
+ * Give the footer back while the soft keyboard is up.
+ *
+ * A phone keyboard takes about half the screen, and under it sat a command bar
+ * that grew to four rows, a key toolbar, and a nav bar — around 190px of chrome
+ * over a terminal that had a couple of hundred pixels left. The nav is the one
+ * of the three that is useless while typing: `KeyboardToolbar` is the only
+ * source of Esc, Tab, arrows and `|`, which are needed precisely then.
+ *
+ * CSS rather than a React conditional, deliberately. Re-rendering the terminal
+ * layout to hide a nav bar re-renders xterm underneath it, and this codebase
+ * has comments about how expensive that is. `data-keyboard` is stamped on the
+ * root by `VisualViewportSync`; nothing here re-renders.
+ */
+html[data-keyboard="open"] .mtmux-hide-when-keyboard {
+  display: none;
+}

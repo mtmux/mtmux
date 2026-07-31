@@ -45,6 +45,22 @@ export default defineConfig({
       // feature, and CDP is Chromium's.
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+      testIgnore: /mobile-.*\.spec\.ts/,
+    },
+    {
+      /*
+       * The phone specs.
+       *
+       * `Pixel 7` rather than any of the iPhone descriptors: those default to
+       * WebKit, and this suite is Chromium-only for the reason above. What is
+       * being asserted here — that the command bar is one line and stays one
+       * line, that its font is at least 16px, that the composer fits inside the
+       * visual viewport — is engine-independent enough for that to be a fair
+       * trade. Real iOS behaviour stays on the manual checklist.
+       */
+      name: "mobile-chromium",
+      use: { ...devices["Pixel 7"] },
+      testMatch: /mobile-.*\.spec\.ts/,
     },
   ],
   webServer: process.env.E2E_BASE_URL

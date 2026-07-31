@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { formatSas } from "@repo/crypto";
+import { REQUEST_TTL_MS } from "@repo/protocol";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/pairing-client";
 import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
 import { deviceLabel } from "@/lib/device-label";
+import { semverGte } from "@/lib/semver-gte";
 import { CopyCommand } from "./copy-command";
 import type { RegisteredServer } from "./server-row";
 
@@ -57,23 +59,15 @@ type State =
  * The first CLI that answers `mtmux approve`.
  *
  * Gating the *copy* on a self-reported version is fine; gating a security
- * decision on one would not be. If this is wrong the user sees a command their
- * CLI does not have, which the recovery below already covers.
+ * decision on one would not be. `semverGte` returns null for anything it cannot
+ * parse, and an unknown version reads as "show it" here — telling someone about
+ * a command their CLI might not have is recoverable, and the alternative is
+ * hiding the only way out from a machine whose version string is odd.
  */
 const APPROVE_SINCE = "0.5.0";
 
 function hasApprove(cliVersion: string | null): boolean {
-  if (!cliVersion) return false;
-  const parse = (v: string) =>
-    v
-      .split(".")
-      .slice(0, 3)
-      .map((n) => Number.parseInt(n, 10) || 0);
-  const [a, b, c] = parse(cliVersion);
-  const [x, y, z] = parse(APPROVE_SINCE);
-  if (a! !== x!) return a! > x!;
-  if (b! !== y!) return b! > y!;
-  return c! >= z!;
+  return semverGte(cliVersion, APPROVE_SINCE) !== false;
 }
 
 export function RequestAccessDialog({
@@ -87,6 +81,7 @@ export function RequestAccessDialog({
   onPaired: () => void;
 }) {
   const [state, setState] = useState<State>({ phase: "asking" });
+  const [remaining, setRemaining] = useState(REQUEST_TTL_MS / 1000);
   const handleRef = useRef<PairingHandle | null>(null);
 
   const apiBase = env.NEXT_PUBLIC_API_URL;
@@ -145,7 +140,32 @@ export function RequestAccessDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId, apiBase]);
 
+  /**
+   * A visible time budget.
+   *
+   * The request expires after `REQUEST_TTL_MS` whatever anyone does, and the
+   * dialog showed no sign of it — so "waiting for someone to answer" looked
+   * identical at second 2 and second 118, and someone who walked away had no
+   * way to know whether it was still worth walking back.
+   */
+  useEffect(() => {
+    if (state.phase !== "asking" && state.phase !== "confirm") return;
+    const deadline = Date.now() + remaining * 1000;
+    const id = setInterval(() => {
+      setRemaining(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    }, 1000);
+    return () => clearInterval(id);
+    // Restarted only when the phase changes. `remaining` is read once as a
+    // seed; depending on it would reset the deadline on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase]);
+
   const noTty = state.phase === "failed" && state.reason === "no-tty";
+  // A request nobody answered and one somebody actively said no to need
+  // different words and different next steps — the first is "try again", and
+  // the second is emphatically not.
+  const timedOut = state.phase === "failed" && state.reason === "timeout";
+  const refused = state.phase === "failed" && state.reason === "refused";
 
   return (
     <Dialog open={server !== null} onOpenChange={onOpenChange}>
@@ -173,7 +193,7 @@ export function RequestAccessDialog({
             role="status"
           >
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            Waiting for someone to answer…
+            Waiting for someone to answer… {formatRemaining(remaining)}
           </div>
         )}
 
@@ -203,6 +223,9 @@ export function RequestAccessDialog({
             <p className="text-center text-xs text-muted-foreground">
               If they differ, refuse it on the machine. Nothing usable has been
               exchanged.
+            </p>
+            <p className="text-center text-xs text-muted-foreground">
+              Expires in {formatRemaining(remaining)}.
             </p>
           </div>
         )}
@@ -249,6 +272,46 @@ export function RequestAccessDialog({
               </div>
             )}
 
+            {/*
+              A timeout is not a refusal, and a refusal is not a timeout. Both
+              used to end at a Close button with nothing to do next.
+            */}
+            {timedOut && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
+                <p className="text-sm text-muted-foreground">
+                  Nobody answered in time. The request is gone — nothing was
+                  approved and nothing was shared.
+                </p>
+                <Button
+                  className="h-11 w-full"
+                  onClick={() => setState({ phase: "asking" })}
+                >
+                  Ask again
+                </Button>
+                {hasApprove(server?.cliVersion ?? null) && (
+                  <div className="space-y-2 pt-1">
+                    <p className="text-xs text-muted-foreground">
+                      To answer it without walking over, open a window on the
+                      machine first:
+                    </p>
+                    <CopyCommand command="mtmux approve" />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {refused && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
+                <p className="text-sm text-muted-foreground">
+                  Someone at that machine said no. If that was not you, do not
+                  ask again — find out who is at it.
+                </p>
+                <Button asChild variant="outline" className="h-11 w-full">
+                  <Link href="/pair">Pair with a code instead</Link>
+                </Button>
+              </div>
+            )}
+
             <Button
               variant="outline"
               className="h-11 w-full"
@@ -261,4 +324,11 @@ export function RequestAccessDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** "1:58", or "12s" once it is short enough to read as a number. */
+function formatRemaining(seconds: number): string {
+  if (seconds <= 0) return "0s";
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
