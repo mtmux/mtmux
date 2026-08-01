@@ -47,6 +47,10 @@ export interface ConnectionState {
   cloneSession: string | null;
   activeWindowId: string | null;
   remoteAddress: string | null;
+  /** Display name from the pairing record, once authenticated. */
+  label: string | null;
+  /** When the socket was accepted, for "connected 4m ago". */
+  connectedAt: number;
   lastActivityAt: number;
   closing: boolean;
   enqueue: (fn: () => Promise<void>) => void;
@@ -119,6 +123,8 @@ export function createConnection(
     cloneSession: null,
     activeWindowId: null,
     remoteAddress,
+    label: null,
+    connectedAt: Date.now(),
     lastActivityAt: Date.now(),
     closing: false,
     enqueue,
@@ -190,6 +196,62 @@ export function getConnectionCount(): number {
 
 export function getAllConnections(): ConnectionState[] {
   return Array.from(connections.values());
+}
+
+/** One connected device, as `mtmux start` and `mtmux status` display it. */
+export type ConnectedDevice = {
+  label: string;
+  connectedAt: number;
+  readOnly: boolean;
+};
+
+/**
+ * Who is connected right now.
+ *
+ * Authenticated connections only. A socket that has opened but not yet proved
+ * anything is not a device the user has admitted, and counting it would make
+ * the number jump every time a port scanner touched the relay.
+ *
+ * Deliberately carries no address, no session name and no grant scope: this
+ * crosses a loopback HTTP boundary to `mtmux status`, and a device list is not
+ * a reason to start handing out the shape of the machine.
+ */
+export function connectionSummary(): {
+  count: number;
+  devices: ConnectedDevice[];
+} {
+  const devices = getAllConnections()
+    .filter((conn) => conn.authenticated)
+    .map((conn) => ({
+      label: conn.label ?? "A device",
+      connectedAt: conn.connectedAt,
+      readOnly: conn.grant.readOnly,
+    }))
+    .sort((a, b) => a.connectedAt - b.connectedAt);
+  return { count: devices.length, devices };
+}
+
+/**
+ * Notified when the set of connected devices changes.
+ *
+ * Fires on authentication and on close rather than on every socket event —
+ * those are the two moments the answer to "who is connected" actually changes.
+ */
+const connectionListeners = new Set<() => void>();
+
+export function onConnectionsChanged(listener: () => void): () => void {
+  connectionListeners.add(listener);
+  return () => connectionListeners.delete(listener);
+}
+
+export function notifyConnectionsChanged(): void {
+  for (const listener of connectionListeners) {
+    try {
+      listener();
+    } catch {
+      // A misbehaving display must never take down a connection.
+    }
+  }
 }
 
 /**

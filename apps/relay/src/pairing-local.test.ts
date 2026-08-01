@@ -7,7 +7,10 @@ import {
   revokeSessionToken,
   hasLivePairingNonce,
   resetPairingState,
+  registerSessionToken,
+  labelForToken,
 } from "./pairing-local.js";
+import { FULL_GRANT } from "./grant.js";
 
 const T0 = 1_700_000_000_000;
 
@@ -96,5 +99,36 @@ describe("session tokens", () => {
     const { token } = issueSessionToken(10_000, T0);
     resetPairingState();
     expect(isValidSessionToken(token, T0)).toBe(false);
+  });
+});
+
+describe("session token labels", () => {
+  it("remembers what the CLI called the device", () => {
+    const token = "c".repeat(64);
+    registerSessionToken(
+      token,
+      60_000,
+      Date.now(),
+      FULL_GRANT,
+      "iPhone · Safari",
+    );
+    expect(labelForToken(token)).toBe("iPhone · Safari");
+  });
+
+  it("has no label when none was supplied", () => {
+    const token = "d".repeat(64);
+    registerSessionToken(token, 60_000);
+    expect(labelForToken(token)).toBeNull();
+  });
+
+  it("forgets the label once the token expires", () => {
+    const token = "e".repeat(64);
+    const now = Date.now();
+    registerSessionToken(token, 1_000, now, FULL_GRANT, "Ghost");
+    expect(labelForToken(token, now + 2_000)).toBeNull();
+  });
+
+  it("says nothing about a token it has never seen", () => {
+    expect(labelForToken("f".repeat(64))).toBeNull();
   });
 });

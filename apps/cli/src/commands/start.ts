@@ -49,6 +49,7 @@ import {
   createApproveControl,
   type ApproveControl,
 } from "../approve-control.js";
+import { createDevicesControl } from "../devices-control.js";
 import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
 
 // The whole CLI is bundled into dist/bin.js, so this module's own directory IS
@@ -824,6 +825,71 @@ function clearWaitingLine(): void {
   process.stdout.write("\x1b[2A\x1b[0J");
 }
 
+/**
+ * Say who is connected, as it changes.
+ *
+ * `mtmux start` used to go silent after the banner: a device could attach,
+ * drop, or never arrive at all and the terminal looked identical. The count is
+ * the thing people actually want from a screen they leave open — "is my phone
+ * still on?" and, less comfortably, "is that only my phone?"
+ *
+ * Append-only rather than a status line rewritten in place. The banner already
+ * owns the bottom of the screen through `waitingLineOnScreen`, and a second
+ * writer moving the cursor would corrupt the QR the moment the two coincided.
+ * Clearing the waiting line first is the same courtesy every other event here
+ * pays, and it keeps the output honest in a pipe or a service unit.
+ *
+ * Silent under `--json`, which promises one parseable document and nothing
+ * else, and a no-op against a relay bundle that predates the subscription.
+ */
+function watchConnectedDevices(relay: RelayRuntime, json: boolean): void {
+  const summary = relay.connectionSummary;
+  const subscribe = relay.onConnectionsChanged;
+  if (json || !summary || !subscribe) return;
+
+  let previous = summary().devices.map((d) => d.label);
+
+  subscribe(() => {
+    const current = summary().devices.map((d) => d.label);
+    const arrived = missingFrom(current, previous);
+    const departed = missingFrom(previous, current);
+    previous = current;
+    if (arrived.length === 0 && departed.length === 0) return;
+
+    clearWaitingLine();
+    for (const label of arrived) {
+      console.log(kleur.green(`  ✓ ${label} connected.`));
+    }
+    for (const label of departed) {
+      console.log(kleur.dim(`  · ${label} disconnected.`));
+    }
+    console.log(kleur.dim(`    ${devicesOnline(current.length)}`));
+    console.log("");
+  });
+}
+
+/**
+ * Multiset difference: what is in `a` that `b` does not account for.
+ *
+ * A set would collapse two phones running the same browser into one entry, so
+ * closing one tab of two would report a disconnect that did not happen.
+ */
+export function missingFrom(a: string[], b: string[]): string[] {
+  const remaining = [...b];
+  const out: string[] = [];
+  for (const item of a) {
+    const at = remaining.indexOf(item);
+    if (at === -1) out.push(item);
+    else remaining.splice(at, 1);
+  }
+  return out;
+}
+
+export function devicesOnline(count: number): string {
+  if (count === 0) return "Nothing is connected now.";
+  return `${count} device${count === 1 ? "" : "s"} connected.`;
+}
+
 /** The reason wording for a failure that carried no warning of its own. */
 function failureKindReason(err: unknown): RearmReason {
   return err instanceof PairingError && err.kind === "expired"
@@ -1048,13 +1114,20 @@ export async function start(opts: StartOpts) {
   const approveControl = createApproveControl({ authToken: cfg.token });
   approvals = approveControl;
 
+  const devicesControl = createDevicesControl({
+    authToken: cfg.token,
+    summary: relay.connectionSummary,
+  });
+
   const { shutdown: stopServing } = await serve({
     relay,
     requestHandler: app.getRequestHandler(),
     port: opts.port,
     host,
     portHintCommand: "mtmux start",
-    controlHandler: (req, res) => approveControl.handle(req, res),
+    controlHandler: async (req, res) =>
+      (await approveControl.handle(req, res)) ||
+      (await devicesControl.handle(req, res)),
   });
 
   const localUrl = `http://localhost:${opts.port}`;
@@ -1185,17 +1258,15 @@ export async function start(opts: StartOpts) {
         cfg,
         tunnelOnly: false,
         trusted,
-        onReturned: (peer) => {
-          clearWaitingLine();
-          console.log(kleur.green(`  ✓ ${peer.label} reconnected.`));
-          console.log("");
-        },
         onPaired: (label) => {
           // Redrawn, not appended. The banner's last line still says "Waiting
           // for a device…", and printing underneath it leaves a stale claim on
           // screen above the news that it is no longer true.
           clearWaitingLine();
-          console.log(kleur.green(`  ✓ ${label} connected.`));
+          // "Paired", not "connected". The socket authenticating is what
+          // connected means, and `onConnectionsChanged` says so a moment later
+          // — claiming it here too printed the same news twice.
+          console.log(kleur.green(`  ✓ Paired with ${label}.`));
           console.log(
             kleur.dim(`    It has the terminal at ${lanUrl ?? localUrl}.`),
           );
@@ -1287,6 +1358,7 @@ export async function start(opts: StartOpts) {
           code: hosted?.invite.code ?? null,
           joinUrl: hosted?.invite.url ?? null,
           trustedDevices: restored,
+          connectedDevices: relay.connectionSummary?.().count ?? 0,
           token: cfg.token,
           note,
         },
@@ -1356,6 +1428,8 @@ export async function start(opts: StartOpts) {
     );
     console.log("");
   }
+
+  watchConnectedDevices(relay, opts.json === true);
 
   await serverState.write(record(hosted?.invite.url ?? null));
 

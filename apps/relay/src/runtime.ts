@@ -10,3 +10,8 @@ export {
   PAIR_SESSION_PATH,
 } from "./server.js";
 export { issuePairingNonce, onPairingRedeemed } from "./pairing-local.js";
+export {
+  connectionSummary,
+  onConnectionsChanged,
+  type ConnectedDevice,
+} from "./connection-manager.js";

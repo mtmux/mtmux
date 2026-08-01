@@ -13,6 +13,7 @@ import {
   getConnectionCount,
   getIpCount,
   broadcastWhere,
+  notifyConnectionsChanged,
 } from "./connection-manager.js";
 import { allowsSession, allowsSessionName } from "./grant.js";
 import { isCloneSession, sweepOrphanClones } from "./tmux-clone.js";
@@ -144,6 +145,10 @@ export function wireConnections(
         // exists so a future auth path that forgets to set one cannot silently
         // produce a connection with no policy attached.
         if (authResult.grant) conn.grant = authResult.grant;
+        conn.label = authResult.label ?? null;
+        // Authenticating is the moment a socket becomes a *device*, which is
+        // what the CLI's connected line counts.
+        notifyConnectionsChanged();
 
         sendJson(ws, {
           type: "auth:success",
@@ -198,7 +203,9 @@ export function wireConnections(
       if (authTimer) clearTimeout(authTimer);
       conn.closing = true;
       await conn.drain();
+      const wasAuthenticated = conn.authenticated;
       await removeConnection(conn);
+      if (wasAuthenticated) notifyConnectionsChanged();
     });
 
     ws.on("error", (err) => {

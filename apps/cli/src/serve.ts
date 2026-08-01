@@ -41,6 +41,19 @@ export type RelayRuntime = {
   issuePairingNonce: (ttlMs?: number) => { nonce: string; expiresAt: number };
   /** Fires when a device redeems the nonce, so the CLI can reprint a code. */
   onPairingRedeemed: (listener: () => void) => () => void;
+  /**
+   * Who is connected right now.
+   *
+   * Optional because `scripts/dev.mjs` and any older bundle this file is
+   * pointed at may predate it, and a missing device count must degrade to no
+   * device line rather than to a crash on boot.
+   */
+  connectionSummary?: () => {
+    count: number;
+    devices: { label: string; connectedAt: number; readOnly: boolean }[];
+  };
+  /** Fires when a device authenticates or drops. */
+  onConnectionsChanged?: (listener: () => void) => () => void;
 };
 
 export type ServeOptions = {

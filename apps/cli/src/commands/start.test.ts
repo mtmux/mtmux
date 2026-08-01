@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   NO_FAILURES,
   REARM_LIMITS,
+  devicesOnline,
+  missingFrom,
   rearmDecision,
   resolveHost,
   resolveLanUrl,
@@ -211,5 +213,42 @@ describe("rearmDecision", () => {
       const total = d.state.expiries + d.state.wrong + d.state.lost;
       expect(total).toBe(7);
     }
+  });
+});
+
+/**
+ * The connected-devices line.
+ *
+ * `mtmux start` went silent after the banner, so a device that dropped and a
+ * device that never arrived looked the same on screen.
+ */
+describe("devicesOnline", () => {
+  it("says nothing is connected rather than printing a zero", () => {
+    expect(devicesOnline(0)).toBe("Nothing is connected now.");
+  });
+
+  it("agrees with itself about plurals", () => {
+    expect(devicesOnline(1)).toBe("1 device connected.");
+    expect(devicesOnline(2)).toBe("2 devices connected.");
+  });
+});
+
+describe("missingFrom", () => {
+  it("finds what arrived and what left", () => {
+    expect(missingFrom(["a", "b"], ["a"])).toEqual(["b"]);
+    expect(missingFrom(["a"], ["a", "b"])).toEqual([]);
+  });
+
+  /**
+   * A set would collapse two tabs of the same browser into one entry, so
+   * closing one of them would report a disconnect that did not happen.
+   */
+  it("counts duplicates rather than collapsing them", () => {
+    expect(missingFrom(["iPhone", "iPhone"], ["iPhone"])).toEqual(["iPhone"]);
+    expect(missingFrom(["iPhone", "iPhone"], ["iPhone", "iPhone"])).toEqual([]);
+  });
+
+  it("is empty for identical lists in a different order", () => {
+    expect(missingFrom(["a", "b"], ["b", "a"])).toEqual([]);
   });
 });

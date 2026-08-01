@@ -180,7 +180,17 @@ async function handleSessionRegistration(
 
   const ttlMs =
     typeof body.ttlMs === "number" && body.ttlMs > 0 ? body.ttlMs : undefined;
-  const session = registerSessionToken(body.token, ttlMs, undefined, grant);
+  const label =
+    typeof body.label === "string" && body.label.length > 0
+      ? body.label.slice(0, 128)
+      : undefined;
+  const session = registerSessionToken(
+    body.token,
+    ttlMs,
+    undefined,
+    grant,
+    label,
+  );
   logger.info(
     { grant: grant.id, readOnly: grant.readOnly, files: grant.files },
     "Session token registered for a paired device",
@@ -196,10 +206,7 @@ async function handleSessionRegistration(
    */
   broadcastToAll({
     type: "device:paired",
-    label:
-      typeof body.label === "string" && body.label.length > 0
-        ? body.label.slice(0, 128)
-        : "A device",
+    label: label ?? "A device",
     via: body.via === "request" ? "request" : "code",
     at: Date.now(),
   });

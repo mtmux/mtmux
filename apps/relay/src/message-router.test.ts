@@ -107,6 +107,8 @@ function makeConn(): ConnectionState {
     watchers: new Map(),
     uploads: new Map(),
     rateLimiter: {} as ConnectionState["rateLimiter"],
+    label: null,
+    connectedAt: Date.now(),
     attachedSession: null,
     lastSize: null,
     cloneSession: null,

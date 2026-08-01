@@ -3,7 +3,7 @@ import type { ClientMessage, GrantRecord } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { config } from "./config.js";
 import { FULL_GRANT } from "./grant.js";
-import { grantForToken } from "./pairing-local.js";
+import { grantForToken, labelForToken } from "./pairing-local.js";
 import {
   checkAuthThrottle,
   recordAuthFailure,
@@ -28,6 +28,13 @@ export interface AuthResult {
    * ever produces `FULL_GRANT`, so nothing about the self-hosted path changes.
    */
   grant?: GrantRecord;
+  /**
+   * Display name for the device, when the pairing recorded one.
+   *
+   * Never used to decide anything — it is self-reported by the browser and
+   * only ever shown on the machine's own screen.
+   */
+  label?: string;
 }
 
 /**
@@ -96,7 +103,8 @@ export function authenticateMessage(
   // operational question the machine's owner may ask, "which sessions does it
   // cover" is in the file they already have.
   logger.info({ grant: grant.id }, "Client authenticated successfully");
-  return { authenticated: true, grant };
+  const label = labelForToken(msg.token);
+  return { authenticated: true, grant, ...(label ? { label } : {}) };
 }
 
 export function createAuthTimeout(onTimeout: () => void): NodeJS.Timeout {

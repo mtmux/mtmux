@@ -44,7 +44,18 @@ type Expiring = { expiresAt: number };
  * the CPace secret with no round trip to learn an id in. It would also put a
  * grant id into `/file?token=` URLs and every access log that sees them.
  */
-type Session = Expiring & { grant: GrantRecord };
+type Session = Expiring & {
+  grant: GrantRecord;
+  /**
+   * What to call the device holding this token, when the CLI told us.
+   *
+   * Display only, and self-reported by the browser at that — nothing is
+   * decided by it. It exists so `mtmux start` can say "iPhone · Safari" in the
+   * connected-devices line instead of counting anonymous sockets, which is the
+   * difference between a number and an answer to "is that me or someone else?"
+   */
+  label?: string;
+};
 
 const nonces = new Map<string, Expiring>();
 const sessions = new Map<string, Session>();
@@ -135,11 +146,32 @@ export function registerSessionToken(
   ttlMs: number = SESSION_TTL_MS,
   now: number = Date.now(),
   grant: GrantRecord = FULL_GRANT,
+  label?: string,
 ): SessionToken {
   prune(sessions, now);
   const expiresAt = now + ttlMs;
-  sessions.set(digest(token), { expiresAt, grant });
+  sessions.set(digest(token), {
+    expiresAt,
+    grant,
+    ...(label ? { label } : {}),
+  });
   return { token, expiresAt };
+}
+
+/**
+ * The display label behind a session token, if it has one.
+ *
+ * Separate from `grantForToken` because it is not part of any decision: a
+ * caller that needs to know whether a token is good must not be able to get a
+ * name back instead of an answer.
+ */
+export function labelForToken(
+  token: string,
+  now: number = Date.now(),
+): string | null {
+  const entry = sessions.get(digest(token));
+  if (!entry || entry.expiresAt <= now) return null;
+  return entry.label ?? null;
 }
 
 /**
