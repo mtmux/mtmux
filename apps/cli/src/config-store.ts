@@ -95,7 +95,42 @@ export type Config = {
   account?: Account;
   /** What this machine calls itself in the dashboard. Defaults to hostname. */
   serverName?: string;
+  /**
+   * Whether a device that paired earlier may reconnect without being asked.
+   *
+   * `trust` — the default, and what every release so far has done. Paired means
+   * paired: a phone reconnects the way a Bluetooth keyboard does, and a machine
+   * running under systemd with nobody at it keeps working across a reboot.
+   *
+   * `confirm` — a returning device raises a prompt on this machine's terminal
+   * the first time it reconnects after a restart. For someone who wants
+   * "paired" to mean "paired, while I am watching".
+   *
+   * Defaulting to `confirm` was rejected: it would break every unattended
+   * server on upgrade, and an unattended server is exactly the case
+   * `mtmux approve` exists for.
+   */
+  reconnectPolicy?: ReconnectPolicy;
 };
+
+export type ReconnectPolicy = "trust" | "confirm";
+
+export const DEFAULT_RECONNECT_POLICY: ReconnectPolicy = "trust";
+
+export function isReconnectPolicy(value: unknown): value is ReconnectPolicy {
+  return value === "trust" || value === "confirm";
+}
+
+export async function getReconnectPolicy(): Promise<ReconnectPolicy> {
+  const stored = (await load()).reconnectPolicy;
+  return isReconnectPolicy(stored) ? stored : DEFAULT_RECONNECT_POLICY;
+}
+
+export async function setReconnectPolicy(
+  policy: ReconnectPolicy,
+): Promise<Config> {
+  return write({ ...(await load()), reconnectPolicy: policy });
+}
 
 async function write(cfg: Config): Promise<Config> {
   await mkdir(DIR, { recursive: true });

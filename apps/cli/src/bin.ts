@@ -9,6 +9,7 @@ import { share, shareList, shareRevoke } from "./commands/share.js";
 import { parseFiles } from "./share-grants.js";
 import { tokenPrint, tokenRotate, tokenSet } from "./commands/token.js";
 import { version } from "./commands/version.js";
+import { configGet, configSet } from "./commands/config.js";
 import { doctor } from "./commands/doctor.js";
 import { status, stop } from "./commands/status.js";
 import { approve } from "./commands/approve.js";
@@ -98,6 +99,11 @@ program
   .option("--allowed-paths <paths>", "comma-separated path allow-list")
   .option("--no-open", "don't open the browser on this machine")
   .option("--api <url>", "pairing service base URL")
+  .option(
+    "--confirm-reconnect",
+    "ask before letting a previously paired device back in",
+  )
+  .option("--trust-reconnect", "let previously paired devices back in silently")
   .option("--json", "print a machine-readable startup record")
   .option(
     "--share <sessions>",
@@ -357,6 +363,18 @@ token
   .command("set <value>")
   .description("Set the token to a specific value")
   .action(tokenSet);
+
+const config = program
+  .command("config")
+  .description("Read and change settings");
+config
+  .command("get [key]")
+  .description("Show a setting, or all of them")
+  .action(configGet);
+config
+  .command("set <key> <value>")
+  .description("Change a setting")
+  .action(configSet);
 
 program
   .command("version")

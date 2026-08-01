@@ -199,3 +199,48 @@ describe("peers", () => {
     expect(raw).toContain("secretKey");
   });
 });
+
+describe("reconnect policy", () => {
+  it("defaults to trust — paired means paired", async () => {
+    // Changing this default would break every unattended server on upgrade,
+    // which is exactly the population `mtmux approve` exists for.
+    expect(await store.getReconnectPolicy()).toBe("trust");
+  });
+
+  it("round-trips a stored policy", async () => {
+    await store.setReconnectPolicy("confirm");
+    expect(await store.getReconnectPolicy()).toBe("confirm");
+    await store.setReconnectPolicy("trust");
+    expect(await store.getReconnectPolicy()).toBe("trust");
+  });
+
+  it("falls back to trust when the file holds something else", async () => {
+    const cfg = await store.load();
+    await store.save({
+      ...cfg,
+      reconnectPolicy: "yes-please" as never,
+    });
+    expect(await store.getReconnectPolicy()).toBe("trust");
+  });
+
+  it("keeps the token and peers when the policy changes", async () => {
+    const before = await store.load();
+    await store.addPeer(peerFixture("a", "iPhone"));
+    await store.setReconnectPolicy("confirm");
+    const after = await store.load();
+    expect(after.token).toBe(before.token);
+    expect(after.peers).toHaveLength(1);
+  });
+
+  it("recognises exactly two policies", () => {
+    expect(store.isReconnectPolicy("trust")).toBe(true);
+    expect(store.isReconnectPolicy("confirm")).toBe(true);
+    expect(store.isReconnectPolicy("always")).toBe(false);
+    expect(store.isReconnectPolicy(undefined)).toBe(false);
+  });
+});
+
+/** The peer factory, hoisted out of the `peers` describe for reuse. */
+function peerFixture(deviceId: string, label = "device") {
+  return { deviceId, publicKey: "", label, pairedAt: 1000, lastSeenAt: 1000 };
+}

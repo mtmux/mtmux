@@ -99,6 +99,15 @@ export type TunnelAgentOptions = {
    * where anything device-aware has to hang.
    */
   onStreamBound?: (peer?: PeerIdentity) => void;
+  /**
+   * Decide whether a bound stream may reach the relay at all.
+   *
+   * Runs after trial decryption has established *which* pairing this is and
+   * before anything is forwarded, which is the only point where both facts are
+   * available. Absent means admit everything, which is the default and what
+   * every release before the reconnect policy did.
+   */
+  admitStream?: (peer?: PeerIdentity) => Promise<boolean>;
   /** Injected for tests; real runs use exponential backoff with jitter. */
   scheduleRetry?: (attempt: number, run: () => void) => void;
 };
@@ -325,6 +334,18 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
         stream.opener = opener;
         stream.sealer = new FrameSealer(entry.keys.s2c, "s2c");
         stream.peer = entry.peer;
+
+        // The gate sits here, after the key has proved who this is and before
+        // a single byte reaches the relay. Awaiting is safe: frames for one
+        // stream are serialised through `stream.chain`, so anything that
+        // arrives while a human is being asked queues behind the answer
+        // instead of racing past it.
+        if (opts.admitStream && !(await opts.admitStream(entry.peer))) {
+          if (!stream.closed) dropStream(streamId, "not approved");
+          return;
+        }
+        if (stream.closed) return;
+
         opts.onStreamBound?.(entry.peer);
         writeLocal(stream, line);
         // Flush anything the relay said while we did not know the key.

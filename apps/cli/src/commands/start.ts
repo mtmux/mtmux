@@ -44,7 +44,7 @@ import {
 } from "./pair.js";
 import * as account from "../account.js";
 import { resolveShareSessions, shareBanner } from "../share-grants.js";
-import { decideAccess } from "../access-prompt.js";
+import { decideAccess, promptForReturningDevice } from "../access-prompt.js";
 import {
   createApproveControl,
   type ApproveControl,
@@ -245,6 +245,15 @@ export type StartOpts = {
   share?: string;
   shareReadOnly?: boolean;
   shareFiles?: GrantFiles;
+  /**
+   * Override `reconnectPolicy` for this run.
+   *
+   * Both spellings, because a flag that can only turn a stored setting *on* is
+   * half a flag: someone who has set `confirm` and is about to reboot a machine
+   * they will not be sitting at needs a way to say so once.
+   */
+  confirmReconnect?: boolean;
+  trustReconnect?: boolean;
 };
 
 /**
@@ -383,6 +392,13 @@ async function startHosted(opts: {
   onPaired: (label: string) => void;
   /** A restored device came back on the tunnel, named. */
   onReturned?: (peer: PeerIdentity) => void;
+  /**
+   * Ask before admitting a device that paired in an earlier run.
+   *
+   * Undefined means the default: paired is paired, which is what every release
+   * so far has done and what an unattended server needs.
+   */
+  confirmReturning?: (peer: PeerIdentity) => Promise<boolean>;
   onRearm: (invite: PairingInvite, reason: RearmReason) => void;
   /**
    * A half failed in a way worth saying out loud, and its replacement is
@@ -525,6 +541,15 @@ async function startHosted(opts: {
     onStreamBound: (peer) => {
       if (peer?.restored) opts.onReturned?.(peer);
     },
+    admitStream: opts.confirmReturning
+      ? async (peer) => {
+          // Only devices restored from disk are gated. One that paired in this
+          // process was approved seconds ago, by someone standing here typing
+          // a code — asking again would be asking the same question twice.
+          if (!peer?.restored) return true;
+          return opts.confirmReturning!(peer);
+        }
+      : undefined,
   });
 
   // Before `start()`, so a device that reconnects the instant the tunnel comes
@@ -890,6 +915,59 @@ export function devicesOnline(count: number): string {
   return `${count} device${count === 1 ? "" : "s"} connected.`;
 }
 
+/**
+ * The reconnect gate, remembering what it was already told.
+ *
+ * Cached per device for the process lifetime: a browser opens a stream per tab
+ * and reconnects on every network blip, so asking per stream would turn one
+ * policy decision into a prompt that never stops. The cache is deliberately
+ * *not* persisted — the whole point of `confirm` is that a restart is where
+ * the question gets asked again.
+ *
+ * Concurrent streams from the same device share one prompt rather than racing
+ * two, which is why the map holds the promise and not the answer.
+ */
+function makeReturningGate(): (peer: PeerIdentity) => Promise<boolean> {
+  const decided = new Map<string, Promise<boolean>>();
+
+  return (peer) => {
+    const existing = decided.get(peer.deviceId);
+    if (existing) return existing;
+
+    const asking = (async () => {
+      clearWaitingLine();
+      const answer = await promptForReturningDevice({ label: peer.label });
+      if (answer.approved) {
+        console.log(kleur.green(`  ✓ ${peer.label} let back in.`));
+        console.log("");
+        return true;
+      }
+      if (answer.reason === "no-tty") {
+        // Refusing is the setting applying. Admitting because nobody could be
+        // asked would be the setting quietly not applying, which is the worst
+        // outcome available for a control someone deliberately turned on.
+        console.log(
+          kleur.yellow(`  ! Refused ${peer.label}: nothing to ask on.`),
+        );
+        console.log(
+          kleur.dim("    Start with ") +
+            kleur.bold("--trust-reconnect") +
+            kleur.dim(", or ") +
+            kleur.bold("mtmux config set reconnectPolicy trust") +
+            kleur.dim("."),
+        );
+      } else {
+        console.log(kleur.dim(`  · Refused ${peer.label}.`));
+      }
+      console.log("");
+      return false;
+    })();
+
+    decided.set(peer.deviceId, asking);
+    return asking;
+  };
+}
+
 /** The reason wording for a failure that carried no warning of its own. */
 function failureKindReason(err: unknown): RearmReason {
   return err instanceof PairingError && err.kind === "expired"
@@ -1136,6 +1214,16 @@ export async function start(opts: StartOpts) {
   const { restored, needRepair, needRekey, trusted } =
     await restoreTrustedDevices(opts.port, cfg.token);
 
+  // Flags beat the stored setting, and `--trust-reconnect` beats
+  // `--confirm-reconnect` if somebody passes both — the explicit "not now" is
+  // the one you want to win when you are about to walk away from the machine.
+  const confirmReconnect = opts.trustReconnect
+    ? false
+    : (opts.confirmReconnect ??
+      (await configStore.getReconnectPolicy()) === "confirm");
+
+  const confirmReturning = confirmReconnect ? makeReturningGate() : undefined;
+
   // Tokenless LAN sign-in only makes sense for a *different* device, so the
   // nonce is armed exactly when there is an address such a device could reach.
   const armLanNonce = () =>
@@ -1258,6 +1346,7 @@ export async function start(opts: StartOpts) {
         cfg,
         tunnelOnly: false,
         trusted,
+        confirmReturning,
         onPaired: (label) => {
           // Redrawn, not appended. The banner's last line still says "Waiting
           // for a device…", and printing underneath it leaves a stale claim on

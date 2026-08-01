@@ -168,3 +168,70 @@ export async function promptForAccess(
     rl.close();
   }
 }
+
+/**
+ * A device that paired before is coming back, and the policy says ask.
+ *
+ * Deliberately not the same question as `promptForAccess`. There is no SAS to
+ * compare here: the device already proved itself cryptographically — its key
+ * schedule is what opened the frame — so nothing is being verified. What is
+ * being asked is a policy question, "let this one back in?", and dressing it up
+ * with a six-digit code nobody can check would teach people to ignore the
+ * codes that do matter.
+ *
+ * No TTY means refuse. Someone who set `reconnectPolicy: confirm` asked for a
+ * human in the loop, and silently admitting the device because nobody could be
+ * asked would be the setting quietly not applying — the worst outcome for a
+ * security control. The refusal says how to change it.
+ */
+export type ReturningDevice = { label: string; pairedAt?: number };
+
+export function renderReturningDevice(device: ReturningDevice): string[] {
+  return [
+    "",
+    kleur.bold("  A device you paired earlier is reconnecting"),
+    "",
+    `    ${kleur.dim("Device")}  ${device.label || "unknown device"}`,
+    ...(device.pairedAt
+      ? [
+          `    ${kleur.dim("Paired")}  ${new Date(device.pairedAt).toLocaleString()}`,
+        ]
+      : []),
+    "",
+  ];
+}
+
+export async function promptForReturningDevice(
+  device: ReturningDevice,
+  deps: PromptDeps = {},
+): Promise<AccessPromptResult> {
+  const input = deps.input ?? process.stdin;
+  const output = deps.output ?? process.stdout;
+
+  if (!input.isTTY) return { approved: false, reason: "no-tty" };
+
+  for (const line of renderReturningDevice(device)) {
+    output.write(`${line}\n`);
+  }
+
+  const rl = readline.createInterface({ input, output });
+  try {
+    const answer = await new Promise<string | null>((resolve) => {
+      const timer = setTimeout(
+        () => resolve(null),
+        deps.timeoutMs ?? PROMPT_TIMEOUT_MS,
+      );
+      timer.unref?.();
+      rl.question(kleur.bold("  Let it reconnect?") + " [y/N] ", (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      });
+    });
+    if (answer === null) return { approved: false, reason: "timeout" };
+    return /^y(es)?$/i.test(answer.trim())
+      ? { approved: true }
+      : { approved: false, reason: "refused" };
+  } finally {
+    rl.close();
+  }
+}

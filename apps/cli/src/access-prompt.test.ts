@@ -5,6 +5,8 @@ import {
   decideAccess,
   promptForAccess,
   renderAccessRequest,
+  promptForReturningDevice,
+  renderReturningDevice,
   type AccessPromptInput,
 } from "./access-prompt.js";
 
@@ -180,5 +182,69 @@ describe("promptForAccess", () => {
       timeoutMs: 20,
     });
     expect(result).toEqual({ approved: false, reason: "refused" });
+  });
+});
+
+/**
+ * The reconnect prompt, which is a different question from the access prompt.
+ *
+ * The device already proved itself — its key schedule is what decrypted the
+ * frame — so nothing is being verified here. What is being asked is policy:
+ * "let this one back in?". Showing a six-digit code nobody can check would
+ * teach people to wave through the codes that do matter.
+ */
+describe("promptForReturningDevice", () => {
+  const DEVICE = { label: "iPhone · Safari", pairedAt: 1_700_000_000_000 };
+
+  it("shows no comparison code, because there is nothing to compare", () => {
+    const text = renderReturningDevice(DEVICE).join("\n");
+    expect(text).toContain("iPhone · Safari");
+    expect(text).not.toMatch(/\d{3} \d{3}/);
+  });
+
+  it("names when the device was paired, so 'do I know this?' is answerable", () => {
+    const text = renderReturningDevice(DEVICE).join("\n");
+    expect(text).toContain("Paired");
+  });
+
+  it("omits the paired date when there isn't one", () => {
+    const text = renderReturningDevice({ label: "iPhone" }).join("\n");
+    expect(text).not.toContain("Paired");
+  });
+
+  it("admits on y", async () => {
+    const { input, output } = tty("y");
+    await expect(
+      promptForReturningDevice(DEVICE, { input, output }),
+    ).resolves.toEqual({ approved: true });
+  });
+
+  it("refuses on anything else, including a bare Enter", async () => {
+    for (const answer of ["", "n", "no", "maybe"]) {
+      const { input, output } = tty(answer);
+      await expect(
+        promptForReturningDevice(DEVICE, { input, output }),
+      ).resolves.toEqual({ approved: false, reason: "refused" });
+    }
+  });
+
+  it("refuses with no TTY rather than admitting silently", async () => {
+    // Admitting here would be the setting quietly not applying, which is the
+    // worst outcome available for a control someone deliberately turned on.
+    const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+    input.isTTY = false;
+    await expect(
+      promptForReturningDevice(DEVICE, { input, output: new PassThrough() }),
+    ).resolves.toEqual({ approved: false, reason: "no-tty" });
+  });
+
+  it("times out rather than waiting forever", async () => {
+    const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+    input.isTTY = true;
+    const output = new PassThrough();
+    output.resume();
+    await expect(
+      promptForReturningDevice(DEVICE, { input, output, timeoutMs: 10 }),
+    ).resolves.toEqual({ approved: false, reason: "timeout" });
   });
 });

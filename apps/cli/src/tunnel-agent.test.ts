@@ -685,3 +685,135 @@ describe("pairings restored from disk", () => {
     expect(h.locals[0]!.sent).toContain("still-here");
   });
 });
+
+/**
+ * The reconnect gate.
+ *
+ * `reconnectPolicy: confirm` turns a returning device into a question. The gate
+ * has to sit after trial decryption — which is the only point that establishes
+ * *which* device this is — and before anything reaches the relay.
+ */
+describe("admitStream", () => {
+  const peer: PeerIdentity = {
+    deviceId: "browser-alice",
+    label: "iPhone · Safari",
+    restored: true,
+  };
+
+  function gated(decide: (p?: PeerIdentity) => Promise<boolean>) {
+    const key = generateDeviceKey();
+    const brokers: ReturnType<typeof fakeSocket>[] = [];
+    const locals: ReturnType<typeof fakeSocket>[] = [];
+    const agent = createTunnelAgent({
+      apiBase: "http://broker.test",
+      deviceKey: key,
+      connectBroker: () => {
+        const s = fakeSocket();
+        brokers.push(s);
+        return s.socket;
+      },
+      connectLocal: () => {
+        const s = fakeSocket();
+        locals.push(s);
+        return s.socket;
+      },
+      admitStream: decide,
+      scheduleRetry: (_a, run) => run(),
+    });
+    return { agent, key, brokers, locals, retries: [], bound: [] };
+  }
+
+  it("forwards nothing when the answer is no", async () => {
+    const keys = sessionKeys();
+    const h = gated(async () => false);
+    h.agent.addSessionKeys(keys, peer);
+    h.agent.start();
+    register(h as unknown as ReturnType<typeof harness>);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(keys).seal("auth-line"),
+    });
+    await flush();
+
+    // The frame decrypted — we know who it is — and still nothing reached the
+    // relay. That distinction is the whole point of gating here.
+    expect(h.locals[0]!.sent).toHaveLength(0);
+    expect(h.locals[0]!.closed).toBe(true);
+  });
+
+  it("forwards normally when the answer is yes", async () => {
+    const keys = sessionKeys();
+    const h = gated(async () => true);
+    h.agent.addSessionKeys(keys, peer);
+    h.agent.start();
+    register(h as unknown as ReturnType<typeof harness>);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(keys).seal("auth-line"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toContain("auth-line");
+  });
+
+  it("is asked with the device it decrypted, not a guess", async () => {
+    const keys = sessionKeys();
+    const seen: (PeerIdentity | undefined)[] = [];
+    const h = gated(async (p) => {
+      seen.push(p);
+      return true;
+    });
+    h.agent.addSessionKeys(sessionKeys(), {
+      deviceId: "other",
+      label: "Someone else",
+      restored: true,
+    });
+    h.agent.addSessionKeys(keys, peer);
+    h.agent.start();
+    register(h as unknown as ReturnType<typeof harness>);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(keys).seal("auth-line"),
+    });
+    await flush();
+
+    expect(seen).toEqual([peer]);
+  });
+
+  it("is never reached by a stream no key opens", async () => {
+    // Refusing an unknown stream must stay a cryptographic decision. Asking a
+    // human about it would turn a leaked tunnel id into a prompt.
+    let asked = 0;
+    const h = gated(async () => {
+      asked++;
+      return true;
+    });
+    h.agent.addSessionKeys(sessionKeys(), peer);
+    h.agent.start();
+    register(h as unknown as ReturnType<typeof harness>);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(sessionKeys()).seal("let me in"),
+    });
+    await flush();
+
+    expect(asked).toBe(0);
+    expect(h.locals[0]!.closed).toBe(true);
+  });
+});
