@@ -89,6 +89,16 @@ export type TunnelAgentOptions = {
    * descriptor if they said yes.
    */
   onAccessRequest?: (request: AccessRequest) => Promise<AccessDecision>;
+  /**
+   * A stream just bound to a pairing by trial decryption.
+   *
+   * Fires once per stream, on the first frame that authenticates, with whoever
+   * owns the winning key schedule — undefined when the pairing predates peer
+   * identities. This is the only moment the agent knows *which* device is on
+   * the other end of a tunnel the broker is deliberately blind to, so it is
+   * where anything device-aware has to hang.
+   */
+  onStreamBound?: (peer?: PeerIdentity) => void;
   /** Injected for tests; real runs use exponential backoff with jitter. */
   scheduleRetry?: (attempt: number, run: () => void) => void;
 };
@@ -123,8 +133,17 @@ const MAX_BACKOFF_MS = 30_000;
  *
  * Bounds the cost of trial decryption and, with it, the work an unpaired caller
  * can make us do by opening streams. Oldest entries are evicted first.
+ *
+ * Raised from 8 once the keyring started being restored from disk at startup.
+ * Eight is under what a household reaches — two people with a phone, a tablet
+ * and a laptop each is six, and every browser profile counts separately — and
+ * an evicted entry is not a slow path, it is a device that silently cannot
+ * reconnect. That is the exact bug the restore exists to fix, so a cap low
+ * enough to reintroduce it for the ninth device is the wrong cap. The cost of
+ * the higher number is bounded and small: a failed trial is one AES-GCM tag
+ * check, paid only on a stream's first frame.
  */
-const MAX_KEYRING = 8;
+const MAX_KEYRING = 64;
 
 /** Mirrors apps/web/src/lib/ws-client.ts so reconnect behaviour is familiar. */
 function defaultRetry(attempt: number, run: () => void): void {
@@ -142,9 +161,30 @@ export type TunnelAgent = {
    * Admit a completed pairing's keys, so streams sealed under them can be
    * opened. Called once `mtmux pair` finishes its PAKE.
    */
-  addSessionKeys(keys: SessionKeys): void;
+  addSessionKeys(keys: SessionKeys, peer?: PeerIdentity): void;
   readonly tunnelId: string | null;
   readonly status: AgentStatus;
+};
+
+/**
+ * Who a key schedule belongs to, when we happen to know.
+ *
+ * Optional because a pairing completing right now knows the browser's
+ * self-reported label but not much else, while one restored from disk carries
+ * the record `mtmux devices` prints. Naming the peer is what lets the CLI say
+ * "iPhone · Safari reconnected" rather than "a device", and what a reconnect
+ * approval prompt has to show a human before it can mean anything.
+ */
+export type PeerIdentity = {
+  deviceId: string;
+  label: string;
+  /** True when this came from disk rather than a pairing in this process. */
+  restored: boolean;
+};
+
+export type KeyringEntry = {
+  keys: SessionKeys;
+  peer?: PeerIdentity;
 };
 
 /** A requested pairing between the ack and the reveal. */
@@ -161,6 +201,8 @@ type Stream = {
   /** Bound on the first frame that authenticates. */
   opener: FrameOpener | null;
   sealer: FrameSealer | null;
+  /** Which pairing won the trial decryption, once one has. */
+  peer?: PeerIdentity;
   /**
    * Serializes the async seal/open calls. WebCrypto is promise-based, and the
    * relay protocol is order-sensitive, so frames must not be allowed to
@@ -192,8 +234,15 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
    * halfway leaves no key material behind.
    */
   const accessRequests = new Map<string, PendingAccess>();
-  /** Key schedules of every pairing this process has completed. */
-  const keyring: SessionKeys[] = [];
+  /**
+   * Key schedules this agent will try an unbound stream's first frame against.
+   *
+   * Two sources, and the second is the whole point: pairings completed in this
+   * process, and pairings restored from `~/.mtmux/config.json` at startup. It
+   * used to be the first alone — "every pairing *this process* has completed" —
+   * which meant a restart silently revoked every device on the tunnel path.
+   */
+  const keyring: KeyringEntry[] = [];
 
   function setStatus(next: AgentStatus, detail?: string) {
     status = next;
@@ -262,10 +311,10 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
     }
 
     if (!stream.opener) {
-      for (const keys of keyring) {
+      for (const entry of keyring) {
         // A fresh opener per candidate: a failed trial must not advance the
         // replay window of a schedule that turns out to be the right one.
-        const opener = new FrameOpener(keys.c2s, "c2s");
+        const opener = new FrameOpener(entry.keys.c2s, "c2s");
         let line: string;
         try {
           line = new TextDecoder().decode(await opener.open(bytes));
@@ -274,7 +323,9 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
         }
         if (stream.closed) return;
         stream.opener = opener;
-        stream.sealer = new FrameSealer(keys.s2c, "s2c");
+        stream.sealer = new FrameSealer(entry.keys.s2c, "s2c");
+        stream.peer = entry.peer;
+        opts.onStreamBound?.(entry.peer);
         writeLocal(stream, line);
         // Flush anything the relay said while we did not know the key.
         for (const held of stream.toBroker.splice(0)) {
@@ -521,8 +572,8 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
       broker = null;
       setStatus("stopped");
     },
-    addSessionKeys(keys) {
-      keyring.push(keys);
+    addSessionKeys(keys, peer) {
+      keyring.push({ keys, peer });
       if (keyring.length > MAX_KEYRING) keyring.shift();
     },
     get tunnelId() {

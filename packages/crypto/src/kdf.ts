@@ -2,7 +2,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
-import { bytesToHex, constantTimeEqual } from "./bytes";
+import { bytesToHex, hexToBytes, constantTimeEqual } from "./bytes";
 
 /**
  * The key schedule hanging off a completed CPace run.
@@ -58,6 +58,56 @@ export function deriveSessionKeys(
     confirm: derive(isk, transcript, LABEL.confirm),
     directToken: bytesToHex(derive(isk, transcript, LABEL.directToken)),
   };
+}
+
+/**
+ * Serialised form for `~/.mtmux/config.json`.
+ *
+ * The keys are bytes and JSON has no byte type, so hex — the same encoding
+ * `StoredDeviceKey` uses, for the same reason.
+ */
+export type StoredSessionKeys = {
+  c2s: string;
+  s2c: string;
+  confirm: string;
+  directToken: string;
+};
+
+export function encodeSessionKeys(keys: SessionKeys): StoredSessionKeys {
+  return {
+    c2s: bytesToHex(keys.c2s),
+    s2c: bytesToHex(keys.s2c),
+    confirm: bytesToHex(keys.confirm),
+    directToken: keys.directToken,
+  };
+}
+
+/**
+ * Throws on anything malformed rather than returning a partial schedule.
+ *
+ * A key of the wrong length cannot decrypt anything, so the only thing a
+ * lenient decode would buy is a pairing that looks restored and silently
+ * refuses every frame — which is precisely the failure this whole change
+ * exists to remove.
+ */
+export function decodeSessionKeys(stored: StoredSessionKeys): SessionKeys {
+  const c2s = hexToBytes(stored.c2s);
+  const s2c = hexToBytes(stored.s2c);
+  const confirm = hexToBytes(stored.confirm);
+  if (
+    c2s.length !== KEY_BYTES ||
+    s2c.length !== KEY_BYTES ||
+    confirm.length !== KEY_BYTES
+  ) {
+    throw new Error("Stored session keys are malformed");
+  }
+  if (
+    typeof stored.directToken !== "string" ||
+    stored.directToken.length < 32
+  ) {
+    throw new Error("Stored session keys have no usable direct token");
+  }
+  return { c2s, s2c, confirm, directToken: stored.directToken };
 }
 
 export type Role = "cli" | "browser";

@@ -8,6 +8,7 @@ import {
   decodeDeviceKey,
   type DeviceKeyPair,
   type StoredDeviceKey,
+  type StoredSessionKeys,
 } from "@repo/crypto";
 
 // Overridable so tests never touch the developer's real config, and so a user
@@ -45,6 +46,28 @@ export type PeerRecord = {
    * file that was not already the crown jewels.
    */
   directToken?: string;
+  /**
+   * The CPace-derived key schedule for this peer, so the tunnel survives a
+   * restart too.
+   *
+   * `directToken` above fixed exactly half of this. It is the *relay's*
+   * credential, so replaying it re-admits a device on the direct/LAN path — but
+   * the tunnel agent binds a stream to a pairing by trial decryption against a
+   * keyring held only in memory, so over the tunnel every previously-paired
+   * device was refused with "no matching pairing" after any restart. A phone at
+   * home kept working and the same phone on mobile data did not, which is a
+   * strange enough shape that it read as a network fault rather than a bug.
+   *
+   * The honest cost, stated plainly: this file is 0600 and already holds
+   * `AUTH_TOKEN`, the Ed25519 secret and a full-access `directToken`, so
+   * nothing here widens what someone who can read it may *do* — they already
+   * own the machine. What it does concede is confidentiality of *recorded past*
+   * tunnel ciphertext, which was previously forward-secret across a restart by
+   * accident rather than by design. Removing that concession means a signed
+   * reconnect handshake against `publicKey` above, which is what that field was
+   * always for; until then this is the trade.
+   */
+  sessionKeys?: StoredSessionKeys;
 };
 
 /**

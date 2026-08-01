@@ -17,6 +17,7 @@ import {
   createTunnelAgent,
   type AgentSocket,
   type LocalSocket,
+  type PeerIdentity,
 } from "./tunnel-agent.js";
 
 /** A distinct pairing's key schedule. */
@@ -104,10 +105,13 @@ function harness(overrides: { retryDelays?: number[] } = {}) {
   const brokers: ReturnType<typeof fakeSocket>[] = [];
   const locals: ReturnType<typeof fakeSocket>[] = [];
   const retries: number[] = [];
+  /** Every peer a stream bound to, in order, including the undefined ones. */
+  const bound: (PeerIdentity | undefined)[] = [];
 
   const agent = createTunnelAgent({
     apiBase: "http://broker.test",
     deviceKey: key,
+    onStreamBound: (peer) => bound.push(peer),
     connectBroker: () => {
       const s = fakeSocket();
       brokers.push(s);
@@ -125,7 +129,7 @@ function harness(overrides: { retryDelays?: number[] } = {}) {
     },
   });
 
-  return { agent, key, brokers, locals, retries };
+  return { agent, key, brokers, locals, retries, bound };
 }
 
 /** Register the agent and return the tunnel id the broker handed out. */
@@ -572,5 +576,112 @@ describe("reconnection", () => {
     h.brokers[0]!.deliver({ type: "tunnel:closed", reason: "quota-exceeded" });
     expect(h.locals[0]!.closed).toBe(true);
     expect(h.brokers[0]!.closed).toBe(true);
+  });
+});
+
+/**
+ * The restart case.
+ *
+ * The keyring used to hold only pairings completed in the running process, so
+ * every device that had ever paired was refused after a restart — silently, and
+ * only over the tunnel, because the relay credential half of the restore kept
+ * the LAN path working. These tests pin the half that was missing.
+ */
+describe("pairings restored from disk", () => {
+  const alicePeer: PeerIdentity = {
+    deviceId: "browser-alice",
+    label: "iPhone · Safari",
+    restored: true,
+  };
+
+  it("opens a stream sealed under a key it was never live-paired with", async () => {
+    const keys = sessionKeys();
+
+    // No pairing happens here. This is the whole point: the schedule arrives
+    // from `~/.mtmux/config.json` before the agent has ever run a handshake.
+    const h = harness();
+    h.agent.addSessionKeys(keys, alicePeer);
+    h.agent.start();
+    register(h);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(keys).seal("auth-line"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toContain("auth-line");
+    expect(h.brokers[0]!.ofType("stream:close")).toHaveLength(0);
+  });
+
+  it("names the device that came back", async () => {
+    const keys = sessionKeys();
+    const h = harness();
+    h.agent.addSessionKeys(keys, alicePeer);
+    h.agent.start();
+    register(h);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(keys).seal("auth-line"),
+    });
+    await flush();
+
+    expect(h.bound).toEqual([alicePeer]);
+  });
+
+  it("still refuses a stream when only restored keys are on the ring", async () => {
+    // The restore must widen who gets in, not whether the check happens.
+    const h = harness();
+    h.agent.addSessionKeys(sessionKeys(), alicePeer);
+    h.agent.start();
+    register(h);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(sessionKeys()).seal("let me in"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toHaveLength(0);
+    expect(h.locals[0]!.closed).toBe(true);
+    expect(h.bound).toEqual([]);
+  });
+
+  it("keeps every restored device on the ring, not just the last few", async () => {
+    // The cap used to be 8, which a household passes without noticing. An
+    // evicted entry is not a slow path — it is a device that cannot reconnect.
+    const h = harness();
+    const many = Array.from({ length: 24 }, () => sessionKeys());
+    many.forEach((keys, i) =>
+      h.agent.addSessionKeys(keys, {
+        deviceId: `browser-${i}`,
+        label: `Device ${i}`,
+        restored: true,
+      }),
+    );
+    h.agent.start();
+    register(h);
+
+    // The first one added is the one an eviction would have dropped.
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-1" });
+    h.locals[0]!.open();
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-1",
+      data: await browserEnd(many[0]!).seal("still-here"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toContain("still-here");
   });
 });

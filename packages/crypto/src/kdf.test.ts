@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { deriveSessionKeys, confirmationTag, verifyConfirmation } from "./kdf";
+import {
+  deriveSessionKeys,
+  confirmationTag,
+  verifyConfirmation,
+  encodeSessionKeys,
+  decodeSessionKeys,
+} from "./kdf";
 import { bytesToHex, randomBytes, utf8ToBytes } from "./bytes";
 
 const ISK = new Uint8Array(64).fill(3);
@@ -117,5 +123,55 @@ describe("key confirmation", () => {
     const tag = confirmationTag(keys.confirm, "cli");
     tag[5] = (tag[5] ?? 0) ^ 0x01;
     expect(verifyConfirmation(keys.confirm, "cli", tag)).toBe(false);
+  });
+});
+
+describe("session key serialisation", () => {
+  const keys = deriveSessionKeys(ISK, TRANSCRIPT);
+
+  it("round-trips a schedule through its stored form", () => {
+    const restored = decodeSessionKeys(encodeSessionKeys(keys));
+    expect(restored.c2s).toEqual(keys.c2s);
+    expect(restored.s2c).toEqual(keys.s2c);
+    expect(restored.confirm).toEqual(keys.confirm);
+    expect(restored.directToken).toBe(keys.directToken);
+  });
+
+  it("encodes to JSON-safe strings, since this lands in config.json", () => {
+    const stored = encodeSessionKeys(keys);
+    expect(JSON.parse(JSON.stringify(stored))).toEqual(stored);
+    for (const hex of [stored.c2s, stored.s2c, stored.confirm]) {
+      expect(hex).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  /**
+   * Rejecting rather than repairing is the point. A short key cannot decrypt
+   * anything, so a lenient decode buys a pairing that looks restored and
+   * silently refuses every frame — which is the failure this whole path exists
+   * to remove.
+   */
+  it("refuses a key of the wrong length", () => {
+    const stored = encodeSessionKeys(keys);
+    expect(() => decodeSessionKeys({ ...stored, c2s: "abcd" })).toThrow(
+      /malformed/i,
+    );
+    expect(() => decodeSessionKeys({ ...stored, s2c: "" })).toThrow(
+      /malformed/i,
+    );
+  });
+
+  it("refuses a schedule with no usable direct token", () => {
+    const stored = encodeSessionKeys(keys);
+    expect(() => decodeSessionKeys({ ...stored, directToken: "" })).toThrow(
+      /direct token/i,
+    );
+  });
+
+  it("refuses a non-hex key rather than decoding it to something shorter", () => {
+    const stored = encodeSessionKeys(keys);
+    expect(() =>
+      decodeSessionKeys({ ...stored, c2s: "zz".repeat(32) }),
+    ).toThrow();
   });
 });

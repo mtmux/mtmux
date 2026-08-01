@@ -18,13 +18,17 @@ import {
   createTunnelAgent,
   brokerConnector,
   localRelayConnector,
+  type PeerIdentity,
   type TunnelAgent,
 } from "../tunnel-agent.js";
 import {
   bytesToBase64Url,
+  decodeSessionKeys,
+  encodeSessionKeys,
   formatSas,
   generateLongSecret,
   generateSecret,
+  type SessionKeys,
 } from "@repo/crypto";
 import {
   hostPairing,
@@ -366,7 +370,18 @@ async function startHosted(opts: {
    * revocable credentials, which is the whole point of `share revoke`.
    */
   buildGrant?: (directToken: string) => GrantRecord;
+  /**
+   * Pairings recovered from disk, admitted the moment the agent exists.
+   *
+   * Passed in rather than read here because the relay credential half of the
+   * restore has to happen before the port is even bound, while this half cannot
+   * happen until `createTunnelAgent` has returned. Splitting the two is what
+   * lets each run at the only moment it can.
+   */
+  trusted?: RestoredPeer[];
   onPaired: (label: string) => void;
+  /** A restored device came back on the tunnel, named. */
+  onReturned?: (peer: PeerIdentity) => void;
   onRearm: (invite: PairingInvite, reason: RearmReason) => void;
   /**
    * A half failed in a way worth saying out loud, and its replacement is
@@ -487,20 +502,36 @@ async function startHosted(opts: {
         label: deviceLabel(),
       });
 
-      agent.addSessionKeys(request.keys);
+      const deviceId = `browser-${Date.now().toString(36)}`;
+      agent.addSessionKeys(request.keys, {
+        deviceId,
+        label: request.deviceLabel,
+        restored: false,
+      });
       await configStore.addPeer({
-        deviceId: `browser-${Date.now().toString(36)}`,
+        deviceId,
         publicKey: "",
         label: request.deviceLabel,
         pairedAt: Date.now(),
         lastSeenAt: Date.now(),
         directToken: request.keys.directToken,
+        sessionKeys: encodeSessionKeys(request.keys),
       });
       console.log(kleur.green(`  ✓ ${request.deviceLabel} connected.`));
 
       return { approved: true, sealedDescriptor: bytesToBase64Url(sealed) };
     },
+    onStreamBound: (peer) => {
+      if (peer?.restored) opts.onReturned?.(peer);
+    },
   });
+
+  // Before `start()`, so a device that reconnects the instant the tunnel comes
+  // up finds its key already on the ring rather than racing it.
+  for (const peer of opts.trusted ?? []) {
+    agent.addSessionKeys(peer.keys, peer.identity);
+  }
+
   agent.start();
 
   const timer = setTimeout(
@@ -647,15 +678,22 @@ async function startHosted(opts: {
           );
           return;
         }
-        agent.addSessionKeys(result.keys);
+        const peerDeviceId =
+          result.peerDeviceId ?? `browser-${Date.now().toString(36)}`;
+        agent.addSessionKeys(result.keys, {
+          deviceId: peerDeviceId,
+          label: result.peerLabel,
+          restored: false,
+        });
         if (grant) await grantsStore.add(grant);
         await configStore.addPeer({
-          deviceId: result.peerDeviceId ?? `browser-${Date.now().toString(36)}`,
+          deviceId: peerDeviceId,
           publicKey: result.peerPublicKey ?? "",
           label: result.peerLabel,
           pairedAt: Date.now(),
           lastSeenAt: Date.now(),
           directToken: result.keys.directToken,
+          sessionKeys: encodeSessionKeys(result.keys),
         });
         opts.onPaired(result.peerLabel);
         // The one thing that clears the budgets: a pairing that completed.
@@ -804,13 +842,39 @@ function failureKindReason(err: unknown): RearmReason {
  * Expired and revoked peers are skipped, and a failure is ignored — the device
  * simply pairs again, which is the pre-existing behaviour.
  */
-async function restoreTrustedDevices(
+/** A device whose pairing survived the restart, ready to re-enter the keyring. */
+export type RestoredPeer = { keys: SessionKeys; identity: PeerIdentity };
+
+export type RestoreResult = {
+  /** Devices whose relay credential was replayed successfully. */
+  restored: number;
+  /** Devices with no stored credential at all; they must pair again. */
+  needRepair: number;
+  /**
+   * Devices reachable directly but not through the tunnel, because they were
+   * paired before the key schedule was persisted. A strictly smaller loss than
+   * `needRepair`, and a different sentence on screen.
+   */
+  needRekey: number;
+  trusted: RestoredPeer[];
+};
+
+export async function restoreTrustedDevices(
   port: number,
   authToken: string,
-): Promise<{ restored: number; needRepair: number }> {
+  /**
+   * Injected so this is testable without a running relay. The registration is
+   * an HTTP POST to loopback, and standing one up per case would test `fetch`
+   * rather than the restore logic that actually regressed.
+   */
+  register: typeof registerDirectToken = registerDirectToken,
+): Promise<RestoreResult> {
   const peers = await configStore.listPeers();
   let restored = 0;
   let needRepair = 0;
+  let needRekey = 0;
+  const trusted: RestoredPeer[] = [];
+
   for (const peer of peers) {
     if (configStore.isPeerExpired(peer)) continue;
     if (!peer.directToken) {
@@ -822,11 +886,41 @@ async function restoreTrustedDevices(
       needRepair += 1;
       continue;
     }
-    if (await registerDirectToken(port, authToken, peer.directToken)) {
-      restored += 1;
+    if (
+      !(await register(port, authToken, peer.directToken, undefined, {
+        label: peer.label,
+        via: "code",
+      }))
+    ) {
+      continue;
+    }
+    restored += 1;
+
+    // The relay now knows this device again, which is the direct/LAN path. The
+    // tunnel needs the key schedule as well, and a peer stored before those
+    // were persisted has none — it keeps working at home and cannot be reached
+    // from anywhere else until it pairs once more.
+    if (!peer.sessionKeys) {
+      needRekey += 1;
+      continue;
+    }
+    try {
+      trusted.push({
+        keys: decodeSessionKeys(peer.sessionKeys),
+        identity: {
+          deviceId: peer.deviceId,
+          label: peer.label,
+          restored: true,
+        },
+      });
+    } catch {
+      // Corrupted or hand-edited. Same outcome as never having had them, and
+      // for the same reason `ensureDeviceKey` replaces rather than trusts one.
+      needRekey += 1;
     }
   }
-  return { restored, needRepair };
+
+  return { restored, needRepair, needRekey, trusted };
 }
 
 /**
@@ -966,10 +1060,8 @@ export async function start(opts: StartOpts) {
   const localUrl = `http://localhost:${opts.port}`;
   const lanUrl = resolveLanUrl(host, opts.port, lan);
 
-  const { restored, needRepair } = await restoreTrustedDevices(
-    opts.port,
-    cfg.token,
-  );
+  const { restored, needRepair, needRekey, trusted } =
+    await restoreTrustedDevices(opts.port, cfg.token);
 
   // Tokenless LAN sign-in only makes sense for a *different* device, so the
   // nonce is armed exactly when there is an address such a device could reach.
@@ -1092,6 +1184,12 @@ export async function start(opts: StartOpts) {
         base,
         cfg,
         tunnelOnly: false,
+        trusted,
+        onReturned: (peer) => {
+          clearWaitingLine();
+          console.log(kleur.green(`  ✓ ${peer.label} reconnected.`));
+          console.log("");
+        },
         onPaired: (label) => {
           // Redrawn, not appended. The banner's last line still says "Waiting
           // for a device…", and printing underneath it leaves a stale claim on
@@ -1211,7 +1309,7 @@ export async function start(opts: StartOpts) {
     });
   }
 
-  if ((restored > 0 || needRepair > 0) && !opts.json) {
+  if ((restored > 0 || needRepair > 0 || needRekey > 0) && !opts.json) {
     // Printed under the banner, so the "Waiting…" line is no longer the bottom
     // of the screen and must not be erased later.
     waitingLineOnScreen = false;
@@ -1224,6 +1322,24 @@ export async function start(opts: StartOpts) {
           `${restored === 1 ? "it does" : "they do"} not need the code.`,
       ),
     );
+    console.log("");
+  }
+
+  if (needRekey > 0 && !opts.json) {
+    // Deliberately not folded into `needRepair`: these devices are not broken,
+    // they are reachable on this network and nowhere else. Saying "pair again"
+    // to someone whose phone is working fine on the sofa reads as a lie.
+    console.log(
+      kleur.yellow(
+        `  ${needRekey} device${needRekey === 1 ? "" : "s"} can reach this machine on the local network only.`,
+      ),
+    );
+    console.log(
+      kleur.dim(
+        `    ${needRekey === 1 ? "It was" : "They were"} paired before mtmux could restore a tunnel across restarts.`,
+      ),
+    );
+    console.log(kleur.dim("    Pair again, once, to reach it from anywhere."));
     console.log("");
   }
 

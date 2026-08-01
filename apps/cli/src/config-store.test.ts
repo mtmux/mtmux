@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { verifyChallenge, newChallenge, signChallenge } from "@repo/crypto";
+import {
+  verifyChallenge,
+  newChallenge,
+  signChallenge,
+  deriveSessionKeys,
+  encodeSessionKeys,
+  decodeSessionKeys,
+  randomBytes,
+} from "@repo/crypto";
 
 /**
  * config-store reads MTMUX_CONFIG_DIR at import time, so each test gets a
@@ -147,6 +155,31 @@ describe("peers", () => {
 
   it("ignores a touch for an unknown peer", async () => {
     await expect(store.touchPeer("nope", 5000)).resolves.toBeUndefined();
+  });
+
+  it("round-trips a peer's tunnel key schedule through the file", async () => {
+    // Without this the tunnel forgets every device on restart, while the LAN
+    // path keeps working off `directToken` — the asymmetry that made the bug
+    // read as a network fault.
+    const keys = deriveSessionKeys(randomBytes(32), randomBytes(32));
+    await store.addPeer({
+      ...peer("a", "iPhone"),
+      directToken: keys.directToken,
+      sessionKeys: encodeSessionKeys(keys),
+    });
+
+    const stored = (await store.listPeers())[0]!;
+    expect(decodeSessionKeys(stored.sessionKeys!).c2s).toEqual(keys.c2s);
+  });
+
+  it("keeps the key schedule 0600, like everything else in this file", async () => {
+    const keys = deriveSessionKeys(randomBytes(32), randomBytes(32));
+    await store.addPeer({
+      ...peer("a"),
+      sessionKeys: encodeSessionKeys(keys),
+    });
+    const info = await stat(join(dir, "config.json"));
+    expect(info.mode & 0o077).toBe(0);
   });
 
   it("treats a peer idle for over 90 days as expired", () => {
