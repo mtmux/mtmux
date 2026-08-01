@@ -35,6 +35,28 @@ export function getRelayClient(): RelayClient | null {
 }
 
 /**
+ * Reconnect, re-deciding the route first.
+ *
+ * The same recovery the client runs on its own after a failure streak, exposed
+ * so the connection banner's "Try another route" can trigger it on demand
+ * rather than making someone wait out a thirty-second backoff for a route that
+ * is not going to start working.
+ *
+ * Falls back to a plain reconnect when there is nothing to re-resolve, which is
+ * the self-hosted path.
+ */
+export async function reconnectWithFreshRoute(): Promise<void> {
+  const client = getRelayClient();
+  if (!client) return;
+  const route = await reresolveActiveRoute().catch(() => null);
+  if (!route) {
+    client.connect();
+    return;
+  }
+  client.setTransport(route.transport ?? directTransport(resolveRelayWsUrl()));
+}
+
+/**
  * Which machine this tab's socket belongs to.
  *
  * A hosted pairing keys on the paired machine's device id; the self-hosted and
