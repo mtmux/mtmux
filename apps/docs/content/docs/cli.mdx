@@ -30,6 +30,7 @@ flags.
 | `mtmux devices` | Browsers this machine trusts |
 | `mtmux upgrade` | Open checkout for Pro |
 | `mtmux token` | Manage the auth token |
+| `mtmux config` | Read and change settings |
 | `mtmux version` | Print version info (alias: `v`) |
 
 ## `mtmux start`
@@ -185,8 +186,13 @@ than full-privilege.
   Local    http://localhost:14100
   Network  http://192.168.1.5:14100
   Invite   https://app.mtmux.com/j#482913
+  Devices  2  iPhone · Safari, MacBook · Chrome
   Version  0.3.0
 ```
+
+`Devices` lists what is connected **right now**, which is not the same as what
+is paired — `mtmux devices` answers that. The row is omitted entirely by a
+server too old to report it.
 
 Read from `~/.mtmux/server.json`. That file is a hint, not a lock: every read
 checks the pid is still alive and the port still answers `/health`, and a record
@@ -220,13 +226,50 @@ mtmux devices list
 mtmux devices revoke <deviceId>
 ```
 
-Paired devices survive a restart: `mtmux start` replays the token it derived
-with each one, so a browser stays trusted until it is revoked or goes stale.
+Paired devices survive a restart: `mtmux start` restores both halves of what it
+derived with each one — the relay token for the direct/LAN path and the key
+schedule the sealed tunnel needs — so a browser stays trusted until it is
+revoked or goes stale.
+
+Before 0.6.2 only the relay token was restored. A device paired by an older
+version therefore reconnects on the local network but not through the tunnel.
+`mtmux start` says so on startup, and pairing it once more fixes it permanently.
 
 A device idle for more than 90 days is shown as `(stale)` and is not re-admitted
 on the next start. Revoking drops the record immediately, so the device can
 never reconnect — but a browser holding a live socket keeps it until the server
 restarts. The command says so.
+
+## `mtmux config`
+
+```bash
+mtmux config get                              # every setting
+mtmux config get reconnectPolicy
+mtmux config set reconnectPolicy confirm
+```
+
+One setting, deliberately. Everything else this CLI does is either a per-run
+flag or a decision the product should make for you.
+
+**`reconnectPolicy`** — whether a device paired in an earlier run may reconnect
+without being asked.
+
+| Value | Meaning |
+| --- | --- |
+| `trust` (default) | Paired means paired, the way a Bluetooth keyboard is paired. A machine under systemd survives a reboot with nobody at it. |
+| `confirm` | A returning device raises a prompt on this machine the first time it reconnects after a restart. |
+
+Under `confirm` the prompt shows no comparison code, because there is nothing to
+compare: the device already proved itself cryptographically — its key schedule
+is what decrypted the frame. The question is policy, not verification.
+
+With no TTY, `confirm` **refuses**. Admitting a device because nobody could be
+asked would be the setting quietly not applying.
+
+Override per run with `--confirm-reconnect` or `--trust-reconnect`; the flags
+beat the stored value, and `--trust-reconnect` wins if both are passed.
+
+Changes take effect the next time `mtmux start` runs.
 
 ## `mtmux token`
 
