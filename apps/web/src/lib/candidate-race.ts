@@ -81,6 +81,33 @@ export function probeUrlFor(candidate: string): string {
   return `${candidate.replace(/^http/, "ws")}${RELAY_PATH}`;
 }
 
+/**
+ * Drop the candidates this page is not allowed to dial.
+ *
+ * The CLI advertises its LAN addresses as `http://192.168.x.y:14100`, which
+ * becomes `ws://…` above. From a page served over https that is active mixed
+ * content: the browser blocks the request outright *and* marks the origin "not
+ * secure", so on app.mtmux.com every one of these probes is 800 ms of blocked
+ * requests and a security warning bought for nothing. A private IP is not a
+ * potentially-trustworthy origin, so the loopback exemption does not save it.
+ *
+ * Keep them on an http origin, which is the self-hosted app served off the
+ * machine's own port — there they are not merely allowed, they are the whole
+ * point of the direct path.
+ *
+ * The tunnel is always available as the backstop, so filtering here costs a
+ * hosted user on their own LAN some latency, never reachability. It is also the
+ * only honest option: the alternative is attempting connections the browser has
+ * already decided it will refuse.
+ */
+export function usableCandidates(
+  candidates: readonly string[],
+): readonly string[] {
+  if (typeof window === "undefined") return candidates;
+  if (window.location.protocol !== "https:") return candidates;
+  return candidates.filter((c) => !c.startsWith("http://"));
+}
+
 function probe(
   candidate: string,
   token: string,
@@ -141,13 +168,15 @@ export async function raceCandidates(
   connect: ProbeConnector = webSocketProbe,
 ): Promise<RaceResult> {
   const started = Date.now();
-  if (candidates.length === 0 || !token) {
+  // Filtered here rather than at each call site: three places race candidates
+  // and a fourth that forgot to filter would put the mixed-content warning
+  // straight back on the origin.
+  const usable = usableCandidates(candidates);
+  if (usable.length === 0 || !token) {
     return { winner: null, elapsedMs: 0 };
   }
 
-  const probes = candidates.map((candidate) =>
-    probe(candidate, token, connect),
-  );
+  const probes = usable.map((candidate) => probe(candidate, token, connect));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);

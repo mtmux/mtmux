@@ -4,7 +4,9 @@ import { useEffect, useRef, useCallback } from "react";
 import type { DependencyList } from "react";
 import type { ClientMessage, ServerMessage } from "@repo/protocol";
 import { RelayClient } from "@/lib/ws-client";
-import type { TransportFactory } from "@/lib/transport";
+import { directTransport, type TransportFactory } from "@/lib/transport";
+import { reresolveActiveRoute } from "@/lib/resolve-route";
+import { resolveRelayWsUrl } from "@/lib/relay-url";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { usePaneStore } from "@/stores/pane-store";
@@ -269,6 +271,29 @@ export function useWebSocket(
             if (status === "reconnecting") {
               useConnectionStore.getState().incrementReconnect();
             }
+          },
+          /**
+           * The address stopped answering, so stop assuming it is the address.
+           *
+           * A session that won a direct LAN candidate keeps using it across
+           * network changes, and a phone that leaves the house then retries an
+           * unreachable `192.168.x.y` forever. Re-racing here is what lets it
+           * fall through to the tunnel without the user doing anything.
+           *
+           * A no-op on the self-hosted path: there is no descriptor to
+           * re-resolve, so this returns null and the existing retry loop
+           * carries on untouched.
+           */
+          onRouteStale: () => {
+            void (async () => {
+              const route = await reresolveActiveRoute().catch(() => null);
+              if (!route) return;
+              const active = clientRef.current;
+              if (!active) return;
+              active.setTransport(
+                route.transport ?? directTransport(resolveRelayWsUrl()),
+              );
+            })();
           },
         }),
       `${url}|${token}|${transport ? "sealed" : "direct"}`,

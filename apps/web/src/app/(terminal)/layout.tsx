@@ -47,8 +47,8 @@ import {
   loadSessionKeys,
   serverIdFor,
 } from "@/lib/session-store";
-import { sealedTransport, type TransportFactory } from "@/lib/transport";
-import { env } from "@/env";
+import { type TransportFactory } from "@/lib/transport";
+import { resolveRoute } from "@/lib/resolve-route";
 import { LayoutGrid, Loader2, Terminal } from "lucide-react";
 import { markBounced } from "@/lib/bounce-guard";
 import { isHostedBuild } from "@/lib/auth-client";
@@ -175,11 +175,25 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
       }
 
       setAuth({ phase: "ready", token: keys.directToken });
-      if (!session.preferredCandidate && env.NEXT_PUBLIC_API_URL) {
-        // No direct candidate won, so everything rides the sealed tunnel.
-        const url = `${env.NEXT_PUBLIC_API_URL.replace(/^http/, "ws")}/v1/tunnel/${session.descriptor.tunnelId}`;
-        setTransport(() => sealedTransport({ url, keys }));
-      }
+
+      /**
+       * Re-decide the route on every load, rather than trusting the one that
+       * won at pairing time.
+       *
+       * This used to be `if (!session.preferredCandidate)`, which meant a
+       * session that once found a direct LAN address kept that address for
+       * good. Take the phone out of the house and it retried
+       * `ws://192.168.1.5:14100` forever, never falling through to the tunnel
+       * that was sitting there working — "Reconnecting…", indefinitely, with
+       * nothing on screen to do about it.
+       *
+       * The race is bounded at 800 ms and only runs on a cold start, so this
+       * costs a fraction of a second and buys a session that survives changing
+       * networks.
+       */
+      const route = await resolveRoute(session, keys);
+      if (cancelled) return;
+      setTransport(() => route.transport);
     })();
 
     return () => {

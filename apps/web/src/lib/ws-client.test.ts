@@ -200,3 +200,119 @@ describe("reconnect", () => {
     expect(first.typesSent()).toEqual(["ping"]);
   });
 });
+
+/**
+ * Recovering from a route that will never answer again.
+ *
+ * There is deliberately no cap on reconnect attempts — a laptop lid closed
+ * overnight should still come back. What was missing was a cap on trusting the
+ * *address*: a session that won a direct LAN candidate at pairing time kept
+ * dialling it after the device left the network, so "Reconnecting…" ran
+ * forever against `192.168.x.y` while a working tunnel sat unused.
+ */
+describe("stale routes", () => {
+  it("asks for a new route after a run of failures", () => {
+    let asked = 0;
+    const client = new RelayClient({
+      url: "ws://192.168.1.5:14100/_relay",
+      token: "t0ken",
+      onRouteStale: () => asked++,
+    });
+
+    client.connect();
+    for (let i = 0; i < 3; i++) {
+      latest().close();
+      vi.advanceTimersByTime(60_000);
+    }
+
+    expect(asked).toBe(1);
+  });
+
+  it("asks only once per streak, however long it runs", () => {
+    let asked = 0;
+    const client = new RelayClient({
+      url: "ws://192.168.1.5:14100/_relay",
+      token: "t0ken",
+      onRouteStale: () => asked++,
+    });
+
+    client.connect();
+    for (let i = 0; i < 12; i++) {
+      latest().close();
+      vi.advanceTimersByTime(60_000);
+    }
+
+    expect(asked).toBe(1);
+  });
+
+  it("does not ask when the very first connect succeeds", () => {
+    let asked = 0;
+    const client = new RelayClient({
+      url: "ws://relay.test/_relay",
+      token: "t0ken",
+      onRouteStale: () => asked++,
+    });
+    client.connect();
+    latest().authenticate();
+    expect(asked).toBe(0);
+  });
+
+  it("arms again after a reconnect succeeds and the new route later dies", () => {
+    let asked = 0;
+    const client = new RelayClient({
+      url: "ws://relay.test/_relay",
+      token: "t0ken",
+      onRouteStale: () => asked++,
+    });
+
+    client.connect();
+    for (let i = 0; i < 3; i++) {
+      latest().close();
+      vi.advanceTimersByTime(60_000);
+    }
+    expect(asked).toBe(1);
+
+    latest().authenticate();
+    expect(client.status).toBe("connected");
+
+    for (let i = 0; i < 3; i++) {
+      latest().close();
+      vi.advanceTimersByTime(60_000);
+    }
+    expect(asked).toBe(2);
+  });
+
+  it("switches to the supplied transport and dials it immediately", () => {
+    const client = new RelayClient({
+      url: "ws://192.168.1.5:14100/_relay",
+      token: "t0ken",
+    });
+    client.connect();
+    latest().close();
+
+    // The backoff is already running; the point of setTransport is that the
+    // user does not sit through it.
+    client.setTransport(() => {
+      const socket = new (WebSocket as unknown as typeof FakeSocket)(
+        "ws://api.mtmux.com/v1/tunnel/tnl-abc",
+      );
+      return {
+        connect: (handlers) => {
+          socket.onopen = handlers.onOpen;
+          socket.onmessage = (e) => handlers.onMessage(e.data);
+          socket.onclose = handlers.onClose;
+        },
+        send: (text: string) => socket.send(text),
+        close: () => socket.close(),
+        get isOpen() {
+          return socket.readyState === FakeSocket.OPEN;
+        },
+        get bufferedAmount() {
+          return 0;
+        },
+      };
+    });
+
+    expect(latest().url).toBe("ws://api.mtmux.com/v1/tunnel/tnl-abc");
+  });
+});

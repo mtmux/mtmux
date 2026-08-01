@@ -28,10 +28,20 @@ interface RelayClientOptions {
   onMessage?: MessageHandler;
   onStatusChange?: StatusHandler;
   onMessageDropped?: (droppedCount: number) => void;
+  /**
+   * The route looks wrong, not just briefly unavailable.
+   *
+   * Fires once per failure streak. The handler is expected to re-decide how to
+   * reach the machine and call `setTransport` if it finds something better;
+   * doing nothing is fine and leaves the existing retry loop running.
+   */
+  onRouteStale?: () => void;
 }
 
 const MIN_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
+/** Consecutive failed reconnects before the route itself becomes the suspect. */
+const STALE_ROUTE_AFTER = 3;
 const MAX_PENDING_MESSAGES = 50;
 
 /**
@@ -63,7 +73,16 @@ function shouldQueue(msg: ClientMessage): boolean {
 
 export class RelayClient {
   private transport: Transport | null = null;
-  private readonly makeTransport: TransportFactory;
+  /**
+   * Mutable, because the route can turn out to be wrong.
+   *
+   * A session pinned to a LAN address the device can no longer reach retries
+   * that address forever — there is no attempt cap, by design, since a laptop
+   * lid closed overnight should still come back. The cap that was missing is on
+   * trusting the *route*: after a few failures the address itself is the
+   * suspect, and `setTransport` is how the app layer supplies a better one.
+   */
+  private makeTransport: TransportFactory;
   private token: string;
   private messageHandlers: Set<MessageHandler> = new Set();
   private statusHandlers: Set<StatusHandler> = new Set();
@@ -86,6 +105,9 @@ export class RelayClient {
   private connecting = false;
   private onMessageDroppedHandler: ((droppedCount: number) => void) | null =
     null;
+  private onRouteStaleHandler: (() => void) | null = null;
+  /** So one bad streak asks for a new route once, not on every retry. */
+  private routeStaleAsked = false;
 
   constructor(options: RelayClientOptions) {
     if (!options.transport && !options.url) {
@@ -97,6 +119,7 @@ export class RelayClient {
     if (options.onStatusChange) this.statusHandlers.add(options.onStatusChange);
     if (options.onMessageDropped)
       this.onMessageDroppedHandler = options.onMessageDropped;
+    if (options.onRouteStale) this.onRouteStaleHandler = options.onRouteStale;
   }
 
   get status() {
@@ -176,6 +199,7 @@ export class RelayClient {
       this.setStatus("connected");
       this.reconnectDelay = MIN_RECONNECT_DELAY;
       this._reconnectCount = 0;
+      this.routeStaleAsked = false;
       this.startPing();
       this.flushPendingMessages();
     }
@@ -248,10 +272,38 @@ export class RelayClient {
     this.transport?.send(data);
   }
 
+  /**
+   * Swap the route and try it immediately.
+   *
+   * Tears down the current transport rather than waiting for the pending
+   * backoff: by the time anyone calls this the delay is already tens of
+   * seconds, and making the user watch it out is the behaviour this whole
+   * change exists to remove. `connect()` clears the timer itself.
+   */
+  setTransport(factory: TransportFactory): void {
+    this.makeTransport = factory;
+    this.routeStaleAsked = false;
+    if (this.intentionalClose) return;
+    this.reconnectDelay = MIN_RECONNECT_DELAY;
+    // Force the guard in connect() to let this through — the old transport may
+    // still consider itself mid-connect to an address that will never answer.
+    this.connecting = false;
+    this.connect();
+  }
+
   private scheduleReconnect(): void {
     if (this.intentionalClose) return;
 
     this._reconnectCount++;
+
+    // Three failures in a row is where "the network blipped" stops being the
+    // best explanation and "we are dialling the wrong address" starts. Asked
+    // once per streak; a successful connect resets it.
+    if (this._reconnectCount >= STALE_ROUTE_AFTER && !this.routeStaleAsked) {
+      this.routeStaleAsked = true;
+      this.onRouteStaleHandler?.();
+    }
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();

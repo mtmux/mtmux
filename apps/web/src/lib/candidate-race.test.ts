@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   raceCandidates,
   probeUrlFor,
+  usableCandidates,
   type ProbeConnector,
   type ProbeSocket,
 } from "./candidate-race";
@@ -164,5 +165,82 @@ describe("raceCandidates", () => {
     const result = await raceCandidates(["http://live"], TOKEN, 500, connect);
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
     expect(result.elapsedMs).toBeLessThan(2000);
+  });
+});
+
+/**
+ * The mixed-content filter.
+ *
+ * The CLI advertises LAN candidates as `http://192.168.x.y:14100`, which the
+ * probe turns into `ws://…`. From an https page that is active mixed content:
+ * Chrome blocks it *and* marks the origin "not secure", so on app.mtmux.com
+ * these probes bought a security warning and 800 ms of blocked requests. On an
+ * http origin — the self-hosted app served off the machine's own port — they
+ * are the entire point of the direct path.
+ */
+describe("usableCandidates", () => {
+  const withProtocol = <T>(protocol: string, run: () => T): T => {
+    const previous = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = { location: { protocol } };
+    try {
+      return run();
+    } finally {
+      if (previous === undefined)
+        delete (globalThis as { window?: unknown }).window;
+      else (globalThis as { window?: unknown }).window = previous;
+    }
+  };
+
+  const LAN = "http://192.168.1.5:14100";
+  const SECURE = "https://box.example.com";
+
+  it("drops http candidates on an https page", () => {
+    withProtocol("https:", () => {
+      expect(usableCandidates([LAN, SECURE])).toEqual([SECURE]);
+    });
+  });
+
+  it("keeps http candidates on an http page", () => {
+    withProtocol("http:", () => {
+      expect(usableCandidates([LAN, SECURE])).toEqual([LAN, SECURE]);
+    });
+  });
+
+  it("can empty the list entirely, which is the tunnel-only case", () => {
+    withProtocol("https:", () => {
+      expect(usableCandidates([LAN])).toEqual([]);
+    });
+  });
+
+  it("leaves the list alone when there is no window at all", () => {
+    // SSR and prerender. Filtering on a guess about the eventual origin would
+    // be worse than not filtering.
+    expect(usableCandidates([LAN, SECURE])).toEqual([LAN, SECURE]);
+  });
+});
+
+describe("raceCandidates filters before it dials", () => {
+  it("never opens a blocked candidate from an https page", async () => {
+    const previous = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      location: { protocol: "https:" },
+    };
+    try {
+      const opened: string[] = [];
+      const result = await raceCandidates(
+        ["http://192.168.1.5:14100"],
+        "token",
+        50,
+        connector({}, opened),
+      );
+      // Not merely lost — never attempted. A blocked request is not a probe,
+      // it is a console error and a warning badge on the origin.
+      expect(opened).toEqual([]);
+      expect(result.winner).toBeNull();
+    } finally {
+      if (previous === undefined)
+        delete (globalThis as { window?: unknown }).window;
+      else (globalThis as { window?: unknown }).window = previous;
+    }
   });
 });

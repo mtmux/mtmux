@@ -1,5 +1,6 @@
 import { env } from "@/env";
 import { loadDescriptor } from "@/lib/session-store";
+import { usableCandidates } from "@/lib/candidate-race";
 
 const RELAY_PATH = "/_relay";
 
@@ -45,9 +46,16 @@ export function pairedRelayUrl(): string | null {
   const session = loadDescriptor();
   if (!session) return null;
 
-  if (session.preferredCandidate) {
-    return `${session.preferredCandidate.replace(/^http/, "ws")}${RELAY_PATH}`;
-  }
+  // `usableCandidates` rather than the stored value directly: a preference
+  // recorded on an http origin (or by an older build, before the race learned
+  // to filter) is still `http://192.168.x.y`, and dialling `ws://` from an
+  // https page is blocked as mixed content and flags the origin "not secure".
+  // Dropping it here falls through to the tunnel, which is the only route this
+  // page is actually allowed to open.
+  const [usable] = usableCandidates(
+    session.preferredCandidate ? [session.preferredCandidate] : [],
+  );
+  if (usable) return `${usable.replace(/^http/, "ws")}${RELAY_PATH}`;
 
   const apiBase = env.NEXT_PUBLIC_API_URL;
   if (!apiBase) return null;
@@ -71,7 +79,16 @@ export function isPairedSession(): boolean {
  */
 export function resolveRelayHttpBase(): string {
   const session = loadDescriptor();
-  if (session) return session.preferredCandidate ?? "";
+  if (session) {
+    // Same filter, same reason — and "" is already this function's documented
+    // way of saying there is no HTTP route, which a tunnelled session has had
+    // from the start. An `http://` candidate on an https page is in exactly
+    // that position: present, and unusable.
+    const [usable] = usableCandidates(
+      session.preferredCandidate ? [session.preferredCandidate] : [],
+    );
+    return usable ?? "";
+  }
 
   if (env.NEXT_PUBLIC_RELAY_URL) {
     return env.NEXT_PUBLIC_RELAY_URL.replace(/^ws:/, "http:").replace(
