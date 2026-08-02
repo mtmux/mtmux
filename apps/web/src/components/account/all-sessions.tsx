@@ -7,14 +7,32 @@ import { Skeleton } from "@repo/ui/components/ui/skeleton";
 import { cn } from "@repo/ui/lib/utils";
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Loader2,
   Lock,
+  MoreVertical,
+  Pencil,
   Plus,
+  QrCode,
   RefreshCw,
   Search,
   Share2,
   TerminalSquare,
+  Unlink,
+  X,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@repo/ui/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { hostedApiUrl, isHostedBuild } from "@/lib/auth-client";
 import { getActive, getActiveServerId } from "@/lib/relay-registry";
@@ -50,6 +68,8 @@ import type { RegisteredServer } from "./server-row";
 import { MIN_PAIR_CLI_VERSION, semverGte } from "@/lib/semver-gte";
 import { CopyCommand } from "./copy-command";
 import { Input } from "@repo/ui/components/ui/input";
+import type { MachinePrefsState } from "@/hooks/use-machine-prefs";
+import type { RenameTarget } from "./dashboard-body";
 
 /**
  * Everything running on every machine this browser can open.
@@ -139,12 +159,18 @@ export type AllSessionsProps = {
    * of just doing the thing.
    */
   onRequestAccess: (server: RegisteredServer) => void;
+  /** Device-local names, ordering and collapse state. See `use-machine-prefs.ts`. */
+  machines: MachinePrefsState;
+  /** Owned by the page, because there are two names a machine can have. */
+  onRename: (target: RenameTarget, name: string) => Promise<boolean>;
 };
 
 export function AllSessions({
   servers,
   serversReady,
   onRequestAccess,
+  machines,
+  onRename,
 }: AllSessionsProps) {
   const [rows, setRows] = useState<CensusRow[]>([]);
   /** Free-text filter over session and machine names. Only shown when it earns it. */
@@ -313,6 +339,22 @@ export function AllSessions({
     servers.find((s) => deviceIdForPublicKey(s.publicKey) === serverId) ?? null;
 
   /**
+   * The user's order, applied here as well as in the management list.
+   *
+   * Two lists of the same machines in two different orders is worse than either
+   * order on its own, so both sort through `machines.sortIds`.
+   */
+  const byId = new Map(visible.map((row) => [row.serverId, row]));
+  const ordered = machines
+    .sortIds(visible.map((row) => row.serverId))
+    .map((id) => byId.get(id)!)
+    .filter(Boolean);
+  const orderedIds = ordered.map((row) => row.serverId);
+  const anyExpanded = ordered.some(
+    (row) => !machines.isCollapsed(row.serverId),
+  );
+
+  /**
    * Start a session without opening a terminal first.
    *
    * A strange gap on a page whose entire job is sessions: the only way to make
@@ -385,18 +427,37 @@ export function AllSessions({
         <span className="sr-only" role="status">
           {busy ? "Checking your machines" : ""}
         </span>
-        <Button
-          variant="ghost"
-          className="h-11"
-          onClick={() => void refresh(true)}
-          disabled={busy}
-        >
-          <RefreshCw
-            className={cn("h-4 w-4", busy && "animate-spin")}
-            aria-hidden
-          />
-          Refresh
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          {/* Only earns its place once there is more than one machine to fold. */}
+          {ordered.length > 1 && (
+            <Button
+              variant="ghost"
+              className="h-11"
+              onClick={() => void machines.collapseAll(orderedIds, anyExpanded)}
+            >
+              {anyExpanded ? (
+                <ChevronsDownUp className="h-4 w-4" aria-hidden />
+              ) : (
+                <ChevronsUpDown className="h-4 w-4" aria-hidden />
+              )}
+              <span className="hidden sm:inline">
+                {anyExpanded ? "Collapse all" : "Expand all"}
+              </span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            className="h-11"
+            onClick={() => void refresh(true)}
+            disabled={busy}
+          >
+            <RefreshCw
+              className={cn("h-4 w-4", busy && "animate-spin")}
+              aria-hidden
+            />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {showFilter && (
@@ -416,27 +477,65 @@ export function AllSessions({
       )}
 
       <ul className="space-y-3" aria-label="Machines and their sessions">
-        {visible.length === 0 && (
+        {ordered.length === 0 && (
           <li className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
             Nothing matches &ldquo;{filter}&rdquo;.
           </li>
         )}
-        {visible.map((row) => (
-          <MachineGroup
-            key={row.serverId}
-            row={row}
-            now={now}
-            opening={opening}
-            onOpen={handleOpen}
-            onShare={(session) => setShare({ serverName: row.name, session })}
-            onToggleLock={(session) => void toggleSessionLock(row, session)}
-            lockTick={lockTick}
-            onRetry={() => void refresh(true)}
-            onRequestAccess={onRequestAccess}
-            server={serverFor(row.serverId)}
-            onNewSession={() => void handleNewSession(row)}
-          />
-        ))}
+        {ordered.map((row, index) => {
+          const localName = machines.localName(row.serverId);
+          const server = serverFor(row.serverId);
+          const name = localName || row.name;
+          return (
+            <MachineGroup
+              key={row.serverId}
+              row={row}
+              name={name}
+              localName={localName}
+              now={now}
+              opening={opening}
+              onOpen={handleOpen}
+              onShare={(session) => setShare({ serverName: name, session })}
+              onToggleLock={(session) => void toggleSessionLock(row, session)}
+              lockTick={lockTick}
+              onRetry={() => void refresh(true)}
+              onRequestAccess={onRequestAccess}
+              server={server}
+              onNewSession={() => void handleNewSession(row)}
+              collapsed={machines.isCollapsed(row.serverId)}
+              onToggleCollapsed={() =>
+                void machines.setCollapsed(
+                  row.serverId,
+                  !machines.isCollapsed(row.serverId),
+                )
+              }
+              first={index === 0}
+              last={index === ordered.length - 1}
+              onMove={(direction) =>
+                void machines.move(orderedIds, row.serverId, direction)
+              }
+              onRename={(next) =>
+                onRename(
+                  {
+                    accountId: server?.id ?? null,
+                    serverId: row.serverId,
+                    current: name,
+                  },
+                  next,
+                )
+              }
+              onForget={
+                row.paired === false
+                  ? undefined
+                  : async () => {
+                      await machines.forget(row.serverId);
+                      toast.success(`Forgot ${name} on this device`);
+                      await refresh(true);
+                    }
+              }
+            />
+          );
+        })}
       </ul>
 
       <ShareDialog
@@ -466,6 +565,8 @@ export function AllSessions({
 
 function MachineGroup({
   row,
+  name,
+  localName,
   now,
   opening,
   onOpen,
@@ -476,8 +577,19 @@ function MachineGroup({
   onRequestAccess,
   server,
   onNewSession,
+  collapsed,
+  onToggleCollapsed,
+  first,
+  last,
+  onMove,
+  onRename,
+  onForget,
 }: {
   row: CensusRow;
+  /** The resolved display name — this device's, else the account's, else the host's. */
+  name: string;
+  /** Set when the name above came from a rename made on this device. */
+  localName: string | null;
   now: number;
   opening: string | null;
   onOpen: (row: CensusRow, session: string) => void;
@@ -490,7 +602,34 @@ function MachineGroup({
   /** The account's record for this machine, when there is one. */
   server: RegisteredServer | null;
   onNewSession: () => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  first: boolean;
+  last: boolean;
+  onMove: (direction: -1 | 1) => void;
+  onRename: (name: string) => Promise<boolean>;
+  /** Absent for a machine this browser holds no keys for. */
+  onForget?: () => void | Promise<void>;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [saving, setSaving] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(name);
+      nameInputRef.current?.focus();
+    }
+  }, [editing, name]);
+
+  async function saveName() {
+    setSaving(true);
+    const ok = await onRename(draft);
+    setSaving(false);
+    if (ok) setEditing(false);
+  }
+
   /**
    * A machine on the account that this browser holds no keys for.
    *
@@ -527,7 +666,7 @@ function MachineGroup({
             aria-hidden
           />
           <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
-            {row.name}
+            {name}
           </h3>
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {row.online ? "online" : "offline"}
@@ -535,7 +674,7 @@ function MachineGroup({
         </div>
         <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-3">
           <p className="min-w-0 flex-1 text-sm text-muted-foreground">
-            This browser has no keys for {row.name}, so it cannot see what is
+            This browser has no keys for {name}, so it cannot see what is
             running there yet.
           </p>
           {/*
@@ -576,17 +715,98 @@ function MachineGroup({
 
   return (
     <li className="rounded-lg border border-border bg-card text-card-foreground">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <span
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-2 sm:px-4 sm:py-3">
+        {/* The name is the disclosure control. A machine with fourteen sessions
+            used to be fourteen rows you had to scroll past to reach the next
+            machine, with nothing anywhere to fold it away. */}
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-expanded={!collapsed}
+          aria-controls={`sessions-${row.serverId}`}
           className={cn(
-            "h-2 w-2 shrink-0 rounded-full",
-            reachable ? "bg-success" : "bg-muted-foreground/40",
+            "flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left",
+            "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           )}
-          aria-hidden
-        />
-        <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
-          {row.name}
-        </h3>
+        >
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+              collapsed && "-rotate-90",
+            )}
+            aria-hidden
+          />
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              reachable ? "bg-success" : "bg-muted-foreground/40",
+            )}
+            aria-hidden
+          />
+          <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
+            {name}
+          </h3>
+          {/* Only when folded: the count is what a collapsed group has to say
+              for itself, and it is noise while the sessions are on screen. */}
+          {collapsed && (
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {row.sessions.length} session
+              {row.sessions.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </button>
+
+        {editing && (
+          <form
+            className="flex w-full items-center gap-2 px-2 pb-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveName();
+            }}
+          >
+            <Input
+              ref={nameInputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setEditing(false);
+              }}
+              maxLength={64}
+              className="h-11"
+              disabled={saving}
+              aria-label={`Name for ${name}`}
+            />
+            <Button
+              type="submit"
+              size="icon"
+              className="h-11 w-11 shrink-0"
+              disabled={saving}
+              aria-label="Save name"
+            >
+              {saving ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <Check className="h-4 w-4" aria-hidden />
+              )}
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-11 w-11 shrink-0"
+              onClick={() => setEditing(false)}
+              aria-label="Cancel rename"
+            >
+              <X className="h-4 w-4" aria-hidden />
+            </Button>
+          </form>
+        )}
+
+        {localName && localName !== server?.name && (
+          <Badge variant="outline" className="shrink-0">
+            This device
+          </Badge>
+        )}
 
         {isReadOnly(row.capabilities) && (
           <Badge variant="outline" className="shrink-0">
@@ -629,18 +849,76 @@ function MachineGroup({
             onClick={onNewSession}
           >
             <Plus className="h-3.5 w-3.5" aria-hidden />
-            New session
+            <span className="hidden sm:inline">New session</span>
           </Button>
         )}
+
+        {/* Everything you can do *to* a machine, on the card you are already
+            looking at. All of this used to live one collapsed section further
+            down the page, on a second card for the same machine. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 shrink-0"
+              aria-label={`More actions for ${name}`}
+            >
+              <MoreVertical className="h-4 w-4" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem onSelect={() => setEditing(true)}>
+              <Pencil className="h-4 w-4" aria-hidden />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onToggleCollapsed}>
+              <ChevronDown className="h-4 w-4" aria-hidden />
+              {collapsed ? "Expand" : "Collapse"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled={first} onSelect={() => onMove(-1)}>
+              <ArrowUp className="h-4 w-4" aria-hidden />
+              Move up
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={last} onSelect={() => onMove(1)}>
+              <ArrowDown className="h-4 w-4" aria-hidden />
+              Move down
+            </DropdownMenuItem>
+            {server && (
+              <>
+                <DropdownMenuSeparator />
+                {/* Reachable while paired, which is the change: re-pairing used
+                    to require removing the machine from the account first. */}
+                <DropdownMenuItem
+                  disabled={!server.online}
+                  onSelect={() => onRequestAccess(server)}
+                >
+                  <QrCode className="h-4 w-4" aria-hidden />
+                  Pair this device again
+                </DropdownMenuItem>
+              </>
+            )}
+            {onForget && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => void onForget()}>
+                  <Unlink className="h-4 w-4" aria-hidden />
+                  Forget on this device
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      {row.error && (
+      {row.error && !collapsed && (
         <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
           {row.error}
         </p>
       )}
 
-      {row.sessions.length === 0 ? (
+      {collapsed ? null : row.sessions.length === 0 ? (
         <p className="px-4 py-4 text-sm text-muted-foreground">
           {row.pending
             ? "Looking for sessions…"
@@ -654,8 +932,9 @@ function MachineGroup({
         // because the tokens are fine and the opacity is not. Staleness is
         // carried by the dated label and the dot in the header instead.
         <ul
+          id={`sessions-${row.serverId}`}
           className="divide-y divide-border"
-          aria-label={`Sessions on ${row.name}`}
+          aria-label={`Sessions on ${name}`}
         >
           {row.sessions.map((session) => {
             // `lockTick` is read so a toggle repaints; the value itself is a

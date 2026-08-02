@@ -38,6 +38,7 @@ import { LockGate } from "@/components/lock/lock-gate";
 import { registerDisconnect } from "@/lib/lock-controller";
 import { VisualViewportSync } from "@/components/visual-viewport-sync";
 import { SessionTabs } from "@/components/session/session-tabs";
+import { MachineSwitcher } from "@/components/machines/machine-switcher";
 import { SessionCreateDialog } from "@/components/session/session-create-dialog";
 import { useMobileHistory } from "@/hooks/use-mobile-history";
 import { resolveRelayWsUrl } from "@/lib/relay-url";
@@ -337,6 +338,10 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
         <Terminal className="h-4 w-4 text-primary" />
         {/* #5: Hide the wordmark on mobile — icon only */}
         {!isMobile && <span className="text-sm font-semibold">mtmux</span>}
+        {/* On mobile this is the *only* route to the machines: the Machines
+            link below is hidden under 768px, and the settings panel's Account
+            section was four taps and a page load away from switching. */}
+        <MachineSwitcher />
         <ConnectionStatus
           status={connectionStatusType}
           latency={latency ?? undefined}

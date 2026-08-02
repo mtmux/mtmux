@@ -56,7 +56,23 @@ export type ServersState = {
   patch: (id: string, changes: Partial<RegisteredServer>) => void;
   /** Drop one machine locally, after a delete. */
   remove: (id: string) => void;
+  /** Rename on the account. See `RenameOutcome` for why it is not a boolean. */
+  rename: (id: string, name: string) => Promise<RenameOutcome>;
 };
+
+/**
+ * Why this is not `Promise<boolean>`.
+ *
+ * A refused rename has two completely different meanings, and the caller has to
+ * tell them apart to do the right thing. `"upgrade"` is the product describing
+ * a plan — it deserves an offer, and now also a way to rename the machine on
+ * this device instead, which costs nothing and nobody had to buy. `"error"` is
+ * a failure, and gets a red toast.
+ */
+export type RenameOutcome =
+  | { ok: true }
+  | { ok: false; kind: "upgrade"; message: string }
+  | { ok: false; kind: "error"; message: string };
 
 export function useServers(): ServersState {
   const [phase, setPhase] = useState<ServersState["phase"]>("loading");
@@ -127,6 +143,37 @@ export function useServers(): ServersState {
     setServers((prev) => prev.filter((s) => s.id !== id));
   }, []);
 
+  /**
+   * Renaming used to live in `ServerList`, which is why only that list could do
+   * it — the session cards above it, the ones people actually look at, had no
+   * route to a rename at all.
+   */
+  const rename = useCallback(
+    async (id: string, name: string): Promise<RenameOutcome> => {
+      try {
+        await apiFetch(`/v1/servers/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          json: { name },
+        });
+        patch(id, { name });
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 402) {
+          return { ok: false, kind: "upgrade", message: error.message };
+        }
+        return {
+          ok: false,
+          kind: "error",
+          message:
+            error instanceof ApiError
+              ? error.message
+              : "Could not rename that machine.",
+        };
+      }
+    },
+    [patch],
+  );
+
   return useMemo(
     () => ({
       phase,
@@ -138,6 +185,7 @@ export function useServers(): ServersState {
       refreshPaired,
       patch,
       remove,
+      rename,
     }),
     [
       phase,
@@ -149,6 +197,7 @@ export function useServers(): ServersState {
       refreshPaired,
       patch,
       remove,
+      rename,
     ],
   );
 }

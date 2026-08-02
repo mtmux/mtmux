@@ -9,6 +9,8 @@ interface UiStore {
   sidebarCollapsed: boolean;
   copyModeOpen: boolean;
   terminalSearchOpen: boolean;
+  /** The machines sheet. In the store so the palette can open it too. */
+  machineSwitcherOpen: boolean;
   capturedPaneId: string | null;
   capturedContent: string | null;
   /** The composer's draft, or null when it is closed. */
@@ -20,6 +22,7 @@ interface UiStore {
   toggleSidebar: () => void;
   setCopyModeOpen: (open: boolean) => void;
   setTerminalSearchOpen: (open: boolean) => void;
+  setMachineSwitcherOpen: (open: boolean) => void;
   setCapturedPane: (id: string | null, content: string | null) => void;
   /** Open the composer, seeded with whatever was in the one-line bar. */
   openComposer: (draft?: string) => void;
@@ -35,6 +38,7 @@ export const useUiStore = create<UiStore>((set) => ({
   sidebarCollapsed: false,
   copyModeOpen: false,
   terminalSearchOpen: false,
+  machineSwitcherOpen: false,
   capturedPaneId: null,
   capturedContent: null,
   composerDraft: null,
@@ -50,6 +54,7 @@ export const useUiStore = create<UiStore>((set) => ({
         : { copyModeOpen, capturedPaneId: null, capturedContent: null },
     ),
   setTerminalSearchOpen: (terminalSearchOpen) => set({ terminalSearchOpen }),
+  setMachineSwitcherOpen: (machineSwitcherOpen) => set({ machineSwitcherOpen }),
   setCapturedPane: (capturedPaneId, capturedContent) =>
     set({ capturedPaneId, capturedContent }),
   // `null` means closed and `""` means open-and-empty, which is why this is a

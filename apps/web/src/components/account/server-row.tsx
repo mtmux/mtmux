@@ -4,8 +4,28 @@ import { useEffect, useRef, useState } from "react";
 import { Badge } from "@repo/ui/components/ui/badge";
 import { Button } from "@repo/ui/components/ui/button";
 import { Input } from "@repo/ui/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@repo/ui/components/ui/dropdown-menu";
 import { cn } from "@repo/ui/lib/utils";
-import { Check, Info, Loader2, Pencil, Share2, Trash2, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Info,
+  Loader2,
+  MoreVertical,
+  Pencil,
+  QrCode,
+  Share2,
+  Trash2,
+  Unlink,
+  X,
+} from "lucide-react";
 import { platformName, timeAgo } from "./format";
 import { ShareDialog } from "./share-dialog";
 
@@ -34,11 +54,22 @@ export type ServerRowProps = {
    * "pair this device once", not "connect".
    */
   paired: boolean;
+  /** A name this device gave the machine, shadowing the account's. */
+  localName?: string | null;
   /** Set when a connect attempt came back with something to say. */
   notice: string | null;
+  /** Position, so the move controls can disable rather than silently no-op. */
+  first?: boolean;
+  last?: boolean;
   onConnect: () => void;
   onRename: (name: string) => Promise<boolean>;
   onRemove: () => void;
+  /** Ask the machine to admit this browser again, paired or not. */
+  onRepair?: () => void;
+  /** Drop this device's keys. Absent when there are none to drop. */
+  onForget?: () => void;
+  /** Absent when the machine's identity cannot be read, so it cannot be keyed. */
+  onMove?: (direction: -1 | 1) => void;
 };
 
 export function ServerRow({
@@ -46,13 +77,19 @@ export function ServerRow({
   now,
   connecting,
   paired,
+  localName,
   notice,
+  first,
+  last,
   onConnect,
   onRename,
   onRemove,
+  onRepair,
+  onForget,
+  onMove,
 }: ServerRowProps) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(server.name);
+  const [draft, setDraft] = useState(localName ?? server.name);
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -61,14 +98,16 @@ export function ServerRow({
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
+  const displayName = localName || server.name;
+
   function startEditing() {
-    setDraft(server.name);
+    setDraft(displayName);
     setEditing(true);
   }
 
   async function save() {
     const name = draft.trim();
-    if (!name || name === server.name) {
+    if (!name || name === displayName) {
       setEditing(false);
       return;
     }
@@ -99,7 +138,7 @@ export function ServerRow({
                 onKeyDown={(e) => {
                   if (e.key === "Escape") setEditing(false);
                 }}
-                aria-label={`Name for ${server.name}`}
+                aria-label={`Name for ${displayName}`}
                 maxLength={64}
                 className="h-11"
                 disabled={saving}
@@ -140,7 +179,7 @@ export function ServerRow({
                   aria-hidden
                 />
                 <h2 className="truncate text-base font-medium text-foreground">
-                  {server.name}
+                  {displayName}
                 </h2>
                 <Badge
                   variant={server.online ? "secondary" : "outline"}
@@ -148,14 +187,13 @@ export function ServerRow({
                 >
                   {server.online ? "Online" : "Offline"}
                 </Badge>
-                <button
-                  type="button"
-                  onClick={startEditing}
-                  aria-label={`Rename ${server.name}`}
-                  className="ml-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:hidden"
-                >
-                  <Pencil className="h-4 w-4" aria-hidden />
-                </button>
+                {/* Said out loud, because a name only this browser can see is
+                    otherwise indistinguishable from one everybody sees. */}
+                {localName && localName !== server.name && (
+                  <Badge variant="outline" className="shrink-0">
+                    This device
+                  </Badge>
+                )}
               </div>
               <p className="mt-1 truncate text-sm text-muted-foreground">
                 {platformName(server.platform)}
@@ -196,35 +234,89 @@ export function ServerRow({
                 "Pair this device"
               )}
             </Button>
-            {/* Shows the command rather than running it — the browser has no
-                way to mint a grant. See share-dialog.tsx. */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-11 w-11"
-              onClick={() => setSharing(true)}
-              aria-label={`Share a session on ${server.name}`}
-            >
-              <Share2 className="h-4 w-4" aria-hidden />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="hidden h-11 w-11 sm:inline-flex"
-              onClick={startEditing}
-              aria-label={`Rename ${server.name}`}
-            >
-              <Pencil className="h-4 w-4" aria-hidden />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-11 w-11 text-muted-foreground hover:text-destructive"
-              onClick={onRemove}
-              aria-label={`Remove ${server.name}`}
-            >
-              <Trash2 className="h-4 w-4" aria-hidden />
-            </Button>
+
+            {/*
+              A menu rather than four icon buttons.
+
+              The row had share, rename and remove as bare icons and no room for
+              the three actions that mattered more — re-pair, reorder, forget —
+              which is how "unpair and start over" became the only way to fix a
+              pairing. A menu holds all six, names them in words, and gives the
+              destructive ones somewhere to sit that is not one mis-tap from
+              Open.
+            */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-11 w-11"
+                  aria-label={`More actions for ${displayName}`}
+                >
+                  <MoreVertical className="h-4 w-4" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem onSelect={() => startEditing()}>
+                  <Pencil className="h-4 w-4" aria-hidden />
+                  Rename
+                </DropdownMenuItem>
+                {/* Shows the command rather than running it — the browser has
+                    no way to mint a grant. See share-dialog.tsx. */}
+                <DropdownMenuItem onSelect={() => setSharing(true)}>
+                  <Share2 className="h-4 w-4" aria-hidden />
+                  Share a session
+                </DropdownMenuItem>
+
+                {onMove && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      disabled={first}
+                      onSelect={() => onMove(-1)}
+                    >
+                      <ArrowUp className="h-4 w-4" aria-hidden />
+                      Move up
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={last}
+                      onSelect={() => onMove(1)}
+                    >
+                      <ArrowDown className="h-4 w-4" aria-hidden />
+                      Move down
+                    </DropdownMenuItem>
+                  </>
+                )}
+
+                {onRepair && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      disabled={!server.online}
+                      onSelect={() => onRepair()}
+                    >
+                      <QrCode className="h-4 w-4" aria-hidden />
+                      {paired ? "Pair this device again" : "Pair this device"}
+                    </DropdownMenuItem>
+                  </>
+                )}
+
+                <DropdownMenuSeparator />
+                {onForget && (
+                  <DropdownMenuItem onSelect={() => onForget()}>
+                    <Unlink className="h-4 w-4" aria-hidden />
+                    Forget on this device
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => onRemove()}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                  Remove from account
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         )}
       </div>
@@ -242,7 +334,7 @@ export function ServerRow({
       <ShareDialog
         open={sharing}
         onOpenChange={setSharing}
-        serverName={server.name}
+        serverName={displayName}
       />
     </li>
   );

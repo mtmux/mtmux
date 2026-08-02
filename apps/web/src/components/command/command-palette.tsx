@@ -21,9 +21,11 @@ import {
   Bookmark,
   LayoutGrid,
   PlugZap,
+  Server,
   SlidersHorizontal,
 } from "lucide-react";
 import { useCommandStore } from "@/stores/command-store";
+import { useUiStore } from "@/stores/ui-store";
 import { getRelayClient } from "@/hooks/use-websocket";
 import { sendCommand } from "@/lib/send-command";
 import { isHostedBuild } from "@/lib/auth-client";
@@ -79,7 +81,10 @@ export function CommandPalette() {
 
   const handleSelect = useCallback(
     (value: string) => {
-      if (value.startsWith("goto:")) {
+      if (value === "open:machines") {
+        setPaletteOpen(false);
+        useUiStore.getState().setMachineSwitcherOpen(true);
+      } else if (value.startsWith("goto:")) {
         // A real navigation, not `router.push`: these leave the terminal group
         // entirely, and the palette's own open state is the only thing worth
         // preserving across the boundary — which is to say, nothing.
@@ -135,6 +140,12 @@ export function CommandPalette() {
             two; this is the one that works without either being visible. */}
         <CommandSeparator />
         <CommandGroup heading="Go to">
+          {/* Stays in the terminal rather than navigating: switching machines
+              is the common case, and the sheet does it without a page load. */}
+          <CommandItem value="open:machines" onSelect={handleSelect}>
+            <Server className="h-4 w-4" />
+            Switch machine
+          </CommandItem>
           <CommandItem value="goto:/settings" onSelect={handleSelect}>
             <SlidersHorizontal className="h-4 w-4" />
             Settings

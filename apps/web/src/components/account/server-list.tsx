@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,39 +13,51 @@ import {
 } from "@repo/ui/components/ui/alert-dialog";
 import { Button } from "@repo/ui/components/ui/button";
 import { Skeleton } from "@repo/ui/components/ui/skeleton";
-import { AlertCircle, RefreshCw, Server, Sparkles } from "lucide-react";
+import { AlertCircle, RefreshCw, Server } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, apiFetch } from "@/lib/auth-client";
 import type { ServersState } from "@/hooks/use-servers";
-import { connectToServer } from "./connect-to-server";
+import type { MachinePrefsState } from "@/hooks/use-machine-prefs";
+import { connectToServer, deviceIdForPublicKey } from "./connect-to-server";
 import { ServerRow, type RegisteredServer } from "./server-row";
 import { InstallMachine } from "@/components/entry/install-machine";
+import type { RenameTarget } from "./dashboard-body";
 
 /**
- * The management section: rename, remove, share, install.
+ * The management section: rename, reorder, re-pair, share, remove, install.
  *
  * No longer the only route to pairing, and no longer a second copy of the
  * machine list — the cards above own that, and this owns what you do to a
  * machine rather than with it. Its state comes from `useServers`, so there is
  * one `GET /v1/servers`, one normalizer and one clock tick for the page.
+ *
+ * Rename moved out to `DashboardBody`: there are two names a machine can have
+ * (the account's and this device's), the choice between them is the same
+ * everywhere, and this component was the only place that could reach either.
  */
 export function ServerList({
   servers: state,
+  machines,
   onRequestAccess,
+  onRename,
 }: {
   servers: ServersState;
+  /** Device-local names, ordering and pairings. See `use-machine-prefs.ts`. */
+  machines: MachinePrefsState;
   /** Owned by the page — one dialog, because the broker allows one request. */
   onRequestAccess: (server: RegisteredServer) => void;
+  onRename: (target: RenameTarget, name: string) => Promise<boolean>;
 }) {
-  const { servers, phase, message, pairedKeys, now, refresh, patch, remove } =
-    state;
+  const { servers, phase, message, pairedKeys, now, refresh, remove } = state;
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notices, setNotices] = useState<Record<string, string>>({});
   const [pendingDelete, setPendingDelete] = useState<RegisteredServer | null>(
     null,
   );
   const [deleting, setDeleting] = useState(false);
-  const [upgrade, setUpgrade] = useState<string | null>(null);
+  const [pendingForget, setPendingForget] = useState<RegisteredServer | null>(
+    null,
+  );
 
   /**
    * Three outcomes, and only one of them used to work.
@@ -86,34 +97,6 @@ export function ServerList({
     }
   }
 
-  async function handleRename(
-    server: RegisteredServer,
-    name: string,
-  ): Promise<boolean> {
-    try {
-      await apiFetch(`/v1/servers/${encodeURIComponent(server.id)}`, {
-        method: "PATCH",
-        json: { name },
-      });
-      patch(server.id, { name });
-      toast.success(`Renamed to ${name}`);
-      return true;
-    } catch (error) {
-      // 402 is not an error worth a red toast — it is the product telling
-      // someone about a plan, and it deserves an offer rather than a failure.
-      if (error instanceof ApiError && error.status === 402) {
-        setUpgrade(error.message);
-        return false;
-      }
-      toast.error(
-        error instanceof ApiError
-          ? error.message
-          : "Could not rename that machine.",
-      );
-      return false;
-    }
-  }
-
   async function confirmDelete() {
     if (!pendingDelete) return;
     const target = pendingDelete;
@@ -123,6 +106,10 @@ export function ServerList({
         method: "DELETE",
       });
       remove(target.id);
+      // The account row is gone, so this device's keys for it are dead weight —
+      // and its local name would otherwise outlive the machine it named.
+      const serverId = deviceIdForPublicKey(target.publicKey);
+      if (serverId) await machines.forget(serverId);
       toast.success(`Removed ${target.name}`);
       setPendingDelete(null);
     } catch (error) {
@@ -135,6 +122,39 @@ export function ServerList({
       setDeleting(false);
     }
   }
+
+  async function confirmForget() {
+    if (!pendingForget) return;
+    const serverId = deviceIdForPublicKey(pendingForget.publicKey);
+    if (serverId) await machines.forget(serverId);
+    await state.refreshPaired();
+    toast.success(`Forgot ${pendingForget.name} on this device`, {
+      description: "It stays on your account. Pair with it again any time.",
+    });
+    setPendingForget(null);
+  }
+
+  /**
+   * The user's order, applied to the account's list.
+   *
+   * Sorting by device id rather than by account id, because the order is stored
+   * against the pairing — the same key the terminal's switcher and the session
+   * groups sort by, so all three agree.
+   */
+  const ordered = (() => {
+    const byServerId = new Map<string, RegisteredServer>();
+    const unkeyed: RegisteredServer[] = [];
+    for (const server of servers) {
+      const id = deviceIdForPublicKey(server.publicKey);
+      if (id) byServerId.set(id, server);
+      else unkeyed.push(server);
+    }
+    const sorted = machines
+      .sortIds([...byServerId.keys()])
+      .map((id) => byServerId.get(id)!)
+      .filter(Boolean);
+    return [...sorted, ...unkeyed];
+  })();
 
   return (
     <>
@@ -165,19 +185,49 @@ export function ServerList({
 
       {phase === "ready" && servers.length > 0 && (
         <ul className="space-y-3" aria-label="Machines on this account">
-          {servers.map((server) => (
-            <ServerRow
-              key={server.id}
-              server={server}
-              now={now}
-              connecting={connecting === server.id}
-              paired={pairedKeys.has(server.publicKey)}
-              notice={notices[server.id] || null}
-              onConnect={() => void handleConnect(server)}
-              onRename={(name) => handleRename(server, name)}
-              onRemove={() => setPendingDelete(server)}
-            />
-          ))}
+          {ordered.map((server, index) => {
+            const serverId = deviceIdForPublicKey(server.publicKey);
+            const paired = pairedKeys.has(server.publicKey);
+            return (
+              <ServerRow
+                key={server.id}
+                server={server}
+                now={now}
+                connecting={connecting === server.id}
+                paired={paired}
+                localName={serverId ? machines.localName(serverId) : null}
+                notice={notices[server.id] || null}
+                first={index === 0}
+                last={index === ordered.length - 1}
+                onConnect={() => void handleConnect(server)}
+                onRename={(name) =>
+                  onRename(
+                    { accountId: server.id, serverId, current: server.name },
+                    name,
+                  )
+                }
+                onRemove={() => setPendingDelete(server)}
+                // Available *while* paired, which is the whole point: re-pairing
+                // used to mean removing the machine from the account and
+                // registering it again, because nothing else could reach the
+                // request dialog once a pairing existed.
+                onRepair={() => onRequestAccess(server)}
+                onForget={paired ? () => setPendingForget(server) : undefined}
+                onMove={
+                  serverId
+                    ? (direction) =>
+                        void machines.move(
+                          ordered
+                            .map((s) => deviceIdForPublicKey(s.publicKey))
+                            .filter((id): id is string => id !== null),
+                          serverId,
+                          direction,
+                        )
+                    : undefined
+                }
+              />
+            );
+          })}
         </ul>
       )}
 
@@ -214,27 +264,34 @@ export function ServerList({
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Distinct from Remove, and the distinction is the feature: this drops
+          the keys on *this* device, which is what "let me pair again" means. */}
       <AlertDialog
-        open={upgrade !== null}
-        onOpenChange={(open) => !open && setUpgrade(null)}
+        open={pendingForget !== null}
+        onOpenChange={(open) => !open && setPendingForget(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-              <Sparkles className="h-5 w-5 text-primary" aria-hidden />
-            </div>
             <AlertDialogTitle>
-              Naming machines is a Pro feature
+              Forget {pendingForget?.name} on this device?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {upgrade ??
-                "On the free plan a machine keeps its hostname. Pro lets you call it whatever you like."}
+              This browser deletes its keys for that machine. The machine keeps
+              running, stays on your account, and your other devices are
+              untouched — you can pair with it again from here whenever you
+              like.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="h-11">Not now</AlertDialogCancel>
-            <AlertDialogAction asChild className="h-11">
-              <Link href="/settings/billing">See Pro</Link>
+            <AlertDialogCancel className="h-11">Keep it</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmForget();
+              }}
+              className="h-11 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Forget it
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

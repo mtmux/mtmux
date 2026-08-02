@@ -38,7 +38,8 @@ import { cacheKeys, cachedKeys, isEnrolled, masterKey } from "./unlocked";
 
 const DB_NAME = "mtmux";
 /**
- * v2 added the descriptor store; v3 adds `lock` and `census`.
+ * v2 added the descriptor store; v3 added `lock` and `census`; v4 adds
+ * `machines`.
  *
  * Every upgrade here is store creation only. **No version of this may move
  * data**: an upgrade that rewrites every record can half-fail — another tab
@@ -47,7 +48,7 @@ const DB_NAME = "mtmux";
  * records are therefore a structurally-discriminated union read at access
  * time, not a migration.
  */
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 export const KEY_STORE = "session-keys";
 /** Durable connection descriptors, keyed by device id. See the note above. */
 export const DESCRIPTOR_STORE = "descriptors";
@@ -55,6 +56,8 @@ export const DESCRIPTOR_STORE = "descriptors";
 export const LOCK_STORE = "lock";
 /** Cached per-server session lists for the dashboard. See session-census.ts. */
 export const CENSUS_STORE = "census";
+/** Device-local names and ordering for paired machines. See machine-directory.ts. */
+export const MACHINE_STORE = "machines";
 const DESCRIPTOR_KEY = "mtmux:session-descriptor";
 
 export type PairedSession = {
@@ -119,6 +122,7 @@ export function openDb(): Promise<IDBDatabase> {
         DESCRIPTOR_STORE,
         LOCK_STORE,
         CENSUS_STORE,
+        MACHINE_STORE,
       ]) {
         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
       }
@@ -578,6 +582,34 @@ export function clearDescriptor(): void {
       // Nothing to clear.
     }
   })();
+}
+
+/**
+ * Drop one machine's durable descriptor, whether or not it is the active one.
+ *
+ * `clearDescriptor` above can only forget whatever this tab is currently
+ * pointed at, which is the wrong shape for a list: forgetting the third machine
+ * in a dashboard would have meant activating it first — repointing the terminal
+ * at a machine on the way to deleting it.
+ *
+ * The mirror is cleared too, but only when it names this machine. Dropping it
+ * unconditionally would sign the tab out of a machine the user did not touch.
+ */
+export async function clearDescriptorFor(serverId: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  const active = loadDescriptor();
+  if (active && serverIdFor(active.descriptor) === serverId) {
+    sessionStorage.removeItem(DESCRIPTOR_KEY);
+  }
+  try {
+    const db = await openDb();
+    await tx(db, DESCRIPTOR_STORE, "readwrite", (store) =>
+      store.delete(serverId),
+    );
+    db.close();
+  } catch {
+    // Nothing to clear.
+  }
 }
 
 /** Stable id for a paired machine — its device fingerprint. */
