@@ -31,6 +31,7 @@ import {
   type MailboxStore,
 } from "./mailbox.js";
 import { createTunnelRegistry, type TunnelRegistry } from "./tunnel.js";
+import { resolveTunnelIdSecret } from "./tunnel-id.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 
 const logger = createLogger("api:broker");
@@ -163,7 +164,23 @@ export function createBroker(deps: BrokerDeps = {}) {
     maxMinutes: 720,
     maxStreams: 16,
   };
-  const tunnels = deps.tunnels ?? createTunnelRegistry(quotas);
+  /**
+   * Said out loud at boot, because the failure it describes is invisible.
+   *
+   * An `ephemeral` secret means every tunnel id changes on the next restart and
+   * every paired browser is stranded — which looks, from the outside, exactly
+   * like the network breaking for everyone at once. The source is an outcome,
+   * not user data, so logging it keeps the "counts and outcomes only" rule.
+   */
+  const tunnels =
+    deps.tunnels ??
+    (() => {
+      const { secret, source } = resolveTunnelIdSecret({
+        onWarn: (message) => logger.warn(message),
+      });
+      logger.info({ source }, "Tunnel id secret resolved");
+      return createTunnelRegistry(quotas, { idSecret: secret });
+    })();
   const claimLimiter = deps.claimLimiter ?? createRateLimiter(5);
   const mailboxLimiter = deps.mailboxLimiter ?? createRateLimiter(10);
   /**

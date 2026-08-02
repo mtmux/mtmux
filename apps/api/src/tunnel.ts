@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
 import type { TunnelServerMessage } from "@repo/protocol";
+import {
+  deriveTunnelId,
+  resolveTunnelIdSecret,
+  type TunnelIdSecret,
+} from "./tunnel-id.js";
 
 /**
  * Live reverse tunnels.
@@ -56,9 +61,10 @@ export interface TunnelRegistry {
   /**
    * Attach an agent socket to this device's tunnel.
    *
-   * The id is stable across reconnects — see `idForDevice` below — so a
-   * reconnecting agent replaces its old socket without invalidating the tunnel
-   * id already sealed into paired browsers' descriptors.
+   * The id is stable across reconnects *and across broker restarts* — it is
+   * derived, not remembered; see `tunnel-id.ts` — so neither a reconnecting
+   * agent nor a deploy invalidates the tunnel id already sealed into paired
+   * browsers' descriptors.
    */
   register(
     deviceId: string,
@@ -88,33 +94,41 @@ type CloseReason = Extract<
   { type: "tunnel:closed" }
 >["reason"];
 
-export function createTunnelRegistry(quotas: Quotas): TunnelRegistry {
+export function createTunnelRegistry(
+  quotas: Quotas,
+  options?: {
+    /**
+     * The HMAC key tunnel ids are derived from. Omitted means "resolve it" —
+     * from `API_TUNNEL_ID_SECRET`, else a 0600 file, else a process-random key.
+     * Tests pass one so they never touch the filesystem.
+     */
+    idSecret?: TunnelIdSecret;
+  },
+): TunnelRegistry {
   const tunnels = new Map<string, Tunnel>();
   const byDeviceId = new Map<string, string>();
+  const idSecret = options?.idSecret ?? resolveTunnelIdSecret().secret;
 
   /**
-   * deviceId → the tunnel id that device keeps getting back, and when the
-   * reservation lapses.
+   * deviceId → how many times its id has been deliberately rotated.
    *
-   * The browser seals the tunnel id into its connection descriptor at pairing
-   * time and has no channel to be told a new one — the mailbox is destroyed the
-   * moment pairing succeeds. So an agent that reconnected (a laptop lid, a
-   * broker restart, a flaky uplink) used to mint a fresh id and silently strand
-   * every browser it had already paired with: the descriptor's tunnel URL 404s
-   * and the session is simply dead.
+   * This replaces a `deviceId → { id, expiresAt }` reservation map, and the
+   * difference is the whole point. The browser seals the tunnel id into its
+   * connection descriptor at pairing time and has no channel to be told a new
+   * one — the mailbox is destroyed the moment pairing succeeds — so an agent
+   * that reconnects must get the same id back or every browser it has ever
+   * paired with is stranded on a url that no longer resolves.
    *
-   * Keeping the id costs nothing in safety. It is only ever handed to a device
-   * that has just proved possession of the Ed25519 key it is a fingerprint of,
-   * and knowing an id buys an attacker nothing on its own: the agent refuses
-   * any stream whose first frame no pairing key can open. So the id is a
-   * routing label bound to a signed identity, and treating it as one is
-   * strictly better than a fresh random per connection.
+   * The map did that for a reconnecting agent and claimed to do it for a broker
+   * restart. It could not: it lived in memory, so every deploy re-minted every
+   * id and disconnected every device at once, with no way back but re-pairing.
+   * That is not a hypothetical — it is what shipped, and what it cost.
    *
-   * The reservation is refreshed on every registration and swept when it
-   * lapses, so an agent that never comes back does not pin memory forever.
+   * So the id is now derived from a persistent secret (`tunnel-id.ts`) and this
+   * map holds only the epoch, which nothing bumps except revocation. An empty
+   * map is therefore the correct state after a restart, rather than a lossy one.
    */
-  const idForDevice = new Map<string, { id: string; expiresAt: number }>();
-  const RESERVATION_MS = quotas.maxMinutes * 60_000;
+  const epochs = new Map<string, number>();
 
   function drop(tunnelId: string, reason: CloseReason): void {
     const tunnel = tunnels.get(tunnelId);
@@ -133,8 +147,17 @@ export function createTunnelRegistry(quotas: Quotas): TunnelRegistry {
       byDeviceId.delete(tunnel.deviceId);
     }
     // Revocation is the one close that must not be undone by reconnecting, so
-    // it surrenders the id as well. Every other reason is transient.
-    if (reason === "revoked") idForDevice.delete(tunnel.deviceId);
+    // it rotates the id as well. Every other reason is transient.
+    //
+    // The epoch is in memory, so a revoked device's id returns after a restart.
+    // That is the same lifetime revocation had before this change — the map it
+    // used to delete from was in memory too — and making it durable means a
+    // persistent record of which devices exist, which is the one thing this
+    // broker is built not to keep. Worth revisiting if revocation ever grows a
+    // caller; today it has none.
+    if (reason === "revoked") {
+      epochs.set(tunnel.deviceId, (epochs.get(tunnel.deviceId) ?? 0) + 1);
+    }
   }
 
   return {
@@ -144,11 +167,7 @@ export function createTunnelRegistry(quotas: Quotas): TunnelRegistry {
       const existing = byDeviceId.get(deviceId);
       if (existing) drop(existing, "agent-gone");
 
-      const reserved = idForDevice.get(deviceId);
-      const id =
-        reserved && reserved.expiresAt > now
-          ? reserved.id
-          : `tnl-${crypto.randomBytes(16).toString("base64url")}`;
+      const id = deriveTunnelId(idSecret, deviceId, epochs.get(deviceId) ?? 0);
 
       const tunnel: Tunnel = {
         id,
@@ -164,7 +183,6 @@ export function createTunnelRegistry(quotas: Quotas): TunnelRegistry {
       };
       tunnels.set(tunnel.id, tunnel);
       byDeviceId.set(deviceId, tunnel.id);
-      idForDevice.set(deviceId, { id, expiresAt: now + RESERVATION_MS });
       return tunnel;
     },
 
@@ -238,9 +256,9 @@ export function createTunnelRegistry(quotas: Quotas): TunnelRegistry {
       for (const [tunnelId, tunnel] of tunnels) {
         if (tunnel.expiresAt <= now) drop(tunnelId, "expired");
       }
-      for (const [deviceId, reservation] of idForDevice) {
-        if (reservation.expiresAt <= now) idForDevice.delete(deviceId);
-      }
+      // Nothing to sweep beside the tunnels themselves any more. The map this
+      // used to expire held ids; the one that replaced it holds revocation
+      // epochs, and an epoch that lapsed would un-revoke a device.
     },
 
     stats() {
