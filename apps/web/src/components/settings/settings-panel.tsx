@@ -12,7 +12,11 @@ import { ThemeToggle } from "@repo/ui/components/theme-toggle";
 import { cn } from "@repo/ui/lib/utils";
 import { terminalThemes } from "@repo/ui/terminal-themes";
 import { useTerminalStore } from "@/stores/terminal-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import {
+  GROUP_LABELS,
+  useSettingsStore,
+  type ToolbarKeyGroup,
+} from "@/stores/settings-store";
 import { LockSettings } from "@/components/lock/lock-settings";
 import { isHostedBuild } from "@/lib/auth-client";
 
@@ -184,21 +188,58 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
 
         {/* Keyboard Toolbar */}
         <section>
-          <h3 className="text-sm font-semibold mb-3">Keyboard Toolbar</h3>
-          <div className="flex flex-wrap gap-1.5">
-            {settings.toolbarKeys.map((key) => (
-              <button
-                key={key.id}
-                className={cn(
-                  "min-h-11 rounded-md border px-2.5 py-1 text-xs transition-colors",
-                  focusRing,
-                  key.visible ? "border-primary bg-primary/10" : "opacity-50",
-                )}
-                onClick={() => settings.toggleToolbarKey(key.id)}
-              >
-                {key.label}
-              </button>
-            ))}
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Keyboard Toolbar</h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => settings.resetToolbarKeys()}
+            >
+              Reset
+            </Button>
+          </div>
+          {/* Grouped, because one flat wrap of forty chips is a wall. The
+              agent keys are first: they are the ones people come here for. */}
+          <p className="mb-3 text-[10px] text-muted-foreground">
+            Which keys sit in the row above the keyboard. The rest are still one
+            tap away, under ⋯ in that row.
+          </p>
+          <div className="space-y-4">
+            {(
+              ["agent", "core", "edit", "nav", "symbol"] as ToolbarKeyGroup[]
+            ).map((group) => {
+              const keys = settings.toolbarKeys.filter(
+                (k) => k.group === group,
+              );
+              if (keys.length === 0) return null;
+              return (
+                <div key={group}>
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {GROUP_LABELS[group]}
+                  </Label>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {keys.map((key) => (
+                      <button
+                        key={key.id}
+                        className={cn(
+                          "min-h-11 rounded-md border px-2.5 py-1 text-xs transition-colors",
+                          focusRing,
+                          key.visible
+                            ? "border-primary bg-primary/10"
+                            : "opacity-50",
+                        )}
+                        aria-pressed={key.visible}
+                        title={key.hint}
+                        onClick={() => settings.toggleToolbarKey(key.id)}
+                      >
+                        {key.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
 
