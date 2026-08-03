@@ -429,11 +429,15 @@ export function AllSessions({
         </span>
         <div className="flex shrink-0 items-center gap-1">
           {/* Only earns its place once there is more than one machine to fold. */}
+          {/* Labels only where there is room for them. On a phone this bar
+              carries a sentence and two controls, and the sentence is the part
+              worth reading. */}
           {ordered.length > 1 && (
             <Button
               variant="ghost"
-              className="h-11"
+              className="h-11 px-2 sm:px-3"
               onClick={() => void machines.collapseAll(orderedIds, anyExpanded)}
+              aria-label={anyExpanded ? "Collapse all" : "Expand all"}
             >
               {anyExpanded ? (
                 <ChevronsDownUp className="h-4 w-4" aria-hidden />
@@ -447,15 +451,16 @@ export function AllSessions({
           )}
           <Button
             variant="ghost"
-            className="h-11"
+            className="h-11 px-2 sm:px-3"
             onClick={() => void refresh(true)}
             disabled={busy}
+            aria-label="Refresh"
           >
             <RefreshCw
               className={cn("h-4 w-4", busy && "animate-spin")}
               aria-hidden
             />
-            Refresh
+            <span className="hidden sm:inline">Refresh</span>
           </Button>
         </div>
       </div>
@@ -715,202 +720,223 @@ function MachineGroup({
 
   return (
     <li className="rounded-lg border border-border bg-card text-card-foreground">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-2 sm:px-4 sm:py-3">
-        {/* The name is the disclosure control. A machine with fourteen sessions
-            used to be fourteen rows you had to scroll past to reach the next
-            machine, with nothing anywhere to fold it away. */}
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          aria-expanded={!collapsed}
-          aria-controls={`sessions-${row.serverId}`}
-          className={cn(
-            "flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left",
-            "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-          )}
+      {editing ? (
+        <form
+          className="flex items-center gap-2 border-b border-border p-2 sm:p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void saveName();
+          }}
         >
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-              collapsed && "-rotate-90",
-            )}
-            aria-hidden
+          <Input
+            ref={nameInputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setEditing(false);
+            }}
+            maxLength={64}
+            className="h-11"
+            disabled={saving}
+            aria-label={`Name for ${name}`}
           />
-          <span
-            className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
-              reachable ? "bg-success" : "bg-muted-foreground/40",
+          <Button
+            type="submit"
+            size="icon"
+            className="h-11 w-11 shrink-0"
+            disabled={saving}
+            aria-label="Save name"
+          >
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <Check className="h-4 w-4" aria-hidden />
             )}
-            aria-hidden
-          />
-          <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
-            {name}
-          </h3>
-          {/* Only when folded: the count is what a collapsed group has to say
-              for itself, and it is noise while the sessions are on screen. */}
-          {collapsed && (
-            <span className="shrink-0 text-xs text-muted-foreground">
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-11 w-11 shrink-0"
+            onClick={() => setEditing(false)}
+            aria-label="Cancel rename"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </Button>
+        </form>
+      ) : (
+        /*
+         * Two lines, and on a phone that is the whole point.
+         *
+         * This was one wrapping row carrying the name, the badges, the session
+         * count, the freshness, Retry, New session and the menu. At 390px the
+         * name — the only thing that identifies which machine you are looking
+         * at — was squeezed between a status dot and six controls until it
+         * truncated to nothing. Everything except the name is metadata or an
+         * action, so it goes on the second line and the name gets a row of its
+         * own at every width.
+         */
+        <div className="border-b border-border">
+          <div className="flex items-center gap-1 px-1 py-1 sm:px-2">
+            {/* The name is the disclosure control. A machine with fourteen
+                sessions used to be fourteen rows you had to scroll past to
+                reach the next machine, with nothing to fold it away. */}
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              aria-expanded={!collapsed}
+              aria-controls={`sessions-${row.serverId}`}
+              className={cn(
+                "flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left",
+                "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              )}
+            >
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                  collapsed && "-rotate-90",
+                )}
+                aria-hidden
+              />
+              <span
+                className={cn(
+                  "h-2 w-2 shrink-0 rounded-full",
+                  reachable ? "bg-success" : "bg-muted-foreground/40",
+                )}
+                aria-hidden
+              />
+              <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
+                {name}
+              </h3>
+            </button>
+
+            {/* Creating a session used to require opening one first, which is
+                impossible on a machine that has none. Icon-only on a phone:
+                the label is what pushed the name off the screen. */}
+            {reachable && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-11 shrink-0 px-2"
+                onClick={onNewSession}
+                aria-label={`New session on ${name}`}
+              >
+                <Plus className="h-4 w-4" aria-hidden />
+                <span className="hidden sm:inline">New session</span>
+              </Button>
+            )}
+
+            {/* Everything you can do *to* a machine, on the card you are
+                already looking at. All of this used to live one collapsed
+                section further down the page, on a second card for the same
+                machine. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-11 w-11 shrink-0"
+                  aria-label={`More actions for ${name}`}
+                >
+                  <MoreVertical className="h-4 w-4" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem onSelect={() => setEditing(true)}>
+                  <Pencil className="h-4 w-4" aria-hidden />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onToggleCollapsed}>
+                  <ChevronDown className="h-4 w-4" aria-hidden />
+                  {collapsed ? "Expand" : "Collapse"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem disabled={first} onSelect={() => onMove(-1)}>
+                  <ArrowUp className="h-4 w-4" aria-hidden />
+                  Move up
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={last} onSelect={() => onMove(1)}>
+                  <ArrowDown className="h-4 w-4" aria-hidden />
+                  Move down
+                </DropdownMenuItem>
+                {server && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {/* Reachable while paired, which is the change: re-pairing used
+                    to require removing the machine from the account first. */}
+                    <DropdownMenuItem
+                      disabled={!server.online}
+                      onSelect={() => onRequestAccess(server)}
+                    >
+                      <QrCode className="h-4 w-4" aria-hidden />
+                      Pair this device again
+                    </DropdownMenuItem>
+                  </>
+                )}
+                {onForget && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => void onForget()}>
+                      <Unlink className="h-4 w-4" aria-hidden />
+                      Forget on this device
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/*
+            The second line: what the machine is doing, not what it is called.
+            Indented to the name's text so the two lines read as one block, and
+            small and muted so it never competes with the name above it.
+          */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2 pl-9 text-xs text-muted-foreground sm:pl-11">
+            <span>
               {row.sessions.length} session
               {row.sessions.length === 1 ? "" : "s"}
             </span>
-          )}
-        </button>
+            <span aria-hidden>·</span>
+            <span>
+              {row.pending
+                ? "checking…"
+                : stale
+                  ? `last seen ${timeAgo(row.observedAt, now)}`
+                  : "just now"}
+            </span>
 
-        {editing && (
-          <form
-            className="flex w-full items-center gap-2 px-2 pb-1"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void saveName();
-            }}
-          >
-            <Input
-              ref={nameInputRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setEditing(false);
-              }}
-              maxLength={64}
-              className="h-11"
-              disabled={saving}
-              aria-label={`Name for ${name}`}
-            />
-            <Button
-              type="submit"
-              size="icon"
-              className="h-11 w-11 shrink-0"
-              disabled={saving}
-              aria-label="Save name"
-            >
-              {saving ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              ) : (
-                <Check className="h-4 w-4" aria-hidden />
-              )}
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-11 w-11 shrink-0"
-              onClick={() => setEditing(false)}
-              aria-label="Cancel rename"
-            >
-              <X className="h-4 w-4" aria-hidden />
-            </Button>
-          </form>
-        )}
-
-        {localName && localName !== server?.name && (
-          <Badge variant="outline" className="shrink-0">
-            This device
-          </Badge>
-        )}
-
-        {isReadOnly(row.capabilities) && (
-          <Badge variant="outline" className="shrink-0">
-            Read-only
-          </Badge>
-        )}
-        {filesDisabled(row.capabilities) && (
-          <Badge variant="outline" className="shrink-0">
-            Files off
-          </Badge>
-        )}
-
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          {row.pending
-            ? "checking…"
-            : stale
-              ? `last seen ${timeAgo(row.observedAt, now)}`
-              : "just now"}
-        </span>
-
-        {stale && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 shrink-0"
-            onClick={onRetry}
-          >
-            <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-            Retry
-          </Button>
-        )}
-
-        {/* Creating a session used to require opening one first, which is
-            impossible on a machine that has none. */}
-        {reachable && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 shrink-0"
-            onClick={onNewSession}
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
-            <span className="hidden sm:inline">New session</span>
-          </Button>
-        )}
-
-        {/* Everything you can do *to* a machine, on the card you are already
-            looking at. All of this used to live one collapsed section further
-            down the page, on a second card for the same machine. */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-11 w-11 shrink-0"
-              aria-label={`More actions for ${name}`}
-            >
-              <MoreVertical className="h-4 w-4" aria-hidden />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuItem onSelect={() => setEditing(true)}>
-              <Pencil className="h-4 w-4" aria-hidden />
-              Rename
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onToggleCollapsed}>
-              <ChevronDown className="h-4 w-4" aria-hidden />
-              {collapsed ? "Expand" : "Collapse"}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled={first} onSelect={() => onMove(-1)}>
-              <ArrowUp className="h-4 w-4" aria-hidden />
-              Move up
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={last} onSelect={() => onMove(1)}>
-              <ArrowDown className="h-4 w-4" aria-hidden />
-              Move down
-            </DropdownMenuItem>
-            {server && (
-              <>
-                <DropdownMenuSeparator />
-                {/* Reachable while paired, which is the change: re-pairing used
-                    to require removing the machine from the account first. */}
-                <DropdownMenuItem
-                  disabled={!server.online}
-                  onSelect={() => onRequestAccess(server)}
-                >
-                  <QrCode className="h-4 w-4" aria-hidden />
-                  Pair this device again
-                </DropdownMenuItem>
-              </>
+            {localName && localName !== server?.name && (
+              <Badge variant="outline" className="shrink-0 font-normal">
+                This device
+              </Badge>
             )}
-            {onForget && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => void onForget()}>
-                  <Unlink className="h-4 w-4" aria-hidden />
-                  Forget on this device
-                </DropdownMenuItem>
-              </>
+            {isReadOnly(row.capabilities) && (
+              <Badge variant="outline" className="shrink-0 font-normal">
+                Read-only
+              </Badge>
             )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+            {filesDisabled(row.capabilities) && (
+              <Badge variant="outline" className="shrink-0 font-normal">
+                Files off
+              </Badge>
+            )}
+
+            {/* Only ever shown on a stale group, so it does not need to hold a
+                place in the layout the rest of the time. */}
+            {stale && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-8 shrink-0 text-xs"
+                onClick={onRetry}
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                Retry
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {row.error && !collapsed && (
         <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
