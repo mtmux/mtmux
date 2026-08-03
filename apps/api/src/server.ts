@@ -282,6 +282,47 @@ export async function startApiServer(
 
   const wss = new WebSocketServer({ noServer: true });
 
+  /**
+   * Keep idle sockets alive, and notice the ones that are already dead.
+   *
+   * There was no keepalive at all, and every hop in front of this broker closes
+   * an idle WebSocket on its own schedule — Cloudflare at around 100 seconds of
+   * silence, and it does not tell either end. A pairing socket is idle by
+   * definition: it exists to wait for somebody to type a code.
+   *
+   * What that cost was not "a reconnect". Losing the pairing socket makes the
+   * CLI mint a **fresh code** ("Reconnected. Here's a fresh code"), so on this
+   * deployment the code on screen was being replaced every minute or two. Read
+   * eight digits, walk to another machine, type them — and they were already
+   * dead. The claim then fails as a wrong code, which by design burns that code
+   * and mints another, so the next attempt races the same clock. Four of those
+   * and the CLI starts backing off with "someone is guessing"; eight and it
+   * stops. From the outside: repeated failed attempts and a pairing that never
+   * completes.
+   *
+   * A ping every 30s is well inside every idle window in the path, and the pong
+   * doubles as liveness: a socket that misses one whole round is gone, and
+   * terminating it frees the tunnel and its streams now rather than at the next
+   * write. `unref` so this never keeps the process up on its own.
+   */
+  const alive = new WeakSet<WebSocket>();
+  const KEEPALIVE_MS = 30_000;
+  const keepalive = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!alive.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws);
+      try {
+        ws.ping();
+      } catch {
+        // Already closing; the next sweep terminates it.
+      }
+    }
+  }, KEEPALIVE_MS);
+  keepalive.unref();
+
   server.on("upgrade", (req, socket: Duplex, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "api"}`);
     const route = routeSocketPath(url.pathname);
@@ -301,9 +342,19 @@ export async function startApiServer(
       // closed by `attach`, and an 'error' on that closing socket with no
       // listener would be an unhandled event that takes the broker down.
       ws.on("error", (err) => logger.warn({ err }, "Socket error"));
+      // Marked alive on arrival and on every pong, so the sweep above only
+      // terminates a socket that has missed a full round.
+      alive.add(ws);
+      ws.on("pong", () => alive.add(ws));
+      // A client that talks is alive whether or not it answers pings — old
+      // CLIs predate this and must not be terminated for staying quiet in the
+      // one direction they were never asked about.
       const handle = attach(broker, route, toSocket(ws));
       if (!handle) return;
-      ws.on("message", (raw) => handle.message(raw.toString()));
+      ws.on("message", (raw) => {
+        alive.add(ws);
+        handle.message(raw.toString());
+      });
       ws.on("close", () => handle.close());
     });
   });
@@ -317,6 +368,7 @@ export async function startApiServer(
     accounts,
     close: async () => {
       await new Promise<void>((resolve) => {
+        clearInterval(keepalive);
         broker.shutdown();
         wss.close();
         server.close(() => resolve());
