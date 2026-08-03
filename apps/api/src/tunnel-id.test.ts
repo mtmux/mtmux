@@ -102,6 +102,29 @@ describe("resolveTunnelIdSecret", () => {
     expect(a.secret.equals(b.secret)).toBe(true);
   });
 
+  it("reads 64 hex chars as the key itself, not as a passphrase", () => {
+    // The migration path for a live broker: `xxd -p tunnel-id.key` in the env
+    // has to derive the ids the file was already deriving, or moving the secret
+    // into config would disconnect every paired device a second time.
+    const fromFile = resolveTunnelIdSecret({ env: {}, stateDir: dir });
+    const asEnv = resolveTunnelIdSecret({
+      env: { API_TUNNEL_ID_SECRET: fromFile.secret.toString("hex") },
+      stateDir: join(dir, "unused"),
+    });
+    expect(asEnv.source).toBe("env");
+    expect(deriveTunnelId(asEnv.secret, "device-a")).toBe(
+      deriveTunnelId(fromFile.secret, "device-a"),
+    );
+  });
+
+  it("hashes anything that is not raw key material", () => {
+    const a = resolveTunnelIdSecret({
+      env: { API_TUNNEL_ID_SECRET: "short" },
+      stateDir: dir,
+    });
+    expect(a.secret).toHaveLength(32);
+  });
+
   it("does not write a key file when the environment supplies one", async () => {
     resolveTunnelIdSecret({
       env: { API_TUNNEL_ID_SECRET: "shared" },

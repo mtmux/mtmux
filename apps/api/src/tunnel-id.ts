@@ -70,12 +70,7 @@ export function resolveTunnelIdSecret(options?: {
 
   const fromEnv = env.API_TUNNEL_ID_SECRET?.trim();
   if (fromEnv) {
-    // Hashed rather than used raw, so any length of passphrase is a valid key
-    // and a short one is not silently a weak one.
-    return {
-      secret: crypto.createHash("sha256").update(fromEnv, "utf8").digest(),
-      source: "env",
-    };
+    return { secret: keyFromEnv(fromEnv), source: "env" };
   }
 
   const dir = options?.stateDir ?? defaultStateDir(env);
@@ -114,6 +109,23 @@ export function resolveTunnelIdSecret(options?: {
       "Set API_TUNNEL_ID_SECRET to fix this.",
   );
   return { secret: crypto.randomBytes(KEY_BYTES), source: "ephemeral" };
+}
+
+/**
+ * Turn whatever is in the environment into 32 bytes of key.
+ *
+ * Exactly 64 hex characters is taken as raw key material rather than as a
+ * passphrase, and that is not a micro-optimisation: it is the only way to move
+ * an already-live deployment onto the env without changing a single tunnel id.
+ * The key file holds 32 raw bytes, so `xxd -p` of it must resolve to the same
+ * secret, or "harden the config" would mean "disconnect everyone again".
+ *
+ * Anything else is hashed, so a passphrase of any length is a valid key and a
+ * short one is not silently a weak one.
+ */
+function keyFromEnv(value: string): Buffer {
+  if (/^[0-9a-fA-F]{64}$/.test(value)) return Buffer.from(value, "hex");
+  return crypto.createHash("sha256").update(value, "utf8").digest();
 }
 
 function defaultStateDir(env: NodeJS.ProcessEnv): string {
