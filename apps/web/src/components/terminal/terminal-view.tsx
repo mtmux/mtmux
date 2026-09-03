@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -11,16 +12,16 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { SearchAddon } from "@xterm/addon-search";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import {
   getTerminalTheme,
   terminalThemeToXterm,
 } from "@repo/ui/terminal-themes";
+import { createXterm } from "@/lib/xterm-factory";
 import { useTerminalStore } from "@/stores/terminal-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { isMobileViewport } from "@/lib/mobile-query";
 import { useAlertStore } from "@/stores/alert-store";
 import { isReadOnly, useConnectionStore } from "@/stores/connection-store";
 import { getRelayClient, useRelaySubscription } from "@/hooks/use-websocket";
@@ -63,6 +64,14 @@ const FIT_DEBOUNCE_MS = 80;
 const FIT_SETTLE_MS = 260;
 /** Mount-time ladder for a container that is still 0-height (mobile tabs, CSS). */
 const MOUNT_FIT_RETRY_DELAYS = [0, 50, 100, 200, 400, 800, 1500];
+/**
+ * When the GPU canvas is measured against its CSS box, in ms after mount.
+ *
+ * More than one because the box may not exist yet on the first pass and the
+ * addon sizes itself asynchronously; the check is idempotent and stops mattering
+ * once the addon is gone.
+ */
+const WEBGL_CHECK_DELAYS = [0, 250, 1000];
 const ATTACH_TIMEOUT_MS = 5000;
 const FALLBACK_SIZE = { cols: 80, rows: 24 };
 
@@ -120,22 +129,47 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       terminal.options.disableStdin = readOnly;
     }, [readOnly, status]);
 
-    useImperativeHandle(ref, () => ({
-      search: (term: string) => {
-        searchAddonRef.current?.findNext(term);
-      },
-      findNext: () => {
-        searchAddonRef.current?.findNext("");
-      },
-      findPrevious: () => {
-        searchAddonRef.current?.findPrevious("");
-      },
-      getSelection: () => terminalRef.current?.getSelection() ?? "",
-    }));
+    /**
+     * Re-fit, drop the glyph atlas and repaint every row.
+     *
+     * The blur this fixes is a backing-store mismatch: xterm sizes its canvases
+     * once, in device pixels, from the devicePixelRatio and box it saw at the
+     * time. Nothing re-derives that later, so a DPR change, a `filter` applied
+     * to an ancestor while the tab is hidden, or a mobile tab swap that never
+     * re-fits all leave a canvas the browser has to scale — and scaled text is
+     * soft text. Clearing the texture atlas is the part that matters for the
+     * WebGL renderer; the DOM renderer needs only the refresh.
+     */
+    const redraw = useCallback(() => {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      try {
+        fitAddonRef.current?.fit();
+      } catch {
+        // Renderer mid-swap; the refresh below is still worth attempting.
+      }
+      try {
+        webglAddonRef.current?.clearTextureAtlas();
+      } catch {
+        // Addon already disposed.
+      }
+      try {
+        if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1);
+      } catch {
+        // Same.
+      }
+    }, []);
 
-    // Same handle, reachable from outside this subtree — see terminal-handle.ts.
-    useEffect(() => {
-      setTerminalHandle({
+    /**
+     * One handle, two consumers.
+     *
+     * The ref and the module-level registry used to carry hand-copied twins of
+     * this object, so every method had to be added twice and the two could
+     * silently drift. Built once here instead; the refs it closes over are
+     * stable for the component's life, so it never needs rebuilding.
+     */
+    const makeHandle = useCallback(
+      (): TerminalViewHandle => ({
         search: (term: string) => {
           searchAddonRef.current?.findNext(term);
         },
@@ -146,9 +180,29 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           searchAddonRef.current?.findPrevious("");
         },
         getSelection: () => terminalRef.current?.getSelection() ?? "",
-      });
+        clearSelection: () => terminalRef.current?.clearSelection(),
+        getCellHeightPx: () => {
+          // No public API exposes the measured cell box. This is the same
+          // `_core` reach the renderer patch below already depends on, and the
+          // caller treats 0 as "estimate instead".
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const core = (terminalRef.current as any)?._core;
+          const height: unknown =
+            core?._renderService?.dimensions?.css?.cell?.height;
+          return typeof height === "number" && height > 0 ? height : 0;
+        },
+        redraw,
+      }),
+      [redraw],
+    );
+
+    useImperativeHandle(ref, makeHandle, [makeHandle]);
+
+    // Same handle, reachable from outside this subtree — see terminal-handle.ts.
+    useEffect(() => {
+      setTerminalHandle(makeHandle());
       return () => setTerminalHandle(null);
-    }, []);
+    }, [makeHandle]);
 
     // Initialize terminal ONCE on mount — no sessionName dependency
     useEffect(() => {
@@ -157,77 +211,15 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       // Stable object for the lifetime of this effect — captured once so the
       // cleanup below doesn't read a ref that could have been reassigned.
       const timers = fitTimersRef.current;
-      const theme = getTerminalTheme(themeName);
-      const terminal = new XTerm({
+      const { terminal, fitAddon, searchAddon } = createXterm({
+        container: containerRef.current,
+        themeName,
         fontSize,
         fontFamily,
         cursorStyle,
         cursorBlink,
         scrollback,
-        theme: terminalThemeToXterm(theme),
-        allowProposedApi: true,
-        macOptionIsMeta: true,
-        // A tmux PTY already emits CRLF. Rewriting bare \n corrupts the output
-        // of applications that emit a lone linefeed deliberately.
-        convertEol: false,
       });
-
-      const fitAddon = new FitAddon();
-      const searchAddon = new SearchAddon();
-      const unicode11Addon = new Unicode11Addon();
-      const webLinksAddon = new WebLinksAddon();
-
-      terminal.loadAddon(fitAddon);
-      terminal.loadAddon(searchAddon);
-      terminal.loadAddon(unicode11Addon);
-      terminal.loadAddon(webLinksAddon);
-
-      terminal.unicode.activeVersion = "11";
-      terminal.open(containerRef.current);
-
-      // Patch xterm's RenderService.dimensions getter to be null-safe.
-      // xterm.js 5.5.0 has a bug where `_renderer.value!.dimensions` uses a
-      // non-null assertion, but `_renderer.value` CAN be undefined when the
-      // WebGL addon is being loaded (replacing the canvas renderer) and the
-      // Viewport's deferred `setTimeout(() => syncScrollArea())` fires during
-      // the swap. This causes "Cannot read properties of undefined (reading
-      // 'dimensions')" from RenderService.ts:50 / Viewport.ts:84.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const core = (terminal as any)._core;
-      if (core?._renderService) {
-        const rs = core._renderService;
-        const proto = Object.getPrototypeOf(rs);
-        const desc = Object.getOwnPropertyDescriptor(proto, "dimensions");
-        if (desc?.get) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let lastValidDimensions: any = null;
-          Object.defineProperty(rs, "dimensions", {
-            get() {
-              if (this._renderer?.value) {
-                lastValidDimensions = this._renderer.value.dimensions;
-                return lastValidDimensions;
-              }
-              // Return last-known-good dims (allows FitAddon to still compute layout)
-              // Fall back to safe zeros only if no dimensions have ever been captured
-              if (lastValidDimensions) {
-                return lastValidDimensions;
-              }
-              return {
-                css: {
-                  canvas: { width: 0, height: 0 },
-                  cell: { width: 0, height: 0 },
-                },
-                device: {
-                  canvas: { width: 0, height: 0 },
-                  cell: { width: 0, height: 0 },
-                  char: { width: 0, height: 0, top: 0, left: 0 },
-                },
-              };
-            },
-            configurable: true,
-          });
-        }
-      }
 
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -311,6 +303,11 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
             }
             webglAddon = null;
             webglAddonRef.current = null;
+            // Disposing hands rendering back to the DOM renderer, but nothing
+            // tells it to paint — so without this the terminal froze on the
+            // last GPU frame until the next resize. It is also why a lost
+            // context used to look like a hang rather than a fallback.
+            redraw();
           });
           terminal.loadAddon(webglAddon);
           webglAddonRef.current = webglAddon;
@@ -319,6 +316,68 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
           webglAddon = null;
           webglAddonRef.current = null;
         }
+      }
+
+      /*
+       * Prove the GPU canvas is actually at device resolution, or drop it.
+       *
+       * On a DPR-3 phone the WebGL canvas is created with a 375x496 backing
+       * store for a 375x496 CSS box while the DOM layers alongside it are
+       * correctly 1125x1488 — a 1x render the browser then upscales 3x. That
+       * is the blur, and it is silent: nothing throws, the text is simply
+       * soft. So the size is checked rather than assumed, and a renderer that
+       * cannot be trusted at this DPR is replaced by the DOM one, which is
+       * correct at every DPR.
+       *
+       * Deferred behind a frame and retried: at mount the container is often
+       * still 0-height (the mobile tab ladder above exists for the same
+       * reason), and a zero box makes the comparison meaningless.
+       */
+      const isCanvasCrisp = (canvas: HTMLCanvasElement): boolean => {
+        const cssWidth = canvas.clientWidth;
+        const cssHeight = canvas.clientHeight;
+        if (cssWidth < 1 || cssHeight < 1) return true; // Not laid out; no verdict.
+        const dpr = window.devicePixelRatio || 1;
+        // Rounding differs by a pixel between browsers; 1.5 device pixels of
+        // slack is well inside that and nowhere near a whole DPR step.
+        return (
+          Math.abs(canvas.width - cssWidth * dpr) <= 1.5 &&
+          Math.abs(canvas.height - cssHeight * dpr) <= 1.5
+        );
+      };
+
+      const checkWebglResolution = () => {
+        const addon = webglAddonRef.current;
+        const container = containerRef.current;
+        if (!addon || !container) return;
+        if (container.offsetWidth < 1 || container.offsetHeight < 1) return;
+        // The DOM/canvas layers carry `xterm-*-layer` classes; the WebGL
+        // addon's canvas is appended bare, which is what tells them apart.
+        const canvases = Array.from(
+          container.querySelectorAll<HTMLCanvasElement>("canvas"),
+        ).filter((c) => c.className === "");
+        if (canvases.length === 0) return;
+        if (canvases.every(isCanvasCrisp)) return;
+        try {
+          addon.dispose();
+        } catch {
+          // Already gone.
+        }
+        webglAddon = null;
+        webglAddonRef.current = null;
+        atlasDisposableRef.current?.dispose();
+        atlasDisposableRef.current = null;
+        redraw();
+      };
+
+      if (webglAddonRef.current) {
+        WEBGL_CHECK_DELAYS.forEach((delay) => {
+          timers.mountRetries.push(
+            setTimeout(() => {
+              requestAnimationFrame(checkWebglResolution);
+            }, delay),
+          );
+        });
       }
 
       // Initial fit — if the container has dimensions, fit immediately;
@@ -430,7 +489,53 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         searchAddonRef.current = null;
         webglAddonRef.current = null;
       };
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps -- terminal created once on mount
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps -- terminal created once on mount; `redraw` is stable
+
+    /*
+     * Repaint when the tab comes back, and when the display changes.
+     *
+     * Two separate ways the canvas goes stale while nobody is looking:
+     *
+     *  - The lock screen puts `filter: blur(18px)` on `body`
+     *    (`app/globals.css`), which rasterizes the canvas through a filter
+     *    layer. Coming back needs an explicit repaint; xterm has no reason to
+     *    issue one, because from its side nothing changed.
+     *  - devicePixelRatio changes — moving a window between a laptop panel and
+     *    an external monitor, or browser zoom, which is a DPR change as far as
+     *    canvas sizing is concerned. The atlas was built for the old ratio and
+     *    is simply the wrong resolution for the new one.
+     *
+     * A DPR change cannot be observed directly; the idiom is a `resolution`
+     * media query for the *current* ratio, which stops matching the moment it
+     * changes — so the listener has to be re-armed at the new ratio each time.
+     */
+    useEffect(() => {
+      const onVisible = () => {
+        if (document.visibilityState !== "visible") return;
+        requestAnimationFrame(redraw);
+      };
+      document.addEventListener("visibilitychange", onVisible);
+
+      let query: MediaQueryList | null = null;
+      const onDprChange = () => {
+        redraw();
+        arm();
+      };
+      const arm = () => {
+        query?.removeEventListener("change", onDprChange);
+        if (typeof window.matchMedia !== "function") return;
+        query = window.matchMedia(
+          `(resolution: ${window.devicePixelRatio}dppx)`,
+        );
+        query.addEventListener("change", onDprChange);
+      };
+      arm();
+
+      return () => {
+        document.removeEventListener("visibilitychange", onVisible);
+        query?.removeEventListener("change", onDprChange);
+      };
+    }, [redraw]);
 
     // Apply terminal option changes. Writes are coalesced into a single frame:
     // each write can trigger a WebGL character-atlas rebuild, and pinch-to-zoom
@@ -580,10 +685,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         client.send({ type: "pane:list" });
         client.send({ type: "window:list" });
 
-        if (
-          useSettingsStore.getState().autoZoom &&
-          window.matchMedia("(max-width: 768px)").matches
-        ) {
+        if (useSettingsStore.getState().autoZoom && isMobileViewport()) {
           usePaneStore.getState().setPendingAutoZoom(true);
         }
       }
@@ -596,11 +698,23 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
         className={cn("relative", className)}
         style={{ width: "100%", height: "100%" }}
       >
-        {/* Terminal container — always mounted */}
+        {/*
+          Terminal container — always mounted.
+
+          Named, because the product's primary surface was a bare `<div>` to
+          assistive tech: no role, no label, nothing to announce on focus. The
+          group role is the honest one — xterm builds its own focusable textarea
+          and (when screen-reader mode is on) its own live region inside this
+          element, so claiming `textbox` here would describe a control that is
+          not this node.
+        */}
         <div
           ref={containerRef}
+          role="group"
+          aria-label={
+            sessionName ? `Terminal, session ${sessionName}` : "Terminal"
+          }
           className={cn("h-full w-full", !sessionName && "invisible")}
-          style={{ touchAction: "manipulation" }}
         />
 
         {/* Attaching — pointer-events-none so keyboard/touch input still lands

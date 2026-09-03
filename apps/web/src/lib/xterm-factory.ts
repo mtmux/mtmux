@@ -1,0 +1,131 @@
+import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Terminal as XTerm } from "@xterm/xterm";
+
+import {
+  getTerminalTheme,
+  terminalThemeToXterm,
+} from "@repo/ui/terminal-themes";
+
+/**
+ * Construct an xterm instance the way this app needs one.
+ *
+ * Extracted from `terminal-view.tsx` unchanged, because a second thing now
+ * needs it: the recording player. Copying seventy lines that include the
+ * `_renderService.dimensions` patch below would have meant two copies of the
+ * most fragile code in the app, free to drift apart in exactly the way that
+ * makes a rendering bug reproduce on one screen and not the other.
+ *
+ * The WebGL addon is deliberately **not** here. It is loaded asynchronously
+ * with its own context-loss handling and per-view lifetime, and folding that
+ * into a constructor would have made this function the thing it exists to
+ * avoid — a shared helper that each caller has to work around.
+ */
+
+export type XtermBundle = {
+  terminal: XTerm;
+  fitAddon: FitAddon;
+  searchAddon: SearchAddon;
+};
+
+export type XtermOptions = {
+  container: HTMLElement;
+  themeName: string;
+  fontSize: number;
+  fontFamily: string;
+  cursorStyle?: "block" | "underline" | "bar";
+  cursorBlink?: boolean;
+  scrollback?: number;
+  /** Playback has nothing to type into. */
+  disableStdin?: boolean;
+  cols?: number;
+  rows?: number;
+};
+
+/**
+ * Make xterm's `RenderService.dimensions` getter null-safe.
+ *
+ * xterm.js 5.5.0 reads `this._renderer.value!.dimensions` behind a non-null
+ * assertion, but `_renderer.value` *can* be undefined: while the WebGL addon is
+ * replacing the canvas renderer, the Viewport's deferred
+ * `setTimeout(() => syncScrollArea())` can fire mid-swap. The result is
+ * "Cannot read properties of undefined (reading 'dimensions')" out of
+ * RenderService.ts:50 / Viewport.ts:84.
+ *
+ * Returning the last known-good dimensions rather than zeros matters: FitAddon
+ * divides by the cell size, and a zero there turns a transient render glitch
+ * into a permanently mis-sized terminal.
+ */
+function patchRenderServiceDimensions(terminal: XTerm): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const core = (terminal as any)._core;
+  if (!core?._renderService) return;
+
+  const rs = core._renderService;
+  const proto = Object.getPrototypeOf(rs);
+  const desc = Object.getOwnPropertyDescriptor(proto, "dimensions");
+  if (!desc?.get) return;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let lastValidDimensions: any = null;
+  Object.defineProperty(rs, "dimensions", {
+    get() {
+      if (this._renderer?.value) {
+        lastValidDimensions = this._renderer.value.dimensions;
+        return lastValidDimensions;
+      }
+      if (lastValidDimensions) return lastValidDimensions;
+      return {
+        css: {
+          canvas: { width: 0, height: 0 },
+          cell: { width: 0, height: 0 },
+        },
+        device: {
+          canvas: { width: 0, height: 0 },
+          cell: { width: 0, height: 0 },
+          char: { width: 0, height: 0, top: 0, left: 0 },
+        },
+      };
+    },
+    configurable: true,
+  });
+}
+
+export function createXterm(options: XtermOptions): XtermBundle {
+  const theme = getTerminalTheme(options.themeName);
+  const terminal = new XTerm({
+    fontSize: options.fontSize,
+    fontFamily: options.fontFamily,
+    cursorStyle: options.cursorStyle,
+    cursorBlink: options.cursorBlink,
+    scrollback: options.scrollback,
+    theme: terminalThemeToXterm(theme),
+    allowProposedApi: true,
+    macOptionIsMeta: true,
+    ...(options.disableStdin ? { disableStdin: true } : {}),
+    ...(options.cols ? { cols: options.cols } : {}),
+    ...(options.rows ? { rows: options.rows } : {}),
+    // A tmux PTY already emits CRLF. Rewriting bare \n corrupts the output of
+    // applications that emit a lone linefeed deliberately.
+    convertEol: false,
+  });
+
+  const fitAddon = new FitAddon();
+  const searchAddon = new SearchAddon();
+  const unicode11Addon = new Unicode11Addon();
+  const webLinksAddon = new WebLinksAddon();
+
+  terminal.loadAddon(fitAddon);
+  terminal.loadAddon(searchAddon);
+  terminal.loadAddon(unicode11Addon);
+  terminal.loadAddon(webLinksAddon);
+
+  terminal.unicode.activeVersion = "11";
+  terminal.open(options.container);
+
+  patchRenderServiceDimensions(terminal);
+
+  return { terminal, fitAddon, searchAddon };
+}
