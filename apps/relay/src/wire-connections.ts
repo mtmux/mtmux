@@ -16,6 +16,8 @@ import {
   notifyConnectionsChanged,
 } from "./connection-manager.js";
 import { allowsSession, allowsSessionName } from "./grant.js";
+import * as recorder from "./recorder.js";
+import { sweepRecordings } from "./recordings-index.js";
 import { isCloneSession, sweepOrphanClones } from "./tmux-clone.js";
 import { createRateLimiter } from "./rate-limiter.js";
 import { createSessionMonitor } from "./session-monitor.js";
@@ -33,6 +35,23 @@ declare module "ws" {
 
 const logger = createLogger("relay");
 const SERVER_VERSION = "1.0.0";
+
+/**
+ * Message types this relay understands that the original protocol did not.
+ *
+ * `SERVER_VERSION` has been "1.0.0" since the first commit and has never been
+ * bumped, so it cannot answer "can you do X". This list can, and a client that
+ * does not see an entry here falls back to the id-based form that every relay
+ * has always understood.
+ */
+const FEATURES = [
+  "window:step",
+  "pane:step",
+  // One flag for all five `recording:*` messages. They ship as a unit — a
+  // client that can list recordings but not fetch one has nothing to offer —
+  // so five flags would only create four states nothing ever produces.
+  "recording",
+];
 
 // Global concurrent-connection cap and per-IP cap. Rejected upgrades are closed
 // with 1013 ("Try Again Later"). Sized for a self-hosted single-user tool.
@@ -67,7 +86,20 @@ export function wireConnections(
   monitor: ReturnType<typeof createSessionMonitor>;
   shutdown: () => void;
 } {
-  const monitor = opts.monitor ?? createSessionMonitor();
+  const monitor =
+    opts.monitor ??
+    createSessionMonitor({
+      // Only sessions someone is actually looking at are worth an extra
+      // `list-windows` every five seconds.
+      watchedSessions: () =>
+        Array.from(
+          new Set(
+            getAllConnections()
+              .map((c) => c.attachedSession)
+              .filter((n): n is string => !!n),
+          ),
+        ),
+    });
 
   wss.on("connection", (ws, req?: http.IncomingMessage) => {
     // Behind a proxy on a self-host box the direct peer address is acceptable.
@@ -161,6 +193,7 @@ export function wireConnections(
             files: conn.grant.files,
             scope: conn.grant.scope.kind,
           },
+          features: FEATURES,
         });
         sendJson(ws, {
           type: "server:info",
@@ -230,6 +263,18 @@ export function wireConnections(
     });
   });
 
+  // A window created, renamed or selected in the user's own terminal has no
+  // representation in the PTY byte stream, so without this the browser's tab
+  // strip silently rots until re-attach.
+  monitor.onWindowsChanged((name, windows) => {
+    if (isCloneSession(name)) return;
+    broadcastWhere((conn) =>
+      conn.attachedSession === name
+        ? { type: "window:changed", windows, sessionName: name }
+        : null,
+    );
+  });
+
   monitor.onSessionCreated((session) => {
     if (isCloneSession(session.name)) return;
     broadcastWhere((conn) =>
@@ -246,6 +291,11 @@ export function wireConnections(
   void sweepOrphanClones().catch(() => {
     // tmux may not be running yet. Nothing to sweep is the normal case.
   });
+
+  // The same argument for recordings, plus one more: a `kill -9` leaves a row
+  // claiming to still be recording, and a row that says it is live after a
+  // reboot is worse than one that admits it was cut off.
+  void sweepRecordings().catch(() => {});
 
   // Idle reaper: close connections with no inbound traffic for longer than the
   // configured idle timeout. Uses close code 1000 so it reads as a normal close.
@@ -279,6 +329,10 @@ export function wireConnections(
     shutdown: () => {
       clearInterval(idleSweep);
       monitor.stop();
+      // Close the casts before the process goes. Not awaited — shutdown is
+      // deliberately not graceful here — but a `stream.end()` in flight is
+      // still better than none, and the startup sweep catches what it misses.
+      void recorder.stopAll("ended").catch(() => {});
       for (const conn of getAllConnections()) {
         try {
           conn.ws.close(1001, "Server shutting down");

@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@repo/cast": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/protocol": "workspace:*",
     "chokidar": "^4",

@@ -13,7 +13,8 @@ import {
   grantForToken,
   revokeGrant,
 } from "./pairing-local.js";
-import { FULL_GRANT } from "./grant.js";
+import { allowsRecording, FULL_GRANT } from "./grant.js";
+import * as recordings from "./recordings-index.js";
 import { broadcastToAll } from "./connection-manager.js";
 import { isCloneSession } from "./tmux-clone.js";
 import { listSessions } from "./tmux-manager.js";
@@ -139,6 +140,7 @@ async function handleSessionRegistration(
   let body: {
     token?: unknown;
     ttlMs?: unknown;
+    deviceId?: unknown;
     grant?: unknown;
     label?: unknown;
     via?: unknown;
@@ -178,11 +180,36 @@ async function handleSessionRegistration(
     grant = parsed.data;
   }
 
-  const ttlMs =
-    typeof body.ttlMs === "number" && body.ttlMs > 0 ? body.ttlMs : undefined;
+  /*
+   * A supplied lifetime must be usable, or the request is a mistake.
+   *
+   * This used to fall back to the 24 h default whenever `ttlMs` was not a
+   * positive number — including when it was exactly `0`, which is what a peer
+   * record on the last instant of its life produces. Silently substituting a
+   * shorter window is precisely the bug this endpoint's callers were changed to
+   * avoid, and it fails open: the caller believes it asked for 90 days and got
+   * a day. Absent still means "use the default"; present and unusable is a 400.
+   */
+  if (
+    body.ttlMs !== undefined &&
+    (typeof body.ttlMs !== "number" ||
+      !Number.isFinite(body.ttlMs) ||
+      body.ttlMs <= 0)
+  ) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "ttlMs must be a positive number" }));
+    return true;
+  }
+  const ttlMs = typeof body.ttlMs === "number" ? body.ttlMs : undefined;
   const label =
     typeof body.label === "string" && body.label.length > 0
       ? body.label.slice(0, 128)
+      : undefined;
+  // Names a peer record in the CLI's config so `onSessionTokenUsed` can report
+  // that this device is still in use. Never used to decide anything.
+  const deviceId =
+    typeof body.deviceId === "string" && body.deviceId.length > 0
+      ? body.deviceId.slice(0, 128)
       : undefined;
   const session = registerSessionToken(
     body.token,
@@ -190,6 +217,7 @@ async function handleSessionRegistration(
     undefined,
     grant,
     label,
+    deviceId,
   );
   logger.info(
     { grant: grant.id, readOnly: grant.readOnly, files: grant.files },
@@ -364,6 +392,10 @@ export async function handleRelayRequest(
     return handleSessionListing(req, res);
   }
 
+  if (req.url?.startsWith("/recording?") && req.method === "GET") {
+    return handleRecordingDownload(req, res, origin);
+  }
+
   if (req.url?.startsWith("/file?") && req.method === "GET") {
     // Echo the request Origin only when allow-listed (never a blanket `*`).
     if (origin && config.corsOrigins.includes(origin)) {
@@ -492,6 +524,82 @@ export async function handleRelayRequest(
   }
 
   return false;
+}
+
+/**
+ * `GET /recording?id=rec_…` — a LAN-only fast path, and nothing more.
+ *
+ * The mechanism for handing somebody a recording is `recording:fetch` over the
+ * websocket, because the case this feature exists for is a phone on cellular,
+ * which is the *tunnelled* case: there the relay is reachable only as sealed
+ * frames through the broker and the web app's `resolveRelayHttpBase()` returns
+ * `""`. This route exists because on a LAN a plain HTTP GET is faster and lets
+ * the browser stream, and for no other reason.
+ *
+ * **It takes an `id` and has no `path` parameter at all.** That is precisely
+ * what stops it becoming `/file` with extra steps: the only files it can serve
+ * are ones this relay itself wrote and indexed, and the caller cannot name one
+ * that is not in the index. Note also what it does *not* consult: `grant.files`
+ * is irrelevant here, because a recording is not a file in the allow-listed
+ * tree — a recordings-scoped share deliberately carries `files: "none"`.
+ */
+async function handleRecordingDownload(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  origin: string | undefined,
+): Promise<boolean> {
+  if (origin && config.corsOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length)
+    : null;
+
+  const grant =
+    token === null
+      ? null
+      : timingSafeEqualToken(token, config.authToken)
+        ? FULL_GRANT
+        : grantForToken(token);
+  if (!grant) {
+    res.writeHead(401);
+    res.end("Unauthorized");
+    return true;
+  }
+
+  const id = url.searchParams.get("id");
+  // "Not found" for out of scope as well as absent — the same rule the
+  // websocket path follows, and for the same reason: two different answers is
+  // an oracle for enumerating recording ids.
+  const recording =
+    id && allowsRecording(grant, id) ? await recordings.get(id) : null;
+  if (!recording) {
+    res.writeHead(404);
+    res.end("Recording not found");
+    return true;
+  }
+
+  const resolved = recordings.recordingPath(recording.filename);
+  try {
+    const stat = await fsp.stat(resolved);
+    res.writeHead(200, {
+      "Content-Type": "application/x-asciicast",
+      "Content-Length": String(stat.size),
+      "Cache-Control": "private, no-store",
+      "Content-Disposition": `attachment; filename="${recording.id}.cast"`,
+    });
+    fs.createReadStream(resolved).pipe(res);
+  } catch (err) {
+    logger.error({ err, id: recording.id }, "Recording serve error");
+    res.writeHead(404);
+    res.end("Recording not found");
+  }
+  return true;
 }
 
 export function createHttpServer() {

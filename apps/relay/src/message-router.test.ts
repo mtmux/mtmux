@@ -15,9 +15,34 @@ import { FULL_GRANT } from "./grant.js";
 const capturePane = vi.fn<(name: string) => Promise<string>>();
 const sessionExists = vi.fn<(name: string) => Promise<boolean>>();
 const listSessions = vi.fn<() => Promise<SessionInfo[]>>();
-const listPanes = vi.fn<(session: string) => Promise<PaneInfo[]>>();
+const listPanes =
+  vi.fn<(session: string, windowId?: string) => Promise<PaneInfo[]>>();
+const currentWindowId = vi.fn<(session: string) => Promise<string>>();
+const stepWindow = vi.fn<(session: string, delta: number) => Promise<void>>();
+const stepPane = vi.fn<(session: string, delta: number) => Promise<void>>();
+const selectWindow = vi.fn<(id: string) => Promise<void>>();
+const selectPane = vi.fn<(id: string) => Promise<void>>();
+const zoomPane = vi.fn<(session: string) => Promise<void>>();
 const listWindows = vi.fn<(session: string) => Promise<WindowInfo[]>>();
 const capturePaneById = vi.fn<(id: string) => Promise<string>>();
+type ScrollState = {
+  position: number;
+  historySize: number;
+  paneHeight: number;
+  inMode: boolean;
+};
+const AT_BOTTOM: ScrollState = {
+  position: 0,
+  historySize: 400,
+  paneHeight: 40,
+  inMode: false,
+};
+const scrollHistory =
+  vi.fn<(session: string, lines: number) => Promise<ScrollState>>();
+const scrollToPosition =
+  vi.fn<(session: string, position: number) => Promise<ScrollState>>();
+const readScrollState = vi.fn<(session: string) => Promise<ScrollState>>();
+const exitCopyMode = vi.fn<(session: string) => Promise<void>>();
 const createPtyBridge =
   vi.fn<
     (name: string, size?: TerminalSize, opts?: PtyBridgeOptions) => PtyBridge
@@ -27,9 +52,22 @@ vi.mock("./tmux-manager.js", () => ({
   capturePane: (name: string) => capturePane(name),
   sessionExists: (name: string) => sessionExists(name),
   listSessions: () => listSessions(),
-  listPanes: (session: string) => listPanes(session),
+  listPanes: (session: string, windowId?: string) =>
+    listPanes(session, windowId),
+  currentWindowId: (session: string) => currentWindowId(session),
+  stepWindow: (session: string, delta: number) => stepWindow(session, delta),
+  stepPane: (session: string, delta: number) => stepPane(session, delta),
+  selectWindow: (id: string) => selectWindow(id),
+  selectPane: (id: string) => selectPane(id),
+  zoomPane: (session: string) => zoomPane(session),
   listWindows: (session: string) => listWindows(session),
   capturePaneById: (id: string) => capturePaneById(id),
+  scrollHistory: (session: string, lines: number) =>
+    scrollHistory(session, lines),
+  scrollToPosition: (session: string, position: number) =>
+    scrollToPosition(session, position),
+  readScrollState: (session: string) => readScrollState(session),
+  exitCopyMode: (session: string) => exitCopyMode(session),
 }));
 
 vi.mock("./pty-bridge.js", () => ({
@@ -55,6 +93,36 @@ vi.mock("./tmux-clone.js", () => ({
   destroyClone: () => Promise.resolve(),
   isCloneSession: (name: string) => name.startsWith("__mtmux_"),
   CLONE_PREFIX: "__mtmux_",
+}));
+
+const recorderStart = vi.fn();
+const recorderStop = vi.fn();
+vi.mock("./recorder.js", async () => {
+  class RecordingError extends Error {
+    constructor(
+      readonly code: string,
+      message: string,
+    ) {
+      super(message);
+    }
+  }
+  return {
+    RecordingError,
+    start: (o: unknown) => recorderStart(o),
+    stop: (id: string, reason?: string) => recorderStop(id, reason),
+    listActive: () => [],
+    isRecording: () => false,
+  };
+});
+
+const recordingsList = vi.fn<() => Promise<unknown[]>>();
+const recordingsGet = vi.fn<(id: string) => Promise<unknown>>();
+const recordingsRemove = vi.fn<(id: string) => Promise<boolean>>();
+vi.mock("./recordings-index.js", () => ({
+  list: () => recordingsList(),
+  get: (id: string) => recordingsGet(id),
+  remove: (id: string) => recordingsRemove(id),
+  recordingPath: (filename: string) => `/tmp/mtmux-router-test/${filename}`,
 }));
 
 const { routeMessage } = await import("./message-router.js");
@@ -135,7 +203,21 @@ beforeEach(() => {
   ]);
   listPanes.mockResolvedValue([pane("%1", "@1")]);
   listWindows.mockResolvedValue([window("@1")]);
+  currentWindowId.mockResolvedValue("@1");
+  stepWindow.mockResolvedValue(undefined);
+  stepPane.mockResolvedValue(undefined);
+  selectWindow.mockResolvedValue(undefined);
+  selectPane.mockResolvedValue(undefined);
+  zoomPane.mockResolvedValue(undefined);
   capturePaneById.mockResolvedValue("PANE CONTENT");
+  scrollHistory.mockResolvedValue({ ...AT_BOTTOM, position: 12, inMode: true });
+  scrollToPosition.mockResolvedValue({
+    ...AT_BOTTOM,
+    position: 200,
+    inMode: true,
+  });
+  readScrollState.mockResolvedValue(AT_BOTTOM);
+  exitCopyMode.mockResolvedValue(undefined);
   listDirectory.mockResolvedValue([]);
   createReadOnlyClone.mockResolvedValue("__mtmux_clone");
 });
@@ -163,12 +245,12 @@ function pane(id: string, windowId: string): PaneInfo {
   };
 }
 
-function window(id: string): WindowInfo {
+function window(id: string, index = 0, active = true): WindowInfo {
   return {
     id,
-    index: 0,
+    index,
     name: "bash",
-    active: true,
+    active,
     paneCount: 1,
     layout: "",
   };
@@ -441,5 +523,326 @@ describe("scoped grants", () => {
     await route({ type: "auth", token: "anything at all" });
     expect(sent[0]).toMatchObject({ type: "error" });
     expect(sent[0]).not.toMatchObject({ type: "auth:success" });
+  });
+});
+
+describe("tmux:scroll", () => {
+  it("scrolls the session the connection is attached to", async () => {
+    conn.attachedSession = "work";
+    await route({ type: "tmux:scroll", lines: 7 });
+    expect(scrollHistory).toHaveBeenCalledWith("work", 7);
+  });
+
+  it("passes a negative count through, so scrolling back down works", async () => {
+    conn.attachedSession = "work";
+    await route({ type: "tmux:scroll", lines: -3 });
+    expect(scrollHistory).toHaveBeenCalledWith("work", -3);
+  });
+
+  it("refuses when nothing is attached rather than guessing a session", async () => {
+    await route({ type: "tmux:scroll", lines: 7 });
+    expect(scrollHistory).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({ type: "error", code: "NOT_ATTACHED" });
+  });
+
+  it("reports where the view ended up, so the scrollbar can draw itself", async () => {
+    conn.attachedSession = "work";
+    await route({ type: "tmux:scroll", lines: 7 });
+    expect(sent.at(-1)).toMatchObject({
+      type: "tmux:scroll-state",
+      position: 12,
+      historySize: 400,
+      paneHeight: 40,
+      inMode: true,
+    });
+  });
+
+  it("jumps to an absolute position for a scrollbar drag", async () => {
+    conn.attachedSession = "work";
+    await route({ type: "tmux:scroll-to", position: 200 });
+    expect(scrollToPosition).toHaveBeenCalledWith("work", 200);
+    expect(sent.at(-1)).toMatchObject({
+      type: "tmux:scroll-state",
+      position: 200,
+    });
+  });
+
+  it("answers a bare state request without moving anything", async () => {
+    conn.attachedSession = "work";
+    await route({ type: "tmux:scroll-state" });
+    expect(scrollHistory).not.toHaveBeenCalled();
+    expect(scrollToPosition).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({
+      type: "tmux:scroll-state",
+      position: 0,
+      historySize: 400,
+    });
+  });
+
+  it("reports position 0 outside copy mode, whatever tmux last remembered", async () => {
+    conn.attachedSession = "work";
+    readScrollState.mockResolvedValue({ ...AT_BOTTOM, position: 99 });
+    await route({ type: "tmux:scroll-state" });
+    expect(sent.at(-1)).toMatchObject({
+      type: "tmux:scroll-state",
+      position: 0,
+      inMode: false,
+    });
+  });
+
+  it("leaves copy mode on request", async () => {
+    conn.attachedSession = "work";
+    await route({ type: "tmux:exit-copy-mode" });
+    expect(exitCopyMode).toHaveBeenCalledWith("work");
+  });
+
+  it("refuses to leave copy mode with nothing attached", async () => {
+    await route({ type: "tmux:exit-copy-mode" });
+    expect(exitCopyMode).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({ type: "error", code: "NOT_ATTACHED" });
+  });
+});
+
+/**
+ * The regression this whole area exists for.
+ *
+ * Every pane reply used to derive its window from
+ * `panes.find(p => p.active)?.windowId` over an *unscoped* pane listing.
+ * `#{pane_active}` is per-window, so a three-window session had three active
+ * panes and that expression always answered "window 1" — the browser
+ * highlighted a window it was not looking at, and the swipe stepped panes of a
+ * window that was not on screen.
+ */
+describe("window scoping", () => {
+  const threeWindows = () => [
+    window("@1", 0, false),
+    window("@2", 1, true),
+    window("@3", 2, false),
+  ];
+
+  beforeEach(() => {
+    conn.attachedSession = "work";
+    listWindows.mockResolvedValue(threeWindows());
+    currentWindowId.mockResolvedValue("@2");
+    // What an unscoped `list-panes -s` used to return: one "active" pane per
+    // window. If anything still infers from this, the assertions below fail.
+    listPanes.mockImplementation(async (_session, windowId) => {
+      const all = [pane("%1", "@1"), pane("%2", "@2"), pane("%3", "@3")];
+      return windowId ? all.filter((p) => p.windowId === windowId) : all;
+    });
+  });
+
+  it("scopes pane:list to the window tmux is actually showing", async () => {
+    await route({ type: "pane:list" });
+    const reply = sent.at(-1) as {
+      type: string;
+      windowId: string;
+      panes: PaneInfo[];
+    };
+    expect(reply.type).toBe("pane:list");
+    expect(reply.windowId).toBe("@2");
+    expect(reply.panes.map((p) => p.id)).toEqual(["%2"]);
+    expect(reply.panes.filter((p) => p.active)).toHaveLength(1);
+  });
+
+  it("does not snap the window back to the first one after window:select", async () => {
+    currentWindowId.mockResolvedValue("@3");
+    listWindows.mockResolvedValue([
+      window("@1", 0, false),
+      window("@2", 1, false),
+      window("@3", 2, true),
+    ]);
+    await route({ type: "window:select", id: "@3" });
+
+    const paneChanged = sent.filter((m) => m.type === "pane:changed");
+    expect(paneChanged).toHaveLength(1);
+    // The old code sent "@1" here, immediately undoing the window:changed that
+    // preceded it.
+    expect(paneChanged[0]).toMatchObject({ windowId: "@3" });
+    expect(conn.activeWindowId).toBe("@3");
+  });
+
+  it("publishes the window list alongside every pane change", async () => {
+    await route({ type: "pane:zoom" });
+    expect(sent.map((m) => m.type)).toEqual(["window:changed", "pane:changed"]);
+  });
+
+  it("steps windows relatively, so a stale client list cannot mistarget", async () => {
+    await route({ type: "window:step", delta: 1 });
+    expect(stepWindow).toHaveBeenCalledWith("work", 1);
+    expect(selectWindow).not.toHaveBeenCalled();
+    expect(sent.map((m) => m.type)).toEqual(["window:changed", "pane:changed"]);
+  });
+
+  it("steps backwards on a negative delta", async () => {
+    await route({ type: "window:step", delta: -1 });
+    expect(stepWindow).toHaveBeenCalledWith("work", -1);
+  });
+
+  it("steps panes within the current window only", async () => {
+    await route({ type: "pane:step", delta: 1 });
+    expect(stepPane).toHaveBeenCalledWith("work", 1);
+    const paneChanged = sent.find((m) => m.type === "pane:changed") as {
+      panes: PaneInfo[];
+    };
+    expect(paneChanged.panes.map((p) => p.id)).toEqual(["%2"]);
+  });
+
+  it("refuses to step with nothing attached", async () => {
+    conn.attachedSession = null;
+    await route({ type: "window:step", delta: 1 });
+    await route({ type: "pane:step", delta: 1 });
+    expect(stepWindow).not.toHaveBeenCalled();
+    expect(stepPane).not.toHaveBeenCalled();
+    expect(sent.every((m) => m.type === "error")).toBe(true);
+  });
+});
+
+describe("recordings", () => {
+  const REC_A = "rec_aaaaaaaaaaaaaaaa";
+  const REC_B = "rec_bbbbbbbbbbbbbbbb";
+
+  function row(id: string, over: Record<string, unknown> = {}) {
+    return {
+      id,
+      filename: `${id}.cast`,
+      target: { kind: "session", session: "work" },
+      title: "work",
+      cols: 80,
+      rows: 24,
+      startedAt: 1000,
+      endedAt: 2000,
+      bytes: 10,
+      events: 1,
+      truncated: false,
+      stopReason: "requested",
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    recordingsList.mockResolvedValue([row(REC_A), row(REC_B)]);
+    recordingsGet.mockImplementation(async (id: string) =>
+      Promise.resolve(id === REC_A || id === REC_B ? row(id) : null),
+    );
+    recordingsRemove.mockResolvedValue(true);
+  });
+
+  it("gives a full grant every recording", async () => {
+    await route({ type: "recording:list" });
+    const reply = sent.find((m) => m.type === "recording:list");
+    expect(reply).toBeDefined();
+    expect(
+      (reply as { recordings: Array<{ id: string }> }).recordings.map(
+        (r) => r.id,
+      ),
+    ).toEqual([REC_A, REC_B]);
+  });
+
+  it("filters the list down to a recordings-scoped grant's own", async () => {
+    conn.grant = {
+      ...FULL_GRANT,
+      id: "grn_rec",
+      scope: { kind: "recordings", recordings: [REC_B] },
+    };
+    await route({ type: "recording:list" });
+    const reply = sent.find((m) => m.type === "recording:list");
+    expect(
+      (reply as { recordings: Array<{ id: string }> }).recordings.map(
+        (r) => r.id,
+      ),
+    ).toEqual([REC_B]);
+  });
+
+  it("gives a sessions-scoped grant none", async () => {
+    // Sharing a live session was never sharing its history.
+    conn.grant = {
+      ...FULL_GRANT,
+      id: "grn_sess",
+      scope: { kind: "sessions", sessions: [{ id: "$1", name: "work" }] },
+    };
+    await route({ type: "recording:list" });
+    const reply = sent.find((m) => m.type === "recording:list");
+    expect((reply as { recordings: unknown[] }).recordings).toEqual([]);
+  });
+
+  it("answers NOT_FOUND, never ACCESS_DENIED, for a recording out of scope", async () => {
+    // Two different answers is an oracle for enumerating recording ids — the
+    // same rule `policy.ts` follows for session names.
+    conn.grant = {
+      ...FULL_GRANT,
+      id: "grn_rec",
+      scope: { kind: "recordings", recordings: [REC_A] },
+    };
+    await route({ type: "recording:fetch", id: REC_B, offset: 0 });
+    const error = sent.find((m) => m.type === "error");
+    expect(error).toMatchObject({ code: "NOT_FOUND" });
+    expect(JSON.stringify(sent)).not.toContain("ACCESS_DENIED");
+  });
+
+  it("answers NOT_FOUND identically for an id that does not exist", async () => {
+    conn.grant = {
+      ...FULL_GRANT,
+      id: "grn_rec",
+      scope: { kind: "recordings", recordings: [REC_A] },
+    };
+    await route({
+      type: "recording:fetch",
+      id: "rec_cccccccccccccccc",
+      offset: 0,
+    });
+    expect(sent.find((m) => m.type === "error")).toMatchObject({
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("reports a start failure by its own code rather than as a handler error", async () => {
+    const { RecordingError } = await import("./recorder.js");
+    recorderStart.mockRejectedValueOnce(
+      new RecordingError("PANE_ALREADY_PIPED", "That pane already has a pipe."),
+    );
+    await route({
+      type: "recording:start",
+      target: { kind: "pane", session: "work", paneId: "%7" },
+    });
+    expect(sent.find((m) => m.type === "error")).toMatchObject({
+      code: "PANE_ALREADY_PIPED",
+    });
+  });
+
+  it("announces a started recording", async () => {
+    recorderStart.mockResolvedValueOnce(row(REC_A, { endedAt: null }));
+    await route({
+      type: "recording:start",
+      target: { kind: "session", session: "work" },
+    });
+    expect(sent.find((m) => m.type === "recording:started")).toBeDefined();
+  });
+
+  it("never lets a recordings-scoped grant delete anything", async () => {
+    // ACCESS_DENIED rather than NOT_FOUND here, and that is not an oracle: the
+    // allow-list refuses `recording:delete` for this grant kind outright, so
+    // the answer is identical for every id, including its own.
+    conn.grant = {
+      ...FULL_GRANT,
+      id: "grn_rec",
+      scope: { kind: "recordings", recordings: [REC_A] },
+    };
+    for (const id of [REC_A, REC_B]) {
+      sent = [];
+      await route({ type: "recording:delete", id });
+      expect(recordingsRemove).not.toHaveBeenCalled();
+      expect(sent.find((m) => m.type === "error")).toMatchObject({
+        code: "ACCESS_DENIED",
+      });
+    }
+  });
+
+  it("deletes for a full grant", async () => {
+    await route({ type: "recording:delete", id: REC_A });
+    expect(recordingsRemove).toHaveBeenCalledWith(REC_A);
+    expect(sent.find((m) => m.type === "recording:deleted")).toMatchObject({
+      id: REC_A,
+    });
   });
 });

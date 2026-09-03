@@ -2,7 +2,7 @@ import type { ClientMessage, GrantRecord } from "@repo/protocol";
 import { ClientMessage as ClientMessageSchema } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import * as tmux from "./tmux-manager.js";
-import { allowsSession, isFullGrant } from "./grant.js";
+import { allowsSession, isFullGrant, isRecordingsGrant } from "./grant.js";
 
 const logger = createLogger("relay:policy");
 
@@ -42,7 +42,33 @@ export type Policy = {
    * writing an updated name back into `grants.json` on every rename.
    */
   fullScopeOnly?: true;
+  /**
+   * `msg.target` names a session that must be in scope.
+   *
+   * Separate from `sessionArg` because `enforce` reads that one off the top
+   * level of the message, and a recording target is nested — `{ target: {
+   * kind, session } }`. It must no-op when `msg.target` is absent, or the
+   * full-grant sweep in `policy.test.ts` fails on every message that has none.
+   */
+  recordingTarget?: true;
 };
+
+/**
+ * The only message types a recordings-scoped grant may send.
+ *
+ * A `Set` rather than a flag on each entry, because the failure mode being
+ * defended against is a *new* message type shipping and being permitted by
+ * default. Everything not named here is refused for such a grant, so the
+ * default for anything added later is "no".
+ */
+export const RECORDINGS_GRANT_ALLOWED: ReadonlySet<ClientMessage["type"]> =
+  new Set<ClientMessage["type"]>([
+    "ping",
+    "recording:list",
+    "recording:fetch",
+    // Not `recording:start`, `stop` or `delete`: those write to the owner's
+    // disk and spawn a process. Somebody handed a recording gets to watch it.
+  ]);
 
 export const POLICY: Record<ClientMessage["type"], Policy> = {
   // Handled before routing; reaching the router at all is the tunnel case.
@@ -88,6 +114,9 @@ export const POLICY: Record<ClientMessage["type"], Policy> = {
   "pane:split": { write: true },
   "pane:select": { write: true, paneId: true },
   "pane:zoom": { write: true },
+  // Relative, so there is no caller-supplied id to verify: tmux resolves it
+  // inside the attached session and cannot step outside it.
+  "pane:step": { write: true },
   "pane:resize": { write: true, paneId: true },
   "pane:kill": { write: true, paneId: true },
   "pane:swap": { write: true, paneId: true },
@@ -97,6 +126,7 @@ export const POLICY: Record<ClientMessage["type"], Policy> = {
   "window:list": {},
   "window:create": { write: true },
   "window:select": { write: true, windowId: true },
+  "window:step": { write: true },
   "window:kill": { write: true, windowId: true },
   "window:rename": { write: true, windowId: true },
   "window:layout": { write: true },
@@ -106,6 +136,26 @@ export const POLICY: Record<ClientMessage["type"], Policy> = {
   // Copy mode is a per-client view, and reading is what a read-only share is
   // for. It moves nothing the owner can see.
   "tmux:copy-mode": {},
+  // Same argument, and the reason it matters more: with tmux on the alternate
+  // screen this is the *only* way a client can see scrollback at all. Denying
+  // it to a read-only share would leave that share unable to read.
+  "tmux:scroll": {},
+  // A jump to an absolute point in the same history, and a read of where the
+  // view sits. Same argument again: this is reading, not writing.
+  "tmux:scroll-to": {},
+  "tmux:scroll-state": {},
+  "tmux:exit-copy-mode": {},
+
+  // Recording spawns a process and writes to the owner's disk, so it is a
+  // write in the sense that matters: a read-only share is "watch, touch
+  // nothing". Listing and fetching are not — `fetch` is the entire
+  // share-a-recording story, and a share of a recording is read-only by
+  // construction.
+  "recording:start": { write: true, recordingTarget: true },
+  "recording:stop": { write: true },
+  "recording:delete": { write: true },
+  "recording:list": {},
+  "recording:fetch": {},
 };
 
 export type EnforceResult =
@@ -158,6 +208,12 @@ export async function enforce(
   const { grant } = ctx;
   const full = isFullGrant(grant);
 
+  // Checked first and against an allow-list, so a message type added later is
+  // denied for a recordings-scoped grant until somebody decides otherwise.
+  if (isRecordingsGrant(grant) && !RECORDINGS_GRANT_ALLOWED.has(msg.type)) {
+    return deny("ACCESS_DENIED", "This share is a recording, not a session.");
+  }
+
   if (policy.write && grant.readOnly) {
     return deny("READ_ONLY", "This is a read-only session.");
   }
@@ -174,6 +230,16 @@ export async function enforce(
         : held === "write";
     if (!enough) {
       return deny("ACCESS_DENIED", "File access is not part of this share.");
+    }
+  }
+
+  if (policy.recordingTarget) {
+    const target = (msg as unknown as { target?: { session?: unknown } })
+      .target;
+    const name = target?.session;
+    if (typeof name === "string") {
+      const inScope = await sessionInScope(ctx, name);
+      if (!inScope) return notFound(name);
     }
   }
 

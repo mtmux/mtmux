@@ -210,7 +210,9 @@ export async function shareList(): Promise<void> {
     const names =
       g.scope.kind === "all"
         ? "everything"
-        : g.scope.sessions.map((s) => s.name).join(", ");
+        : g.scope.kind === "recordings"
+          ? `${g.scope.recordings.length} recording(s)`
+          : g.scope.sessions.map((s) => s.name).join(", ");
     console.log(
       `  ${kleur.bold(g.id)}  ${state}  ${names}` +
         `  ${g.readOnly ? "read-only" : "read-write"}  files:${g.files}`,

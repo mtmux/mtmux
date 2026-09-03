@@ -1,10 +1,23 @@
+import { open, stat } from "node:fs/promises";
+
 import type { WebSocket } from "ws";
-import type { ClientMessage, ServerMessage, SessionInfo } from "@repo/protocol";
+import type {
+  ClientMessage,
+  RecordingInfo,
+  ServerMessage,
+  SessionInfo,
+  PaneInfo,
+} from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { sendJson } from "./ws-server.js";
 import type { ConnectionState } from "./connection-manager.js";
 import { broadcastWhere } from "./connection-manager.js";
-import { allowsSession, allowsSessionName, isFullGrant } from "./grant.js";
+import {
+  allowsRecording,
+  allowsSession,
+  allowsSessionName,
+  isFullGrant,
+} from "./grant.js";
 import { enforce } from "./policy.js";
 import { createPtyBridge } from "./pty-bridge.js";
 import {
@@ -14,6 +27,8 @@ import {
 } from "./tmux-clone.js";
 import * as tmux from "./tmux-manager.js";
 import * as files from "./file-service.js";
+import * as recorder from "./recorder.js";
+import * as recordings from "./recordings-index.js";
 const logger = createLogger("relay:router");
 
 // Output backpressure thresholds. If the socket's send buffer grows past the
@@ -30,6 +45,101 @@ function send(ws: WebSocket, msg: ServerMessage): void {
 
 function sendError(ws: WebSocket, code: string, message: string): void {
   send(ws, { type: "error", code, message });
+}
+
+/** Publish where the attached pane's view sits — see `tmux:scroll-state`. */
+function sendScrollState(ws: WebSocket, state: tmux.ScrollState): void {
+  send(ws, {
+    type: "tmux:scroll-state",
+    position: state.inMode ? state.position : 0,
+    historySize: state.historySize,
+    paneHeight: state.paneHeight,
+    inMode: state.inMode,
+  });
+}
+
+/** How much of a recording one `recording:chunk` carries. */
+const RECORDING_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Recordings this connection may see.
+ *
+ * A full grant sees every recording on the machine. A recordings-scoped grant
+ * sees exactly the ones it names. A sessions-scoped grant sees none: sharing a
+ * live session was never sharing its history.
+ */
+async function visibleRecordings(
+  conn: ConnectionState,
+): Promise<RecordingInfo[]> {
+  const all = await recordings.list();
+  const live = new Map(recorder.listActive().map((r) => [r.id, r]));
+  return all
+    .map((r) => live.get(r.id) ?? r)
+    .filter((r) => allowsRecording(conn.grant, r.id));
+}
+
+async function visibleRecording(
+  conn: ConnectionState,
+  id: string,
+): Promise<RecordingInfo | null> {
+  if (!allowsRecording(conn.grant, id)) return null;
+  return recordings.get(id);
+}
+
+/**
+ * Send a recording's bytes as a run of `recording:chunk` messages.
+ *
+ * Read in 64 KiB slices and base64'd, mirroring `file:upload` in reverse. The
+ * websocket is the transport rather than HTTP because the case this feature
+ * exists for — a phone on cellular — is the *tunnelled* case, where the relay
+ * has no HTTP route at all and `resolveRelayHttpBase()` in the web app returns
+ * `""`. `GET /recording` is a LAN fast path, not the mechanism.
+ *
+ * Exactly one chunk carries `final: true`, including for an empty file, so a
+ * client always has a termination signal to wait for.
+ */
+async function streamRecording(
+  ws: WebSocket,
+  recording: RecordingInfo,
+  offset: number,
+): Promise<void> {
+  const path = recordings.recordingPath(recording.filename);
+
+  let total: number;
+  try {
+    total = (await stat(path)).size;
+  } catch {
+    sendError(ws, "NOT_FOUND", "Recording not found");
+    return;
+  }
+
+  const handle = await open(path, "r");
+  try {
+    let position = Math.min(offset, total);
+    const buffer = Buffer.allocUnsafe(RECORDING_CHUNK_BYTES);
+
+    do {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        RECORDING_CHUNK_BYTES,
+        position,
+      );
+      const final = position + bytesRead >= total;
+      send(ws, {
+        type: "recording:chunk",
+        id: recording.id,
+        offset: position,
+        data: buffer.subarray(0, bytesRead).toString("base64"),
+        totalBytes: total,
+        final,
+      });
+      position += bytesRead;
+      if (final) break;
+    } while (position < total);
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -54,6 +164,63 @@ function canSee(conn: ConnectionState, name: string): boolean {
   // to resolve. See `allowsSessionName` for why that is safe here and would
   // not be for an access check.
   return allowsSessionName(conn.grant, name);
+}
+
+/**
+ * The panes of the window the session is *actually showing*, plus that
+ * window's id.
+ *
+ * Every pane reply used to be built from `listPanes(session)` — an unscoped
+ * listing of every pane in every window — and then guessed the current window
+ * with `panes.find(p => p.active)?.windowId`. `#{pane_active}` is scoped to its
+ * own window, so that guess always resolved to the *first* window, whatever
+ * window the user was looking at. Asking tmux for the window id directly and
+ * scoping the listing to it is the fix: one reply now describes exactly one
+ * window, the one on screen.
+ */
+async function currentWindowPanes(
+  session: string,
+): Promise<{ panes: PaneInfo[]; windowId: string }> {
+  const windowId = await tmux.currentWindowId(session);
+  const panes = await tmux.listPanes(session, windowId);
+  return { panes, windowId };
+}
+
+/**
+ * Publish the session's window list and current pane layout.
+ *
+ * Both go to the sender *and* to every other connection attached to the same
+ * session: tmux state is shared, so a second viewer that never hears about a
+ * window switch is showing a stale tab strip over a screen that has already
+ * moved.
+ */
+async function announceLayout(
+  conn: ConnectionState,
+  session: string,
+): Promise<{ panes: PaneInfo[]; windowId: string }> {
+  const windows = await tmux.listWindows(session);
+  const layout = await currentWindowPanes(session);
+  const windowMsg: ServerMessage = {
+    type: "window:changed",
+    windows,
+    sessionName: session,
+  };
+  const paneMsg: ServerMessage = {
+    type: "pane:changed",
+    panes: layout.panes,
+    windowId: layout.windowId,
+  };
+  send(conn.ws, windowMsg);
+  send(conn.ws, paneMsg);
+  broadcastWhere(
+    (other) => (other.attachedSession === session ? windowMsg : null),
+    conn.ws,
+  );
+  broadcastWhere(
+    (other) => (other.attachedSession === session ? paneMsg : null),
+    conn.ws,
+  );
+  return layout;
 }
 
 export async function routeMessage(
@@ -641,9 +808,10 @@ export async function routeMessage(
           sendError(ws, "NOT_ATTACHED", "No session attached");
           break;
         }
-        const panes = await tmux.listPanes(conn.attachedSession);
-        const activeWin = panes.find((p) => p.active)?.windowId ?? "";
-        send(ws, { type: "pane:list", panes, windowId: activeWin });
+        const { panes, windowId } = await currentWindowPanes(
+          conn.attachedSession,
+        );
+        send(ws, { type: "pane:list", panes, windowId });
         break;
       }
 
@@ -653,13 +821,7 @@ export async function routeMessage(
           break;
         }
         await tmux.splitPane(conn.attachedSession, msg.direction);
-        const splitPanes = await tmux.listPanes(conn.attachedSession);
-        const splitWinId = splitPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: splitPanes,
-          windowId: splitWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -669,13 +831,11 @@ export async function routeMessage(
           break;
         }
         await tmux.selectPane(msg.id);
-        const selectPanes = await tmux.listPanes(conn.attachedSession);
-        const selectWinId = selectPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: selectPanes,
-          windowId: selectWinId,
-        });
+        // Selecting a pane can move the *window* too (`select-pane -t %id`
+        // follows the pane into its own window), so the window list has to be
+        // republished alongside the pane list.
+        const selected = await announceLayout(conn, conn.attachedSession);
+        conn.activeWindowId = selected.windowId;
         break;
       }
 
@@ -685,13 +845,7 @@ export async function routeMessage(
           break;
         }
         await tmux.zoomPane(conn.attachedSession);
-        const zoomPanes = await tmux.listPanes(conn.attachedSession);
-        const zoomWinId = zoomPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: zoomPanes,
-          windowId: zoomWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -701,13 +855,7 @@ export async function routeMessage(
           break;
         }
         await tmux.resizePane(msg.id, msg.direction, msg.amount);
-        const resizePanes = await tmux.listPanes(conn.attachedSession);
-        const resizeWinId = resizePanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: resizePanes,
-          windowId: resizeWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -717,20 +865,30 @@ export async function routeMessage(
           break;
         }
         await tmux.killPane(msg.id);
-        const killPanePanes = await tmux.listPanes(conn.attachedSession);
-        const killPaneWinId =
-          killPanePanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: killPanePanes,
-          windowId: killPaneWinId,
-        });
-        const killPaneWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, {
-          type: "window:changed",
-          windows: killPaneWindows,
-          sessionName: conn.attachedSession,
-        });
+        await announceLayout(conn, conn.attachedSession);
+        break;
+      }
+
+      case "window:step": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        // Relative, so it can never target a window that was killed since the
+        // client fetched its list.
+        await tmux.stepWindow(conn.attachedSession, msg.delta);
+        const stepped = await announceLayout(conn, conn.attachedSession);
+        conn.activeWindowId = stepped.windowId;
+        break;
+      }
+
+      case "pane:step": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        await tmux.stepPane(conn.attachedSession, msg.delta);
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -754,12 +912,8 @@ export async function routeMessage(
           break;
         }
         await tmux.createWindow(conn.attachedSession, msg.name);
-        const createWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, {
-          type: "window:changed",
-          windows: createWinWindows,
-          sessionName: conn.attachedSession,
-        });
+        const created = await announceLayout(conn, conn.attachedSession);
+        conn.activeWindowId = created.windowId;
         break;
       }
 
@@ -770,19 +924,7 @@ export async function routeMessage(
         }
         await tmux.selectWindow(msg.id);
         conn.activeWindowId = msg.id;
-        const selectWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, {
-          type: "window:changed",
-          windows: selectWinWindows,
-          sessionName: conn.attachedSession,
-        });
-        const selectWinPanes = await tmux.listPanes(conn.attachedSession);
-        const selWinId = selectWinPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: selectWinPanes,
-          windowId: selWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -793,24 +935,11 @@ export async function routeMessage(
         }
         const killedId = msg.id;
         await tmux.killWindow(killedId);
-        const killWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, {
-          type: "window:changed",
-          windows: killWinWindows,
-          sessionName: conn.attachedSession,
-        });
+        const afterKill = await announceLayout(conn, conn.attachedSession);
         // Reset stale activeWindowId
         if (conn.activeWindowId === killedId) {
-          const activeWin = killWinWindows.find((w) => w.active);
-          conn.activeWindowId = activeWin?.id ?? null;
+          conn.activeWindowId = afterKill.windowId || null;
         }
-        const killWinPanes = await tmux.listPanes(conn.attachedSession);
-        const killWinWinId = killWinPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: killWinPanes,
-          windowId: killWinWinId,
-        });
         break;
       }
 
@@ -820,13 +949,7 @@ export async function routeMessage(
           break;
         }
         await tmux.swapPane(msg.id, msg.direction);
-        const swapPanes = await tmux.listPanes(conn.attachedSession);
-        const swapWinId = swapPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: swapPanes,
-          windowId: swapWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -836,12 +959,7 @@ export async function routeMessage(
           break;
         }
         await tmux.renameWindow(msg.id, msg.name);
-        const renameWinWindows = await tmux.listWindows(conn.attachedSession);
-        send(ws, {
-          type: "window:changed",
-          windows: renameWinWindows,
-          sessionName: conn.attachedSession,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -851,13 +969,7 @@ export async function routeMessage(
           break;
         }
         await tmux.selectLayout(conn.attachedSession, msg.preset);
-        const layoutPanes = await tmux.listPanes(conn.attachedSession);
-        const layoutWinId = layoutPanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: layoutPanes,
-          windowId: layoutWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -867,13 +979,7 @@ export async function routeMessage(
           break;
         }
         await tmux.rotateLayout(conn.attachedSession);
-        const rotatePanes = await tmux.listPanes(conn.attachedSession);
-        const rotateWinId = rotatePanes.find((p) => p.active)?.windowId ?? "";
-        send(ws, {
-          type: "pane:changed",
-          panes: rotatePanes,
-          windowId: rotateWinId,
-        });
+        await announceLayout(conn, conn.attachedSession);
         break;
       }
 
@@ -895,6 +1001,51 @@ export async function routeMessage(
         break;
       }
 
+      case "tmux:scroll": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        sendScrollState(
+          ws,
+          await tmux.scrollHistory(conn.attachedSession, msg.lines),
+        );
+        break;
+      }
+
+      case "tmux:scroll-to": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        sendScrollState(
+          ws,
+          await tmux.scrollToPosition(conn.attachedSession, msg.position),
+        );
+        break;
+      }
+
+      case "tmux:scroll-state": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        sendScrollState(ws, await tmux.readScrollState(conn.attachedSession));
+        break;
+      }
+
+      case "tmux:exit-copy-mode": {
+        if (!conn.attachedSession) {
+          sendError(ws, "NOT_ATTACHED", "No session attached");
+          break;
+        }
+        await tmux.exitCopyMode(conn.attachedSession);
+        // The rail is drawn from this, and leaving copy mode is exactly the
+        // moment its thumb belongs back at the bottom.
+        sendScrollState(ws, await tmux.readScrollState(conn.attachedSession));
+        break;
+      }
+
       case "pane:capture": {
         if (!conn.attachedSession) {
           sendError(ws, "NOT_ATTACHED", "No session attached");
@@ -906,6 +1057,76 @@ export async function routeMessage(
           id: msg.id,
           content: capturedContent,
         });
+        break;
+      }
+
+      case "recording:start": {
+        try {
+          const started = await recorder.start({
+            target: msg.target,
+            title: msg.title,
+          });
+          send(ws, { type: "recording:started", recording: started });
+        } catch (err) {
+          if (err instanceof recorder.RecordingError) {
+            sendError(ws, err.code, err.message);
+            break;
+          }
+          throw err;
+        }
+        break;
+      }
+
+      case "recording:stop": {
+        if (!(await visibleRecording(conn, msg.id))) {
+          sendError(ws, "NOT_FOUND", "Recording not found");
+          break;
+        }
+        const stopped = await recorder.stop(msg.id, "requested");
+        if (!stopped) {
+          sendError(ws, "NOT_FOUND", "Recording not found");
+          break;
+        }
+        send(ws, {
+          type: "recording:stopped",
+          recording: stopped,
+          reason: stopped.stopReason ?? "requested",
+        });
+        break;
+      }
+
+      case "recording:list": {
+        send(ws, {
+          type: "recording:list",
+          recordings: await visibleRecordings(conn),
+        });
+        break;
+      }
+
+      case "recording:delete": {
+        if (!(await visibleRecording(conn, msg.id))) {
+          sendError(ws, "NOT_FOUND", "Recording not found");
+          break;
+        }
+        if (recorder.isRecording(msg.id)) {
+          await recorder.stop(msg.id, "requested");
+        }
+        await recordings.remove(msg.id);
+        send(ws, { type: "recording:deleted", id: msg.id });
+        break;
+      }
+
+      case "recording:fetch": {
+        // NOT_FOUND, never ACCESS_DENIED. A holder who can tell "exists but
+        // denied" from "does not exist" can enumerate every recording id on
+        // the machine by probing — the same oracle `policy.ts` refuses to hand
+        // out for session names.
+        const recording = await visibleRecording(conn, msg.id);
+        if (!recording) {
+          sendError(ws, "NOT_FOUND", "Recording not found");
+          break;
+        }
+        await streamRecording(ws, recording, msg.offset);
         break;
       }
 

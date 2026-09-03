@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClientMessage } from "./client-messages";
 import type { ServerMessage } from "./server-messages";
+import { ServerMessage as ServerMessageSchema } from "./server-messages";
 import {
   deserializeClientMessage,
   deserializeServerMessage,
@@ -195,5 +196,49 @@ describe("tryDeserialize returns a discriminated result instead of throwing", ()
     if (!serverRes.ok) {
       expect(typeof serverRes.error).toBe("string");
     }
+  });
+});
+
+describe("auth:success capabilities", () => {
+  const base = {
+    type: "auth:success" as const,
+    serverVersion: "1.0.0",
+  };
+
+  it("accepts a scope kind it has never heard of", () => {
+    // The whole point of loosening `scope` from an enum. The web app ships
+    // ahead of the CLI on every user's machine, so a relay introducing a new
+    // scope kind would otherwise hard-fail the parse of the message that says
+    // the connection is up — and the field is advisory, enforced server-side
+    // regardless of what the client makes of it.
+    const parsed = ServerMessageSchema.safeParse({
+      ...base,
+      capabilities: { readOnly: true, files: "none", scope: "recordings" },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still rejects a scope that is not a string at all", () => {
+    expect(
+      ServerMessageSchema.safeParse({
+        ...base,
+        capabilities: { readOnly: false, files: "write", scope: 7 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps files as a closed set", () => {
+    // Unlike `scope`, this one drives a real UI decision — whether to render a
+    // file tree at all — and there is no forward value to tolerate.
+    expect(
+      ServerMessageSchema.safeParse({
+        ...base,
+        capabilities: { readOnly: false, files: "everything", scope: "all" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("treats absent capabilities as unrestricted, which an older relay is", () => {
+    expect(ServerMessageSchema.safeParse(base).success).toBe(true);
   });
 });

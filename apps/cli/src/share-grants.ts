@@ -79,11 +79,14 @@ function formatRelative(at: number, now = Date.now()): string {
  * this is where the difference gets stated rather than implied.
  */
 export function shareBanner(grant: GrantRecord, now = Date.now()): string[] {
+  const scope = grant.scope;
   const names =
-    grant.scope.kind === "all"
+    scope.kind === "all"
       ? "this whole machine"
-      : grant.scope.sessions.map((s) => s.name).join(", ");
-  const count = grant.scope.kind === "all" ? 0 : grant.scope.sessions.length;
+      : scope.kind === "recordings"
+        ? `${scope.recordings.length} recording${scope.recordings.length === 1 ? "" : "s"}`
+        : scope.sessions.map((s) => s.name).join(", ");
+  const count = scope.kind === "sessions" ? scope.sessions.length : 0;
 
   const mode = grant.readOnly ? "read-only" : "read-write";
   const files =
@@ -107,6 +110,24 @@ export function shareBanner(grant: GrantRecord, now = Date.now()): string[] {
     kleur.bold(`  Sharing ${subject} · ${mode} · ${files} · ${expiry}`),
     "",
   ];
+
+  if (scope.kind === "recordings") {
+    // Deliberately *not* the read-write shell warning, which does not apply to
+    // a fixed artefact and would read as boilerplate here. The risk is a
+    // different one and it is worse in one specific way: it cannot be undone.
+    lines.push(
+      kleur.yellow(
+        "  They get a copy. Once their browser has downloaded it, revoking the",
+      ),
+      kleur.yellow("  share does not take it back."),
+      kleur.yellow(
+        "  A recording contains everything that was on screen, including anything",
+      ),
+      kleur.yellow("  secret that was printed."),
+      "",
+    );
+    return lines;
+  }
 
   if (!grant.readOnly) {
     lines.push(

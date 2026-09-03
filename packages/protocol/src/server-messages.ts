@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RecordingId, RecordingInfo, RecordingStopReason } from "./recordings";
 import {
   SessionInfoSchema,
   FileEntrySchema,
@@ -26,9 +27,35 @@ export const AuthSuccessMessage = z.object({
     .object({
       readOnly: z.boolean(),
       files: z.enum(["none", "read", "write"]),
-      scope: z.enum(["all", "sessions"]),
+      /**
+       * The grant's scope kind, as a plain string.
+       *
+       * Deliberately **not** a `z.enum`. This whole object is advisory —
+       * everything in it is enforced server-side on every message regardless —
+       * but it sits inside `auth:success`, so an unrecognised value would fail
+       * the parse of the message that says the connection is up. The web app
+       * ships ahead of the CLI on every user's machine, which means a relay
+       * introducing a scope kind would hard-break every browser still on the
+       * previous build. `features` was designed for that direction of drift;
+       * this field has to tolerate it too.
+       */
+      scope: z.string(),
     })
     .optional(),
+
+  /**
+   * Message types this relay understands beyond the original set.
+   *
+   * A relay that does not know a message type answers `INVALID_MESSAGE`, which
+   * from the browser is indistinguishable from a switch that silently did
+   * nothing. The web app ships ahead of the CLI on every user's machine, so it
+   * has to be able to ask before it uses something new.
+   *
+   * Absent means "an older relay" — treat every entry as unsupported and use
+   * the pre-existing id-based equivalent. Advisory in the same sense as
+   * `capabilities`: the relay still validates every message it receives.
+   */
+  features: z.array(z.string()).optional(),
 });
 
 export const AuthFailureMessage = z.object({
@@ -168,6 +195,29 @@ export const PaneCapturedMessage = z.object({
   content: z.string(),
 });
 
+/**
+ * Where the attached pane's view sits inside tmux's history.
+ *
+ * The client cannot work this out for itself. `attachSession` runs a real
+ * `tmux attach-session`, so tmux owns the alternate screen and xterm's own
+ * buffer is empty — a browser scrollbar drawn from it would always be a full
+ * thumb over nothing. These are the numbers tmux reports for the pane, and
+ * they are what the terminal's scroll rail is drawn from.
+ *
+ * `position` is how many lines the view is scrolled back from the live output,
+ * so 0 is the bottom. `historySize` is how many lines exist above the visible
+ * `paneHeight` rows. `inMode` is `pane_in_mode`: outside copy mode tmux does
+ * not publish a scroll position at all, and the honest answer there is "at the
+ * bottom", not "unknown".
+ */
+export const TmuxScrollStateMessage = z.object({
+  type: z.literal("tmux:scroll-state"),
+  position: z.number().int().min(0),
+  historySize: z.number().int().min(0),
+  paneHeight: z.number().int().min(0),
+  inMode: z.boolean(),
+});
+
 export const SessionWindowsResponse = z.object({
   type: z.literal("session:windows"),
   name: z.string(),
@@ -196,6 +246,45 @@ export const DevicePairedMessage = z.object({
   at: z.number().int().positive(),
 });
 
+export const RecordingStartedMessage = z.object({
+  type: z.literal("recording:started"),
+  recording: RecordingInfo,
+});
+
+export const RecordingStoppedMessage = z.object({
+  type: z.literal("recording:stopped"),
+  recording: RecordingInfo,
+  reason: RecordingStopReason,
+});
+
+export const RecordingListResponse = z.object({
+  type: z.literal("recording:list"),
+  recordings: z.array(RecordingInfo),
+});
+
+export const RecordingDeletedMessage = z.object({
+  type: z.literal("recording:deleted"),
+  id: RecordingId,
+});
+
+/**
+ * One slice of a recording's bytes, in reply to `recording:fetch`.
+ *
+ * `offset` is the byte position this chunk starts at, so a client can reassemble
+ * out of order and detect a hole rather than silently concatenating a corrupt
+ * file. `final` marks the last chunk; there is exactly one per transfer.
+ */
+export const RecordingChunkMessage = z.object({
+  type: z.literal("recording:chunk"),
+  id: RecordingId,
+  offset: z.number().int().nonnegative(),
+  /** Base64. The frame codec is happier with text and this mirrors `file:upload`. */
+  data: z.string(),
+  /** Total bytes in the recording, so a client can size its progress bar. */
+  totalBytes: z.number().int().nonnegative(),
+  final: z.boolean(),
+});
+
 export const ServerMessage = z.discriminatedUnion("type", [
   AuthSuccessMessage,
   AuthFailureMessage,
@@ -220,8 +309,14 @@ export const ServerMessage = z.discriminatedUnion("type", [
   WindowChangedMessage,
   SessionAttachedMessage,
   PaneCapturedMessage,
+  TmuxScrollStateMessage,
   SessionWindowsResponse,
   DevicePairedMessage,
+  RecordingStartedMessage,
+  RecordingStoppedMessage,
+  RecordingListResponse,
+  RecordingDeletedMessage,
+  RecordingChunkMessage,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessage>;
@@ -249,4 +344,10 @@ export type PaneChangedMessage = z.infer<typeof PaneChangedMessage>;
 export type WindowChangedMessage = z.infer<typeof WindowChangedMessage>;
 export type SessionAttachedMessage = z.infer<typeof SessionAttachedMessage>;
 export type PaneCapturedMessage = z.infer<typeof PaneCapturedMessage>;
+export type TmuxScrollStateMessage = z.infer<typeof TmuxScrollStateMessage>;
 export type SessionWindowsResponse = z.infer<typeof SessionWindowsResponse>;
+export type RecordingStartedMessage = z.infer<typeof RecordingStartedMessage>;
+export type RecordingStoppedMessage = z.infer<typeof RecordingStoppedMessage>;
+export type RecordingListResponse = z.infer<typeof RecordingListResponse>;
+export type RecordingDeletedMessage = z.infer<typeof RecordingDeletedMessage>;
+export type RecordingChunkMessage = z.infer<typeof RecordingChunkMessage>;

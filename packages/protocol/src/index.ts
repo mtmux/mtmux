@@ -4,3 +4,4 @@ export * from "./server-messages";
 export * from "./codec";
 export * from "./pairing-messages";
 export * from "./grants";
+export * from "./recordings";
