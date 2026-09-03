@@ -263,11 +263,17 @@ Exactly what `apps/cli/src/bin.ts` registers, and nothing else:
 `start -p/--port` (14100) · `start -h/--host` · `start --no-open` · `start --json` ·
 `start --share` (with `--read-only`, `--files`) · `local` · `logs [-n] [-f] [--json]` ·
 `pair [code]` · `share [session]` (plus `share list`, `share revoke`, and its
-`--read-only`/`--files`/`--expires`/`--label`/`--no-qr` flags) · `approve` · `status` · `stop` ·
+`--read-only`/`--files`/`--expires`/`--label`/`--no-qr` flags) ·
+`record [session]` (plus `record list [--json]`, `record stop [id] [--all]`, `record rm <id>`,
+`record share <id>`, and its `--pane`/`--title`/`--expires`/`--label`/`--no-qr` flags) ·
+`approve` · `status` · `stop` ·
 `doctor` · `login`/`logout`/`whoami` · `servers` · `devices [revoke <id>]` · `upgrade` ·
 `token print|rotate|set` · `config get [key]` · `config set <key> <value>` · `version` (alias `v`)
 
-Config lives at `~/.mtmux/config.json`, mode 0600.
+Config lives at `~/.mtmux/config.json`, mode 0600. Shares live in
+`~/.mtmux/grants.json` (0600) and recordings in `~/.mtmux/recordings/` (0700, files 0600).
+
+There is deliberately **no `mtmux start --record`**. Recording is a command, not a boot mode.
 
 **Do not document `up`, `down`, `watch`, `run`, `notify`, `sessions`, `~/.mtmux/agents.toml`,
 `--detach`, `--lan`, `--relay`, `--allow`, `--socket` or `--mux`.** None of them exist.

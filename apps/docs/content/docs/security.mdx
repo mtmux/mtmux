@@ -53,11 +53,12 @@ Scoped, short-lived credentials that stand in for `AUTH_TOKEN`.
   longer a blunt revocation tool for those devices. It adds no secret to a file
   that was not already holding the machine's auth token and Ed25519 secret key.
 
-> **Be precise about "scoped".** These tokens are scoped in *time* and to a
-> single pairing. They are **not** scoped by capability: a session token
-> authenticates the WebSocket exactly as `AUTH_TOKEN` does and can perform every
-> operation the protocol offers. Treat one as equivalent to the machine token
-> for the 24 hours it lives.
+<Callout type="warn" title='Be precise about "scoped"'>
+These tokens are scoped in *time* and to a single pairing. They are **not**
+scoped by capability: a session token authenticates the WebSocket exactly as
+`AUTH_TOKEN` does and can perform every operation the protocol offers. Treat one
+as equivalent to the machine token for the 24 hours it lives.
+</Callout>
 
 ### Pairing nonces
 
@@ -182,6 +183,22 @@ refuses to boot with a `localhost` origin in the list.
 is a real boundary; read-write is not. The difference, and why, is on its own
 page: [Sharing a session](/docs/sharing).
 
+A recordings-scoped share is narrower still: it names `.cast` files and no
+sessions at all, so the connection can attach to nothing, send no input and read
+no files. The relay refuses every message type outside listing and fetching,
+checked against an allow-list so a message type added later is denied by
+default. What such a share cannot do is be taken back — see
+[Recording a session](/docs/recording).
+
+## Recordings on disk
+
+A `.cast` contains every byte that was on the screen, which routinely includes a
+secret something printed. `~/.mtmux/recordings/` is `0700` and each file is
+`0600`, and that is the whole of the protection: there is no redaction pass,
+because a terminal stream is unstructured and a filter that catches most secret
+formats invites trust it has not earned. Recordings are output only — mtmux
+never writes asciinema's input event type, so a recording is not a keylogger.
+
 ## The device lock
 
 A browser that has paired holds keys in IndexedDB. By default they are stored in
@@ -235,9 +252,19 @@ or put the single port behind a reverse proxy that terminates TLS. See
    device still holds. A restart alone no longer un-pairs anything.
 5. Never put the raw port on the public internet without TLS in front.
 6. In split deployments set `CORS_ORIGINS` to your exact production origin.
-7. Keep mtmux current — `npm install -g mtmux@latest`.
+7. Read a recording before you share it. `mtmux record share` hands over a copy,
+   and a copy cannot be revoked.
+8. Keep mtmux current — `npm install -g mtmux@latest`.
 
 ## Reporting a vulnerability
 
 Please do not open a public issue. See
 [SECURITY.md](https://github.com/GagnDeep/tmuxremote/blob/main/SECURITY.md).
+
+## Next steps
+
+- [How pairing works](/docs/pairing) — why six digits are enough
+- [The sealed tunnel](/docs/sealed-tunnel) — what the broker cannot read, and why
+- [Sharing a session](/docs/sharing) — the one boundary that is a boundary
+- [Recording a session](/docs/recording) — what a `.cast` holds, and what sharing one gives away
+- [Approvals](/docs/agents/approvals) — consent for a machine with nobody at it

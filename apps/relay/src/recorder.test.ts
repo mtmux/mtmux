@@ -94,11 +94,20 @@ afterEach(async () => {
   else process.env.MTMUX_CONFIG_DIR = original;
 });
 
-/** The argv of the last `tmux` call whose first argument matches. */
-function lastTmuxCall(verb: string): string[] | null {
+/** The argv of the last call whose args include every one of `parts`. */
+function lastCall(...parts: string[]): string[] | null {
   for (let i = execFileMock.mock.calls.length - 1; i >= 0; i -= 1) {
     const args = execFileMock.mock.calls[i]![1];
-    if (args.includes(verb)) return args;
+    if (parts.every((part) => args.includes(part))) return args;
+  }
+  return null;
+}
+
+/** The command and argv of the last call to a given binary. */
+function lastBinary(bin: string): string[] | null {
+  for (let i = execFileMock.mock.calls.length - 1; i >= 0; i -= 1) {
+    const [cmd, args] = execFileMock.mock.calls[i]!;
+    if (cmd === bin) return args;
   }
   return null;
 }
@@ -234,13 +243,22 @@ describe("pane recording", () => {
     expect(cast.events[0]!.data).toBe("\x1b[H\x1b[2JPANE CONTENTS");
   });
 
-  it("builds a pipe-pane argv with the path single-quoted", async () => {
+  it("pipes into a FIFO, never into the cast file itself", async () => {
+    // `cat >> the.cast` would append the pane's raw bytes to a file whose
+    // format is one JSON value per line — producing something that parses as a
+    // recording with no events, which is worse than failing outright.
     const info = await recorder.start({
       target: { kind: "pane", session: "work", paneId: "%7" },
     });
-    const args = lastTmuxCall("pipe-pane")!;
+
+    const mkfifo = lastBinary("mkfifo")!;
+    expect(mkfifo[0]).toBe("-m");
+    expect(mkfifo[1]).toBe("600");
+    expect(mkfifo[2]).toMatch(/\.cast\.pipe$/);
+
+    const args = lastCall("pipe-pane", "-o")!;
     expect(args.slice(0, 4)).toEqual(["pipe-pane", "-o", "-t", "%7"]);
-    expect(args[4]).toMatch(/^cat >> '\/.*\.cast'$/);
+    expect(args[4]).toMatch(/^cat >> '\/.*\.cast\.pipe'$/);
     // Nothing in the path can close the quote or reach the shell.
     expect(args[4]).not.toMatch(/[;&|$`\\]/);
     await recorder.stop(info.id);
@@ -251,7 +269,7 @@ describe("pane recording", () => {
       target: { kind: "pane", session: "work", paneId: "%7" },
     });
     await recorder.stop(info.id);
-    expect(lastTmuxCall("pipe-pane")).toEqual(["pipe-pane", "-t", "%7"]);
+    expect(lastCall("pipe-pane")).toEqual(["pipe-pane", "-t", "%7"]);
   });
 
   it("refuses a pane that already has a pipe rather than clobbering it", async () => {

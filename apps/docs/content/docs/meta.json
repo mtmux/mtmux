@@ -1,21 +1,31 @@
 {
   "pages": [
+    "---Start here---",
     "index",
     "getting-started",
     "cli",
+    "---Getting a device on---",
     "pairing",
-    "sharing",
     "sealed-tunnel",
+    "sharing",
+    "recording",
     "accounts",
+    "---Coding agents---",
+    "agents",
+    "---The web client---",
     "web-app",
-    "architecture",
-    "relay",
-    "configuration",
-    "security",
+    "---Running it yourself---",
     "self-hosting",
+    "configuration",
     "deployment",
+    "relay",
+    "---Reference---",
+    "architecture",
+    "security",
     "doctor",
     "troubleshooting",
-    "claude-code-remote"
+    "---mtmux.com---",
+    "external:[Product and pricing](https://mtmux.com)",
+    "external:[Blog](https://mtmux.com/blog)"
   ]
 }

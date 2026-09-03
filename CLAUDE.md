@@ -29,6 +29,7 @@ The shipped product is the **`mtmux`** npm CLI (`apps/cli`) — `npm install -g 
 - `packages/protocol` — Typed WebSocket message schemas (Zod discriminated unions)
 - `packages/crypto` — CPace, HKDF key schedule, sealed frame codec, device keys
 - `packages/db` — Drizzle schema + SQLite handle for the broker
+- `packages/cast` — asciinema v2 read/write; `@repo/cast` is browser-safe, `@repo/cast/writer` is node-only
 - `packages/config` — Shared env, constants, and **plan limits** (`@repo/config/plans`)
 - `packages/ui` — shadcn/ui components + terminal themes
 - `packages/logger` — Pino logger
@@ -90,6 +91,19 @@ The relay (`apps/relay`) bridges WebSocket connections to tmux:
 ### Pairing and the tunnel
 
 The code is `slot(2) + secret(4)`. The broker mints the slot and routes on it; the secret is the CPace password and stays on the two endpoints. Both directions work — the CLI can host a pairing (what `mtmux start` does) or join one a browser started (`mtmux pair`). After CPace, HKDF derives `{c2s, s2c, confirm, directToken}`; frames are AES-256-GCM with a per-direction nonce and a monotonic counter that rejects replays. The CLI agent binds an incoming tunnel stream to a pairing by **trial decryption**, which is what lets the broker stay blind.
+
+### Recording
+
+`mtmux record <session>` captures to an asciinema v2 `.cast` under
+`~/.mtmux/recordings/` (0700, files 0600). The recorder owns **its own pty** on a locked grouped
+clone rather than tapping the viewer's `bridge.onData` — that bridge dies on browser detach,
+backpressure pauses the pty itself, and there is no `offData`. Pane capture uses `pipe-pane`,
+which is the one place a string reaches `/bin/sh -c`: the path is generated from `randomBytes`,
+single-quoted and charset-asserted. Sharing a recording is a third `GrantScope` arm
+(`recordings`) with its own allow-list, so a message type added later is denied by default.
+Bytes reach a recipient as chunked `recording:chunk` messages, never over HTTP — a tunnelled
+session has no HTTP route to the relay at all. Caps are **safety limits, not plan limits**;
+nothing about recording belongs in `plans.ts`.
 
 ### Protocol Message Pattern
 

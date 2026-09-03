@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { createReadStream, type ReadStream } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { promisify } from "node:util";
 
 import { createCastWriter, type CastWriter } from "@repo/cast/writer";
@@ -80,6 +82,9 @@ type ActiveRecording = {
   bridge: PtyBridge | null;
   /** Null for a session recording. */
   paneId: string | null;
+  /** The FIFO `pipe-pane` writes into, for a pane recording. */
+  fifoPath: string | null;
+  fifo: ReadStream | null;
   cloneName: string | null;
   poll: ReturnType<typeof setInterval> | null;
 };
@@ -222,6 +227,8 @@ export async function start(options: {
     writer,
     bridge: null,
     paneId: target.kind === "pane" ? target.paneId : null,
+    fifoPath: null,
+    fifo: null,
     cloneName: null,
     poll: null,
   };
@@ -231,7 +238,7 @@ export async function start(options: {
     if (target.kind === "session") {
       await startSessionCapture(recording, target.session, cols, rows);
     } else {
-      await startPaneCapture(recording, target.paneId, path);
+      await startPaneCapture(recording, target.paneId, filename);
     }
   } catch (err) {
     active.delete(id);
@@ -298,7 +305,29 @@ async function startSessionCapture(
 }
 
 /**
- * Pane capture: `pipe-pane`, and an explicit first frame.
+ * Pane capture: `pipe-pane` into a FIFO, and an explicit first frame.
+ *
+ * ## Why a FIFO and not `cat >> the.cast`
+ *
+ * The obvious `pipe-pane -o -t %7 'cat >> recording.cast'` appends the pane's
+ * **raw bytes** to the file. A `.cast` is one JSON header line followed by one
+ * JSON array per event, so that produces a file whose first two lines are valid
+ * and whose remainder is escape sequences — it parses as a recording with no
+ * events, which is worse than failing. Every byte has to go through
+ * `CastWriter` to be timestamped and encoded, which means the recorder has to
+ * *read* the stream rather than let the shell write it.
+ *
+ * So `pipe-pane` writes into a named pipe we own and we read the other end.
+ * That also gets the timing right: the timestamp on each event is when we read
+ * the chunk, from the same monotonic clock the session path uses.
+ *
+ * The FIFO is opened `r+` rather than `r` deliberately. Opening a FIFO
+ * read-only blocks until a writer appears, and the writer here is a `cat` that
+ * `pipe-pane` has not spawned yet — the two would deadlock. `r+` opens both
+ * ends at once, which also means the read stream never sees EOF when `cat`
+ * exits, so teardown is ours to do rather than something to wait for.
+ *
+ * ## The first frame
  *
  * The inverse of the session case, and the asymmetry is the point. `pipe-pane`
  * starts mid-stream — it copies what the pane writes from now on and knows
@@ -310,7 +339,7 @@ async function startSessionCapture(
 async function startPaneCapture(
   recording: ActiveRecording,
   paneId: string,
-  path: string,
+  filename: string,
 ): Promise<void> {
   if (await paneIsPiped(paneId)) {
     // Starting a second pipe on a pane silently replaces the first. Somebody
@@ -321,21 +350,45 @@ async function startPaneCapture(
     );
   }
 
-  assertShellSafePath(path);
+  const fifoPath = index.recordingPath(`${filename}.pipe`);
+  assertShellSafePath(fifoPath);
+  await execFileAsync("mkfifo", ["-m", "600", fifoPath]);
+  recording.fifoPath = fifoPath;
 
   const screen = await tmux.capturePaneById(paneId).catch(() => "");
   recording.writer.write(`\x1b[H\x1b[2J${screen}`);
 
-  await execFileAsync("tmux", [
-    ...tmuxArgs(),
-    "pipe-pane",
-    "-o",
-    "-t",
-    paneId,
-    // Single-quoted, and the path is asserted above against a charset with no
-    // quote in it, so there is nothing here for `/bin/sh -c` to reinterpret.
-    `cat >> '${path}'`,
-  ]);
+  // `r+`, not `r`: see the docblock. Reading as UTF-8 matches node-pty, which
+  // hands the session path a string.
+  const fifo = createReadStream(fifoPath, {
+    flags: "r+",
+    encoding: "utf8",
+  });
+  recording.fifo = fifo;
+  fifo.on("data", (chunk) => {
+    recording.writer.write(String(chunk));
+    if (recording.writer.stopped) void stop(recording.info.id, "limit");
+  });
+  fifo.on("error", () => {
+    void stop(recording.info.id, "error");
+  });
+
+  try {
+    await execFileAsync("tmux", [
+      ...tmuxArgs(),
+      "pipe-pane",
+      "-o",
+      "-t",
+      paneId,
+      // Single-quoted, and the path is asserted above against a charset with no
+      // quote in it, so there is nothing here for `/bin/sh -c` to reinterpret.
+      `cat >> '${fifoPath}'`,
+    ]);
+  } catch (err) {
+    fifo.destroy();
+    await unlink(fifoPath).catch(() => {});
+    throw err;
+  }
 }
 
 export async function stop(
@@ -359,6 +412,11 @@ export async function stop(
     } catch (err) {
       logger.warn({ err, id }, "Could not stop pipe-pane");
     }
+  }
+
+  if (recording.fifo) recording.fifo.destroy();
+  if (recording.fifoPath) {
+    await unlink(recording.fifoPath).catch(() => {});
   }
 
   if (recording.bridge) {
