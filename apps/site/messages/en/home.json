@@ -1,12 +1,13 @@
 {
   "meta": {
-    "title": "Your tmux sessions in any browser, on any phone",
-    "description": "One command serves the tmux sessions you already run to any browser. Scan a QR and you're in from anywhere — end-to-end encrypted, no port forwarding, no VPN."
+    "title": "tmux in any browser, on any phone — one command, no SSH",
+    "description": "Run one command and the tmux sessions already on your machine open in any browser. Scan the QR to attach — end-to-end encrypted, nothing to port-forward."
   },
   "hero": {
     "badge": "scan a code, you're in",
-    "title": "Your tmux, in your <accent>pocket</accent>.",
-    "subhead": "One command turns the tmux server you already run into a browser session you can open from anywhere. It prints a QR code — scan it on your phone and you're attached. No port forwarding, no VPN, no SSH key on the phone.",
+    "title": "Your tmux sessions in any browser, <accent>even the one in your pocket</accent>.",
+    "subhead": "The same tmux server your laptop attaches to, open in a browser tab on your phone.",
+    "answer": "mtmux is a command-line tool that serves the tmux sessions already running on your machine to any web browser. Install it with <cmd>npm i -g mtmux</cmd>, run <cmd>mtmux</cmd>, and scan the QR code it prints: your phone attaches to the same tmux server over an end-to-end encrypted tunnel. No port forwarding, no VPN and <post>no SSH key on the phone</post>.",
     "quickstart": "2-minute quickstart",
     "trust": {
       "noSsh": "no SSH keys on your phone",
@@ -26,27 +27,47 @@
       "lazygit",
       "htop",
       "k9s"
-    ]
+    ],
+    "moreLink": "new to tmux? start here"
   },
-  "howItWorks": {
-    "eyebrow": "how it works",
+  "demo": {
+    "eyebrow": "see it work",
     "title": "One command, then close the laptop.",
-    "description": "mtmux runs next to your tmux server. Nothing is copied and nothing is synced — your browser is just another client attaching to the same session.",
-    "steps": {
-      "start": {
-        "title": "Run it",
-        "description": "It serves this machine's tmux and dials out to open a sealed tunnel. No config file, nothing to forward, no account."
+    "description": "mtmux runs next to your tmux server. Nothing is copied and nothing is synced — <post>your browser is just another client</post> attaching to the same session. Here is the whole thing, start to finish.",
+    "terminalTitle": "mbp — mtmux",
+    "chapters": {
+      "install": {
+        "title": "Install it",
+        "description": "One global package. Node 22 and tmux are the only prerequisites."
       },
-      "scan": {
-        "title": "Scan the code",
-        "description": "The QR carries the code in the URL fragment, which browsers never send to a server. Type the code by hand if you prefer."
+      "pair": {
+        "title": "Run it",
+        "description": "It serves this machine's tmux and dials out to open a sealed tunnel, then prints a QR and a six-digit code. No config file, nothing to forward, no account."
       },
       "attach": {
         "title": "You're attached",
-        "description": "Real panes, real scrollback, real keys. The browser is trusted from then on, so the code is needed exactly once."
+        "description": "<post>Real panes, real scrollback, real keys</post>. The four-digit half of the code never reaches our servers, and the browser is trusted from then on."
+      },
+      "move": {
+        "title": "Move around",
+        "description": "Swipe left or right to step through your tmux windows — and through the panes of a window when one is zoomed. The strip above the terminal always shows exactly what a swipe will step. Tap any tab to jump straight there."
+      },
+      "agent": {
+        "title": "Close the tab",
+        "description": "The session never belonged to the browser. Whatever was running keeps running, and it is still there when you come back."
       }
     },
-    "terminalTitle": "mbp — mtmux"
+    "transport": {
+      "play": "Play the demo",
+      "pause": "Pause the demo",
+      "restart": "Play the demo again",
+      "progress": "Demo progress",
+      "reducedNote": "Playback is turned off because your system is set to reduce motion. Use the numbered steps below to move between frames."
+    },
+    "a11y": {
+      "description": "A replay of a terminal running mtmux beside a phone browser. The terminal installs mtmux, runs it, and prints a pairing code; the phone enters the code, attaches to the session, and swipes between three tmux windows.",
+      "nowShowing": "Now showing: {title}"
+    }
   },
   "fidelity": {
     "eyebrow": "fidelity",
@@ -83,7 +104,7 @@
   "agents": {
     "eyebrow": "coding agents",
     "title": "Check on the run without <accent>going back</accent>.",
-    "description": "Long agent runs are why most people want this. Claude Code, Codex or aider is thirty minutes into a refactor and you are not at the desk — so open the session on your phone and look at it.",
+    "description": "<post>Long agent runs</post> are why most people want this. Claude Code, Codex or aider is thirty minutes into a refactor and you are not at the desk — so open the session on your phone and look at it.",
     "readMore": "More on running agents",
     "terminalTitle": "iphone — work:1",
     "points": [
@@ -106,7 +127,7 @@
     ],
     "honest": {
       "label": "to be clear",
-      "body": "mtmux does not send notifications. There is no push, no Slack routing and no agent detection. It is pull, not push — you open the session and look."
+      "body": "mtmux <post>does not send notifications</post>. There is no push, no Slack routing and no agent detection. It is pull, not push — you open the session and look."
     }
   },
   "security": {
@@ -137,6 +158,7 @@
     "eyebrow": "pricing",
     "title": "Free for one machine. Forever.",
     "description": "Local and LAN traffic never touches our infrastructure, so it is never metered. Relayed bytes are the only thing that costs us anything, so they are the only thing we count.",
+    "annual": "${amount}/year billed annually",
     "popularBadge": "POPULAR",
     "fullComparison": "full comparison",
     "tiers": [
@@ -153,11 +175,7 @@
       {
         "name": "Pro",
         "note": "Unlimited servers & devices",
-        "features": [
-          "200 GB/month relayed",
-          "Name your machines",
-          "$100/year billed annually"
-        ],
+        "features": ["200 GB/month relayed", "Name your machines"],
         "popular": true
       }
     ]
@@ -190,6 +208,10 @@
       {
         "question": "Do I have to use your servers at all?",
         "answer": "No. mtmux start --local serves your LAN and loopback and contacts no broker whatsoever. If you want the tunnel but not our broker, MTMUX_API_URL points the CLI at your own."
+      },
+      {
+        "question": "How is this different from tmate?",
+        "answer": "tmate spins up a new session on its own relay so a guest can join you. mtmux attaches you to the tmux server you already run, from your own browser, and the secret half of the pairing code never reaches our broker. <post>The full comparison</post> covers where each one fits."
       }
     ]
   },

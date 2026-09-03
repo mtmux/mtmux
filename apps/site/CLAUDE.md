@@ -171,6 +171,23 @@ Brand attribution is carried by `og:site_name`, Organization JSON-LD and the vis
 Keep titles ≤ 60 characters and descriptions ≤ 155, written as a standalone answer — the
 description is what AI search engines quote.
 
+### 8. Every post is part of a cluster, and the build checks it
+
+`src/config/clusters.ts` declares which posts belong to which hub. `src/lib/link-graph.ts` reads
+the actual MDX at build time and reports, per post: dangling internal links, self-links, missing
+hub/sibling/cross-cluster links, no product-page link, no `docs.mtmux.com` link, fewer than two
+off-site citations, and fewer than three inbound links. Nothing else in this codebase can catch a
+typo'd slug — it compiles, renders as an anchor, and ships as a soft 404.
+
+The report prints as `[link-graph] …` during `pnpm build`. `SEVERITY` in that file decides whether
+it warns or throws, and it is now **`"error"`** — every member of the cluster map exists, so an
+orphaned post, a dangling internal link or a missing docs link fails the build. If it throws while
+you are adding a post, add the inbound links it names; do not turn it back to `"warn"`.
+
+New marketing → blog links go through `t.rich()` with the `inlineLink()` helper in
+`src/lib/rich-links.tsx`. The href must be a **literal string at the call site** — the analyser
+reads component source, and a route assembled at runtime is invisible to it.
+
 ---
 
 ## Layout
@@ -191,11 +208,15 @@ src/
 │   ├── sections/<page>/        page-specific composed sections
 │   └── mdx/                    components available inside blog posts
 ├── config/site.ts              domain, version, install command, nav structure
+├── config/clusters.ts          hub→spoke map for the blog's topic clusters
 ├── i18n/                       locales, routing, navigation, message loading
-└── lib/                        seo, structured-data, blog, utils
+└── lib/                        seo, structured-data, blog, link-graph, rich-links, utils
 content/blog/<locale>/*.mdx     posts, one directory per language
 messages/<locale>/*.json        copy, one file per namespace
 ```
+
+Note the content path: posts live in **`content/blog/en/`** at the workspace root, not under
+`src/`.
 
 \* One deliberate exception: `ui/accordion.tsx` has `aria-hidden="true"` added to its two chevron
 icons, which the generated version omits. If you regenerate that component, re-apply it — the
@@ -239,23 +260,31 @@ plans are). Where they and this file disagree, they win.
 Exactly what `apps/cli/src/bin.ts` registers, and nothing else:
 
 `mtmux` (alias for `start`) · `start` · `start --local` · `start --no-qr` · `start -n/--name` ·
-`start -p/--port` (14100) · `start -h/--host` · `start --no-open` · `start --json` · `local` ·
-`pair [code]` · `status` · `stop` · `doctor` · `login`/`logout`/`whoami` · `servers` ·
-`devices [revoke <id>]` · `upgrade` · `token print|rotate|set` · `version`
+`start -p/--port` (14100) · `start -h/--host` · `start --no-open` · `start --json` ·
+`start --share` (with `--read-only`, `--files`) · `local` · `logs [-n] [-f] [--json]` ·
+`pair [code]` · `share [session]` (plus `share list`, `share revoke`, and its
+`--read-only`/`--files`/`--expires`/`--label`/`--no-qr` flags) · `approve` · `status` · `stop` ·
+`doctor` · `login`/`logout`/`whoami` · `servers` · `devices [revoke <id>]` · `upgrade` ·
+`token print|rotate|set` · `config get [key]` · `config set <key> <value>` · `version` (alias `v`)
 
 Config lives at `~/.mtmux/config.json`, mode 0600.
 
-**Do not document `up`, `down`, `watch`, `run`, `notify`, `share`, `sessions`, `--detach`,
-`--lan`, `--relay`, `--allow`, `--socket` or `--mux`.** None of them exist.
+**Do not document `up`, `down`, `watch`, `run`, `notify`, `sessions`, `~/.mtmux/agents.toml`,
+`--detach`, `--lan`, `--relay`, `--allow`, `--socket` or `--mux`.** None of them exist.
+
+`share`, `logs`, `approve` and `config get`/`config set` **do** ship — this list said otherwise
+for months and the whole site inherited the omission. Settle it against `apps/cli/src/bin.ts`,
+never against this file's memory.
 
 The CLI table in `docs-cli-reference.tsx` is **index-matched** against `docs.cli.descriptions` in
 `messages/en/docs.json`. Add and remove rows in pairs, or every description shifts silently.
 
 ### There is no notification product
 
-No push, no email, no Slack/Discord/ntfy/gotify/webhook routing, no `agents.toml`, no agent
-presets, no done/blocked/stalled/failed states, no reply-from-notification, no hooks API, no
-quiet hours. The `signal-*` colour tokens are leftovers from that fiction and now serve as
+No push, no email, no Slack/Discord/ntfy/gotify/webhook routing, no `~/.mtmux/agents.toml`, no
+agent presets, no done/blocked/stalled/failed states, no reply-from-notification, no hooks API,
+no quiet hours. This holds everywhere — including `/feed.xml`, whose channel description claimed
+"agent-aware notifications" until it was moved into `messages/en/blog.json` under `feed.*`. The `signal-*` colour tokens are leftovers from that fiction and now serve as
 generic status accents — do not reach for them to describe agent behaviour. The `SignalCard`
 primitive that rendered fake notifications has been deleted; don't bring it back.
 

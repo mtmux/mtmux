@@ -1,5 +1,5 @@
 {
-  "defaultTitle": "Your tmux sessions in any browser, on any phone",
+  "defaultTitle": "mtmux — your tmux sessions in any browser",
   "defaultDescription": "mtmux serves the tmux sessions you already run to any browser — real panes, real keys, end-to-end encrypted, with nothing to port-forward.",
   "skipToContent": "Skip to content",
   "copied": "Copied",
@@ -13,7 +13,9 @@
   "notFound": {
     "title": "No pane here",
     "description": "That URL does not resolve to a page. The session is still running, though.",
-    "cta": "Back to the homepage"
+    "cta": "Back to the homepage",
+    "docs": "Install and quickstart",
+    "blog": "tmux guides"
   },
   "error": {
     "title": "Something broke",

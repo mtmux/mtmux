@@ -8,6 +8,7 @@ import {
 } from "@/components/primitives/section";
 import { Line, Tok, TerminalWindow } from "@/components/primitives/terminal";
 import { Link } from "@/i18n/navigation";
+import { inlineLink } from "@/lib/rich-links";
 
 type Point = { title: string; body: string };
 
@@ -37,7 +38,9 @@ export async function Agents() {
         title={t.rich("title", {
           accent: (chunks) => <Accent tone="agent">{chunks}</Accent>,
         })}
-        description={t("description")}
+        description={t.rich("description", {
+          post: inlineLink("/blog/stop-babysitting-coding-agents"),
+        })}
         level={2}
         size="md"
         className="mb-10 max-w-3xl sm:mb-14"
@@ -73,7 +76,11 @@ export async function Agents() {
             <span className="mt-0.5 shrink-0 font-mono text-[0.75rem] font-500 tracking-[0.1em] text-text-faint uppercase">
               {t("honest.label")}
             </span>
-            <p>{t("honest.body")}</p>
+            <p>
+              {t.rich("honest.body", {
+                post: inlineLink("/blog/coding-agent-notifications"),
+              })}
+            </p>
           </div>
         </div>
 
@@ -81,9 +88,12 @@ export async function Agents() {
           <HairlineGrid minColumnWidth="15rem">
             {points.map((point) => (
               <HairlineCell key={point.title}>
-                <p className="mb-1.5 text-[0.9375rem] font-600 text-text-strong">
+                {/* An `h3`, styled to render exactly as the `<p>` it replaced:
+                    the base `h1–h4` rule applies the display face and a tight
+                    tracking, so both have to be cancelled explicitly. */}
+                <h3 className="mb-1.5 font-sans text-[0.9375rem] font-600 tracking-[-0.01em] text-text-strong">
                   {point.title}
-                </p>
+                </h3>
                 <p className="text-[0.8438rem] leading-[1.7] text-text-muted">
                   {point.body}
                 </p>

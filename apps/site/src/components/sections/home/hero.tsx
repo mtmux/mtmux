@@ -1,9 +1,11 @@
 import { getTranslations } from "next-intl/server";
 
+import { Cmd } from "@/components/primitives/cards";
 import { Accent } from "@/components/primitives/section";
 import { CopyInstall } from "@/components/site/copy-install";
 import { siteConfig } from "@/config/site";
 import { Link } from "@/i18n/navigation";
+import { inlineLink } from "@/lib/rich-links";
 
 /**
  * The hero.
@@ -11,9 +13,15 @@ import { Link } from "@/i18n/navigation";
  * Deliberately typographic: a centred column with no product mockup. The
  * previous device illustration competed with the headline for attention and
  * pushed the install command — the only action on the page — below the fold on
- * short screens. The visual payoff now lands one section down, where the
- * `mtmux` transcript actually demonstrates the claim instead of decorating
- * it.
+ * short screens. The visual payoff now lands one section down, in
+ * `sections/home/demo.tsx` — a replay of the real thing running, which
+ * demonstrates the claim instead of decorating it.
+ *
+ * The same constraint governs the type scale. The headline carries the page's
+ * primary query ("tmux sessions in any browser"), which is long, so the clamp
+ * caps at 3.25rem over 26ch rather than 4.25rem over 18ch — a keyword-bearing
+ * h1 that costs the fold would be the illustration regression again, wearing
+ * different clothes.
  */
 export async function HomeHero() {
   const t = await getTranslations("home.hero");
@@ -37,7 +45,7 @@ export async function HomeHero() {
           </span>
         </p>
 
-        <h1 className="mt-7 max-w-[18ch] text-[clamp(2.125rem,6.2vw,4.25rem)] leading-[0.95]">
+        <h1 className="mt-7 max-w-[26ch] text-[clamp(1.875rem,4.6vw,3.25rem)] leading-[1.0]">
           {t.rich("title", { accent: (chunks) => <Accent>{chunks}</Accent> })}
         </h1>
 
@@ -54,6 +62,18 @@ export async function HomeHero() {
             {t("quickstart")}
           </Link>
         </div>
+
+        {/* The definitional paragraph. It is the passage an answer engine
+            quotes when asked "what is mtmux", so it names the product, says
+            what it is, and gives the two commands — in that order, in one
+            sentence each. It sits *after* the CTA row so `CopyInstall` keeps
+            the fold, and the DOM order still puts it well ahead of the demo. */}
+        <p className="mt-9 max-w-[62ch] text-[0.9375rem] leading-[1.8] text-text-muted">
+          {t.rich("answer", {
+            cmd: (chunks) => <Cmd>{chunks}</Cmd>,
+            post: inlineLink("/blog/tmux-from-phone"),
+          })}
+        </p>
 
         <p className="mt-8 flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-[0.8125rem] text-text-faint">
           <span>{t("trust.noSsh")}</span>

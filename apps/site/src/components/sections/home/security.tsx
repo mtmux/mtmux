@@ -32,9 +32,12 @@ export async function Security() {
         <HairlineGrid minColumnWidth="14rem">
           {CELL_INDEXES.map((index) => (
             <HairlineCell key={index}>
-              <p className="mb-1.5 text-[0.9375rem] text-text-strong">
+              {/* See the note in `agents.tsx`: these cell titles are weight
+                  400, so the base heading rule's face *and* tracking are both
+                  cancelled to keep the render identical. */}
+              <h3 className="mb-1.5 font-sans text-[0.9375rem] font-normal tracking-normal text-text-strong">
                 {t(`cells.${index}.title`)}
-              </p>
+              </h3>
               <p className="text-[0.8125rem] leading-[1.6] text-text-muted">
                 {t.rich(`cells.${index}.description`, {
                   cmd: (chunks) => <Cmd>{chunks}</Cmd>,

@@ -10,6 +10,7 @@ import {
   OG_FONT_MONO,
   OG_SAFE_PADDING,
   OG_SIZE,
+  truncateTitle,
 } from "@/lib/og";
 
 export const alt = siteConfig.name;
@@ -84,7 +85,12 @@ export default async function Image({
 }) {
   const { locale } = await params;
   const [t, fonts] = await Promise.all([
-    getTranslations({ locale, namespace: "common" }),
+    // `home`, not `common`. This route renders the card for `/` — the only
+    // page it serves — and reading `common.default*` meant every rewrite of the
+    // homepage's own title and description silently failed to reach the share
+    // card. `common.default*` is now what its name says: the fallback for the
+    // documents that have no page metadata, `not-found` and `error`.
+    getTranslations({ locale, namespace: "home" }),
     loadOgFonts(),
   ]);
 
@@ -136,7 +142,7 @@ export default async function Image({
             margin: 0,
           }}
         >
-          {t("defaultTitle")}
+          {truncateTitle(t("meta.title"))}
         </h1>
         <p
           style={{
@@ -150,7 +156,7 @@ export default async function Image({
             maxWidth: 820,
           }}
         >
-          {t("defaultDescription")}
+          {t("meta.description")}
         </p>
       </div>
 

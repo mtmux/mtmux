@@ -1,3 +1,4 @@
+import type { Author } from "@/config/authors";
 import { PLANS, PRICING } from "@/config/plans";
 import { siteConfig } from "@/config/site";
 import { type Locale } from "@/i18n/locales";
@@ -30,7 +31,11 @@ export function organizationSchema(): Json {
       width: 512,
       height: 512,
     },
-    sameAs: [siteConfig.social.github],
+    // The npm package is the strongest third-party profile this project has —
+    // it is already trusted as `installUrl` on the SoftwareApplication node
+    // below, and leaving it out of `sameAs` meant the two identifiers were
+    // never joined up for anything reading the graph.
+    sameAs: [siteConfig.social.github, "https://www.npmjs.com/package/mtmux"],
     contactPoint: {
       "@type": "ContactPoint",
       email: siteConfig.email,
@@ -53,7 +58,19 @@ export function websiteSchema(locale: Locale): Json {
   };
 }
 
-export function softwareApplicationSchema(description: string): Json {
+/**
+ * The application node.
+ *
+ * `featureList` is optional and passed from `/` only. Every page that emits a
+ * `SoftwareApplication` shares this one `@id`, and `/pricing` renders none of
+ * the feature titles the homepage does — listing them there would be markup
+ * describing content the reader cannot see, which is the one rule this module
+ * exists to keep.
+ */
+export function softwareApplicationSchema(
+  description: string,
+  options?: { featureList?: readonly string[] },
+): Json {
   return {
     "@type": "SoftwareApplication",
     "@id": softwareId,
@@ -66,8 +83,20 @@ export function softwareApplicationSchema(description: string): Json {
     downloadUrl: siteConfig.url,
     softwareVersion: siteConfig.version,
     installUrl: "https://www.npmjs.com/package/mtmux",
+    // A `WebPage`, not a second `WebSite`: the graph already has exactly one
+    // WebSite node with a stable `@id`, and an anonymous duplicate of that type
+    // is the fastest way to confuse whatever is resolving entities.
+    softwareHelp: {
+      "@type": "WebPage",
+      url: siteConfig.docsUrl,
+      name: "mtmux documentation",
+    },
+    softwareRequirements: "Node.js 22 or newer; tmux",
     publisher: { "@id": organizationId },
     license: "https://opensource.org/licenses/MIT",
+    ...(options?.featureList && options.featureList.length > 0
+      ? { featureList: [...options.featureList] }
+      : {}),
     // Prices come from the same table /pricing renders, so the machine-readable
     // offer and the human-readable one cannot disagree. Structured data is the
     // more dangerous of the two to get wrong: it is quoted by search engines
@@ -88,6 +117,50 @@ export function softwareApplicationSchema(description: string): Json {
         description: `Unlimited servers and devices, ${PLANS.pro.monthlyGib} GB of relayed traffic a month, named servers. $${PRICING.pro.yearlyUsd} a year.`,
       },
     ],
+  };
+}
+
+/**
+ * The page node.
+ *
+ * Cheap and load-bearing: without it a page's other nodes float free of the
+ * `WebSite` entity, and nothing in the graph says which page they describe.
+ * `about` and `mainEntity` take `@id` references so the page joins the entities
+ * that already exist rather than minting near-duplicates of them.
+ */
+export function webPageSchema(options: {
+  locale: Locale;
+  path: string;
+  name: string;
+  description: string;
+  /** `@id` of the entity this page is about — usually `softwareId`. */
+  aboutId?: string;
+  /** `@id` of the page's primary entity, when one node *is* the page. */
+  mainEntityId?: string;
+  primaryImageUrl?: string;
+}): Json {
+  const url = absoluteUrl(options.locale, options.path);
+
+  return {
+    "@type": "WebPage",
+    "@id": `${url}#webpage`,
+    url,
+    name: options.name,
+    description: options.description,
+    inLanguage: options.locale,
+    isPartOf: { "@id": websiteId },
+    ...(options.aboutId ? { about: { "@id": options.aboutId } } : {}),
+    ...(options.mainEntityId
+      ? { mainEntity: { "@id": options.mainEntityId } }
+      : {}),
+    ...(options.primaryImageUrl
+      ? {
+          primaryImageOfPage: {
+            "@type": "ImageObject",
+            url: options.primaryImageUrl,
+          },
+        }
+      : {}),
   };
 }
 
@@ -120,6 +193,8 @@ export function faqSchema(
 }
 
 export function howToSchema(options: {
+  /** A stable `@id`, so two HowTo nodes on one site stay distinguishable. */
+  id?: string;
   name: string;
   description: string;
   steps: ReadonlyArray<{ name: string; text: string }>;
@@ -127,6 +202,7 @@ export function howToSchema(options: {
 }): Json {
   return {
     "@type": "HowTo",
+    ...(options.id ? { "@id": options.id } : {}),
     name: options.name,
     description: options.description,
     totalTime: options.totalTime,
@@ -139,6 +215,36 @@ export function howToSchema(options: {
   };
 }
 
+/**
+ * The author node for a byline.
+ *
+ * Every author used to be a `Person` carrying the *same* GitHub URL — the
+ * project's repository. Three Persons sharing one URL tells a knowledge graph
+ * they are one entity, which is strictly worse than saying nothing. So: the
+ * project byline resolves to the publisher Organization it actually is, and a
+ * named author gets a stable `@id` on our own domain, which is what makes a
+ * byline reusable as an entity across posts. A `url` is emitted only when there
+ * is a real, author-specific one to emit.
+ */
+export function authorNode(author: Author): Json {
+  if (author.isOrganization) return { "@id": organizationId };
+
+  return {
+    "@type": "Person",
+    "@id": `${siteConfig.url}/#author-${author.key}`,
+    name: author.name,
+    jobTitle: author.role,
+    description: author.bio,
+    ...(author.url ? { url: author.url } : {}),
+    worksFor: { "@id": organizationId },
+  };
+}
+
+/** A `DefinedTerm`-free `about`/`mentions` entry — a plain Thing with a name. */
+function thing(name: string): Json {
+  return { "@type": "Thing", name };
+}
+
 export function blogPostingSchema(options: {
   locale: Locale;
   path: string;
@@ -146,14 +252,21 @@ export function blogPostingSchema(options: {
   description: string;
   datePublished: string;
   dateModified: string;
-  authorName: string;
-  authorUrl?: string;
+  author: Author;
   image: string;
   keywords?: readonly string[];
   wordCount?: number;
   section?: string;
+  /** The one subject the post is about. Usually its primary keyword. */
+  about?: string;
+  /** Secondary subjects, from the post's tags. */
+  mentions?: readonly string[];
 }): Json {
   const url = absoluteUrl(options.locale, options.path);
+  const mentions = (options.mentions ?? []).filter(
+    (name) => name.toLowerCase() !== options.about?.toLowerCase(),
+  );
+
   return {
     "@type": "BlogPosting",
     "@id": `${url}#article`,
@@ -164,16 +277,17 @@ export function blogPostingSchema(options: {
     datePublished: options.datePublished,
     dateModified: options.dateModified,
     inLanguage: options.locale,
-    author: {
-      "@type": "Person",
-      name: options.authorName,
-      url: options.authorUrl,
-    },
+    author: authorNode(options.author),
     publisher: { "@id": organizationId },
     image: [options.image],
     keywords: options.keywords?.join(", "),
     wordCount: options.wordCount,
     articleSection: options.section,
+    // `about` is the single subject; `mentions` are the rest. Splitting them is
+    // what lets an answer engine tell "a page about tmux panes" from "a page
+    // that says the word tmux", which a flat keyword string cannot express.
+    ...(options.about ? { about: thing(options.about) } : {}),
+    ...(mentions.length > 0 ? { mentions: mentions.map(thing) } : {}),
     isPartOf: { "@id": websiteId },
   };
 }

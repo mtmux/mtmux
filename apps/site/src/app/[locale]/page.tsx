@@ -5,18 +5,23 @@ import { JsonLd } from "@/components/json-ld";
 import { ClosingCta } from "@/components/sections/closing-cta";
 import { Agents } from "@/components/sections/home/agents";
 import { CompatStrip } from "@/components/sections/home/compat-strip";
+import { Demo } from "@/components/sections/home/demo";
 import { Faq } from "@/components/sections/home/faq";
 import { Fidelity } from "@/components/sections/home/fidelity";
 import { HomeHero } from "@/components/sections/home/hero";
-import { HowItWorks } from "@/components/sections/home/how-it-works";
 import { PricingTeaser } from "@/components/sections/home/pricing-teaser";
 import { Security } from "@/components/sections/home/security";
+import { siteConfig } from "@/config/site";
 import type { Locale } from "@/i18n/locales";
+import { stripRichTags } from "@/lib/rich-links";
 import { buildMetadata } from "@/lib/seo";
 import {
   faqSchema,
   graph,
+  howToSchema,
   softwareApplicationSchema,
+  softwareId,
+  webPageSchema,
 } from "@/lib/structured-data";
 
 export async function generateMetadata({
@@ -44,22 +49,65 @@ export default async function HomePage({
   setRequestLocale(locale);
 
   const t = await getTranslations({ locale, namespace: "home" });
-  const faqItems = t.raw("faq.items") as Array<{
-    question: string;
-    answer: string;
-  }>;
+  // Run through `stripRichTags` even though `home.faq` carries no tags today:
+  // this is the third page to build `faqSchema` straight out of `t.raw`, and
+  // the other two only grew a stripper after a tag had already shipped raw
+  // into their structured data.
+  const faqItems = (
+    t.raw("faq.items") as Array<{
+      question: string;
+      answer: string;
+    }>
+  ).map((item) => ({
+    question: stripRichTags(item.question),
+    answer: stripRichTags(item.answer),
+  }));
+
+  // The HowTo is built from the *same* keys `Demo` renders, so the markup
+  // cannot describe steps the page does not show. `ChapterRail` maps over all
+  // five unconditionally, so every title and description is in the static HTML
+  // whether or not playback ever starts — which is what makes this honest.
+  // `stripRichTags` is not optional here: two of these descriptions carry
+  // `<post>`, and raw markup inside JSON-LD is quoted verbatim by whatever
+  // reads it.
+  const chapterKeys = ["install", "pair", "attach", "move", "agent"] as const;
+  const howToSteps = chapterKeys.map((key) => ({
+    name: stripRichTags(t(`demo.chapters.${key}.title`)),
+    text: stripRichTags(t(`demo.chapters.${key}.description`)),
+  }));
+
+  const featureList = (
+    t.raw("fidelity.features") as Array<{ title: string }>
+  ).map((feature) => stripRichTags(feature.title));
 
   return (
     <>
       <JsonLd
         json={graph(
-          softwareApplicationSchema(t("meta.description")),
+          webPageSchema({
+            locale: locale as Locale,
+            path: "/",
+            name: t("meta.title"),
+            description: t("meta.description"),
+            aboutId: softwareId,
+            mainEntityId: softwareId,
+          }),
+          softwareApplicationSchema(t("meta.description"), { featureList }),
+          howToSchema({
+            // No `totalTime`: `/docs` already emits a HowTo claiming PT2M, and
+            // two timed HowTos for the same product read as one contradicting
+            // itself. This one is "what the demo shows", not "how long it takes".
+            id: `${siteConfig.url}/#how-to-attach`,
+            name: t("demo.title"),
+            description: stripRichTags(t("demo.description")),
+            steps: howToSteps,
+          }),
           faqSchema(faqItems),
         )}
       />
       <HomeHero />
       <CompatStrip />
-      <HowItWorks />
+      <Demo />
       <Fidelity />
       <Agents />
       <Security />
