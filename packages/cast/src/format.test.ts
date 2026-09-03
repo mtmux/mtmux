@@ -8,7 +8,7 @@ import {
   parseCast,
   parseSize,
   type Cast,
-} from "./format.js";
+} from "./format";
 
 const HEADER = { version: 2 as const, width: 80, height: 24 };
 

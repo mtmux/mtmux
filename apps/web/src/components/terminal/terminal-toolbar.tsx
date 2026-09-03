@@ -17,6 +17,7 @@ import {
   getDefaultFontSize,
   clampFontSize,
 } from "@/stores/terminal-store";
+import { RecordButton } from "@/components/recording/record-button";
 import { TerminalSearch } from "./terminal-search";
 import { cn } from "@repo/ui/lib/utils";
 
@@ -40,8 +41,12 @@ export function TerminalToolbar({
   className,
 }: TerminalToolbarProps) {
   const [showSearch, setShowSearch] = useState(false);
-  const { activeSessionId } = useSessionStore();
-  const { fontSize, setFontSize } = useTerminalStore();
+  // Selected per field. `useTerminalStore()` re-renders this toolbar — and the
+  // search box inside it — on every write to the store, and a pinch writes
+  // `fontSize` about twenty times a second.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const fontSize = useTerminalStore((s) => s.fontSize);
+  const setFontSize = useTerminalStore((s) => s.setFontSize);
 
   return (
     <div className={cn("flex items-center gap-2 px-3 py-1.5", className)}>
@@ -93,6 +98,8 @@ export function TerminalToolbar({
           onClose={() => setShowSearch(false)}
         />
       )}
+
+      <RecordButton session={activeSessionId} />
 
       <Button
         variant="ghost"

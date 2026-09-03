@@ -5,5 +5,5 @@
  * `node:` imports. The writer lives behind `@repo/cast/writer` because it
  * needs `node:fs`, and the web player imports this module.
  */
-export * from "./format.js";
-export * from "./timeline.js";
+export * from "./format";
+export * from "./timeline";

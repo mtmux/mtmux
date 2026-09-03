@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { AppShell } from "@repo/ui/components/app-shell";
 import { Button } from "@repo/ui/components/ui/button";
 import { cn } from "@repo/ui/lib/utils";
@@ -12,10 +12,12 @@ import { useWebSocket, getRelayClient } from "@/hooks/use-websocket";
 import {
   filesDisabled,
   isReadOnly,
+  isRecordingsScope,
   useConnectionStore,
 } from "@/stores/connection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useStableMediaQuery } from "@repo/ui/hooks/use-media-query";
+import { MOBILE_MEDIA_QUERY } from "@/lib/mobile-query";
 import { MobileNav } from "@/components/mobile/mobile-nav";
 import { CommandComposer } from "@/components/mobile/command-composer";
 import { KeyboardToolbar } from "@/components/mobile/keyboard-toolbar";
@@ -52,6 +54,7 @@ import { type TransportFactory } from "@/lib/transport";
 import { resolveRoute } from "@/lib/resolve-route";
 import { LayoutGrid, Loader2, Terminal } from "lucide-react";
 import { markBounced } from "@/lib/bounce-guard";
+import { copyFailureReason, copyText } from "@/lib/clipboard";
 import { isHostedBuild } from "@/lib/auth-client";
 import {
   LAST_SESSION_KEY,
@@ -102,7 +105,10 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   // Set only for a session paired through the broker that fell back to the
   // tunnel; the direct path uses a plain socket like everything else.
   const [transport, setTransport] = useState<TransportFactory | undefined>();
-  const { mobileTab, setMobileTab } = useUiStore();
+  // Selected, and for the sharpest reason of all: `composerDraft` lives in this
+  // same store and is written on every keystroke in the command composer.
+  const mobileTab = useUiStore((s) => s.mobileTab);
+  const setMobileTab = useUiStore((s) => s.setMobileTab);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
 
   /**
@@ -119,9 +125,23 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
     window.sessionStorage.removeItem(OPEN_NEW_SESSION_KEY);
     setShowCreateDialog(true);
   }, []);
-  const isMobile = useStableMediaQuery("(max-width: 768px)");
-  const { status, latency, reconnectCount } = useConnectionStore();
-  const { activeSessionId } = useSessionStore();
+  const isMobile = useStableMediaQuery(MOBILE_MEDIA_QUERY);
+  /*
+   * Field by field, not `useConnectionStore()`.
+   *
+   * This component renders `AppShell` → header → children → the entire
+   * `TerminalWorkspace` and its xterm instance, and an unselected subscription
+   * re-renders on *any* write to the store. `setLatency` fires on every pong,
+   * i.e. every ten seconds, and `composerDraft` in the UI store is written on
+   * every character typed into the command composer — so the whole terminal
+   * subtree was re-rendering per keystroke. The rest of the app already avoids
+   * React state here for exactly this reason (see `VisualViewportSync`).
+   */
+  const status = useConnectionStore((s) => s.status);
+  const latency = useConnectionStore((s) => s.latency);
+  const reconnectCount = useConnectionStore((s) => s.reconnectCount);
+  const hostname = useConnectionStore((s) => s.hostname);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
 
   useMobileHistory();
 
@@ -205,6 +225,20 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   // What this credential may do, per `auth:success`. Null on the self-hosted
   // and full-grant paths, which is what unrestricted looks like.
   const capabilities = useConnectionStore((s) => s.capabilities);
+  const pathname = usePathname();
+
+  /*
+   * A recordings-scoped share can attach to no session at all.
+   *
+   * Left on `/`, such a connection renders a terminal that will never fill in
+   * and a session list that will always be empty — which reads as a broken
+   * share rather than as a share of one recording. It is sent to `/r`, where
+   * the thing it was actually given is.
+   */
+  const recordingsOnly = isRecordingsScope(capabilities);
+  useEffect(() => {
+    if (recordingsOnly && !pathname.startsWith("/r")) router.replace("/r");
+  }, [recordingsOnly, pathname, router]);
 
   // A share with files off must not leave the browser sitting on a Files tab
   // that no longer has a nav entry — including the case where the tab was
@@ -257,19 +291,19 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   const handleCopySelection = useCallback(async () => {
     const selection = getTerminalHandle()?.getSelection() ?? "";
     if (!selection) {
+      // The old copy said "long-press the terminal", which does not work:
+      // xterm's selection is mouse-driven and a long press on its canvas
+      // produces nothing. Pointing at the thing that does work beats repeating
+      // advice that has never been true on a phone.
       useAlertStore
         .getState()
-        .push(
-          "info",
-          "Nothing selected — long-press the terminal, or use copy mode",
-        );
+        .push("info", "Nothing selected — use Copy Mode to copy the pane");
       return;
     }
-    try {
-      await navigator.clipboard.writeText(selection);
+    if (await copyText(selection)) {
       useAlertStore.getState().push("success", "Copied selection");
-    } catch {
-      useAlertStore.getState().push("error", "Clipboard access denied");
+    } else {
+      useAlertStore.getState().push("error", copyFailureReason());
     }
   }, []);
 
@@ -279,15 +313,6 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     registerDisconnect(() => getRelayClient()?.disconnect());
     return () => registerDisconnect(null);
-  }, []);
-
-  // Register service worker
-  useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {
-        // SW registration failed
-      });
-    }
   }, []);
 
   // Called for its effect: this is where the socket is opened and registered.
@@ -345,6 +370,7 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
         <ConnectionStatus
           status={connectionStatusType}
           latency={latency ?? undefined}
+          hostname={hostname ?? undefined}
           reconnectCount={reconnectCount}
           onReconnect={() => {
             const client = getRelayClient();

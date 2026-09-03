@@ -4,8 +4,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { parseCast } from "./format.js";
-import { createCastWriter } from "./writer.js";
+import { parseCast } from "./format";
+import { createCastWriter } from "./writer";
 
 let dir: string;
 let clock: number;

@@ -8,7 +8,7 @@ import {
   formatTime,
   type CastEvent,
   type CastHeader,
-} from "./format.js";
+} from "./format";
 
 /**
  * The node-only half of `@repo/cast`.

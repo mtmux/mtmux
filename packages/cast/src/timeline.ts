@@ -1,9 +1,4 @@
-import {
-  castDuration,
-  parseSize,
-  type Cast,
-  type CastEvent,
-} from "./format.js";
+import { castDuration, parseSize, type Cast, type CastEvent } from "./format";
 
 /**
  * Playback maths, kept pure.

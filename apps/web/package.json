@@ -16,6 +16,7 @@
   "dependencies": {
     "@better-auth/passkey": "1.6.25",
     "@monaco-editor/react": "^4.7.0",
+    "@repo/cast": "workspace:*",
     "@repo/config": "workspace:*",
     "@repo/crypto": "workspace:*",
     "@repo/logger": "workspace:*",

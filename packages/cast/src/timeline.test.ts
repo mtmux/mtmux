@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Cast, CastEvent } from "./format.js";
+import type { Cast, CastEvent } from "./format";
 import {
   compileCast,
   indexAt,
@@ -9,7 +9,7 @@ import {
   sliceUpTo,
   squashIdle,
   textOf,
-} from "./timeline.js";
+} from "./timeline";
 
 const events: CastEvent[] = [
   { time: 0, type: "o", data: "a" },

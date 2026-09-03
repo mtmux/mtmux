@@ -12,10 +12,23 @@ import { useSessionStore } from "@/stores/session-store";
 import { usePaneStore } from "@/stores/pane-store";
 import { useFileStore } from "@/stores/file-store";
 import { useAlertStore } from "@/stores/alert-store";
+import { useRecordingStore } from "@/stores/recording-store";
 import { useUiStore } from "@/stores/ui-store";
+import { useScrollStore } from "@/stores/scroll-store";
+import {
+  awaitingScrollStateProbe,
+  noteScrollStateReply,
+} from "@/lib/terminal-scroll";
 import { TOKEN_KEY, clearStored } from "@/lib/storage-keys";
 import * as registry from "@/lib/relay-registry";
-import { loadDescriptor, serverIdFor } from "@/lib/session-store";
+import { markBounced } from "@/lib/bounce-guard";
+import {
+  clearDescriptorMirror,
+  clearSessionKeys,
+  loadDescriptor,
+  serverIdFor,
+} from "@/lib/session-store";
+import { isMobileViewport } from "@/lib/mobile-query";
 
 // #1: Dedup session exit toasts — track handled exits at module scope
 const handledExits = new Set<string>();
@@ -132,6 +145,10 @@ export function useWebSocket(
           // exactly what an unrestricted connection looks like — so ?? null
           // rather than a separate "unknown" state.
           connectionStore.setCapabilities(msg.capabilities ?? null);
+          // Same reasoning, opposite default: an unknown message type is a
+          // hard `INVALID_MESSAGE` on an older relay, so absence has to read
+          // as "supports none of them" and the caller falls back.
+          connectionStore.setFeatures(msg.features);
           connectionStore.resetReconnect();
           // Auto-request session list on connect
           client?.send({ type: "session:list" });
@@ -140,10 +157,24 @@ export function useWebSocket(
           // connection — a second one would kill and respawn the PTY.
           break;
         case "auth:failure":
-          useAlertStore
-            .getState()
-            .push("error", msg.reason || "Authentication failed");
+          /*
+           * The toast used to be the only explanation, and it never arrived.
+           *
+           * `window.location.href` is a full document navigation, so the alert
+           * store — plain in-memory Zustand — is destroyed before anything can
+           * render it. `markBounced` is what `/start` actually reads to say
+           * "that session is no longer usable", and nothing on this path was
+           * calling it: the user landed on a bare code-entry form with no clue
+           * why they had been thrown out of a terminal that was working a
+           * moment ago.
+           */
+          markBounced();
           clearStored(TOKEN_KEY);
+          // The stored pairing is dead — the CLI has forgotten this device, or
+          // its record expired — so leaving the keys behind only guarantees the
+          // same bounce on the next load.
+          void clearSessionKeys(currentServerId()).catch(() => {});
+          clearDescriptorMirror();
           // `/start`, not `/login`: the credential that just failed may have
           // been a derived pairing token, in which case a form asking for a
           // 64-hex relay token is not a way back in.
@@ -195,10 +226,7 @@ export function useWebSocket(
           // Auto-zoom: if pending and no pane is currently zoomed, zoom the active pane
           if (paneStore.pendingAutoZoom) {
             const zoomedPane = msg.panes.find((p) => p.zoomed);
-            if (
-              !zoomedPane &&
-              window.matchMedia("(max-width: 768px)").matches
-            ) {
+            if (!zoomedPane && isMobileViewport()) {
               client?.send({ type: "pane:zoom" });
             }
             paneStore.setPendingAutoZoom(false);
@@ -236,11 +264,49 @@ export function useWebSocket(
         case "session:attached":
           // Handled in terminal-view
           break;
+        case "tmux:scroll-state":
+          noteScrollStateReply();
+          useScrollStore.getState().setScrollState({
+            position: msg.position,
+            historySize: msg.historySize,
+            paneHeight: msg.paneHeight,
+            inMode: msg.inMode,
+          });
+          break;
         case "pane:captured":
           useUiStore.getState().setCapturedPane(msg.id, msg.content);
           break;
         case "session:windows":
           // Handled by SessionCard via direct onMessage subscription
+          break;
+
+        case "recording:list":
+          useRecordingStore.getState().setRecordings(msg.recordings);
+          break;
+        case "recording:started":
+          useRecordingStore.getState().upsert(msg.recording);
+          break;
+        case "recording:stopped":
+          useRecordingStore.getState().upsert(msg.recording);
+          if (msg.reason === "limit") {
+            // A recording that silently stopped growing reads as a bug. One
+            // that says why reads as a limit, which is what it is.
+            useAlertStore
+              .getState()
+              .push(
+                "warning",
+                `Recording "${msg.recording.title}" reached its size or time limit and closed.`,
+              );
+          }
+          break;
+        case "recording:deleted":
+          useRecordingStore.getState().remove(msg.id);
+          break;
+        case "recording:chunk":
+          // Delivered to whoever is fetching, through a direct `onMessage`
+          // subscription. Reassembly is `lib/cast-fetch.ts`, and routing 64 KiB
+          // of base64 through a Zustand store would re-render every subscriber
+          // once per chunk.
           break;
         case "device:paired": {
           /*
@@ -267,6 +333,20 @@ export function useWebSocket(
           break;
         }
         case "error":
+          /*
+           * One error is ours, and is not news.
+           *
+           * A relay older than `tmux:scroll-state` rejects it as
+           * `INVALID_MESSAGE`, and the probe that asked is how the client
+           * finds out the machine cannot answer — see `lib/terminal-scroll.ts`.
+           * Showing that to the user would be an error toast on every attach
+           * to a machine whose CLI is a version behind, about a question they
+           * never asked. Only a probe in flight qualifies, so a genuinely
+           * malformed message still surfaces.
+           */
+          if (msg.code === "INVALID_MESSAGE" && awaitingScrollStateProbe()) {
+            break;
+          }
           useAlertStore.getState().push("error", msg.message);
           break;
       }
@@ -330,8 +410,26 @@ export function useWebSocket(
 
     const handleOnline = () => {
       if (held.status === "disconnected" || held.status === "reconnecting") {
-        held.connect();
+        held.reconnectNow();
       }
+    };
+
+    /*
+     * Coming back to the tab is the strongest reconnect signal there is, and
+     * nothing was listening for it.
+     *
+     * A phone backgrounded for an hour has its timers suspended and its socket
+     * quietly killed by the OS. On resume the backoff ladder has already
+     * climbed to its 30s ceiling, so the user watches "Reconnecting — input
+     * paused" for up to half a minute on a network that is working fine. The
+     * zombie detector cannot help: it is a 10s interval, which is exactly what
+     * was suspended. `online` does not fire either — it tracks interface
+     * transitions, not wake-ups.
+     */
+    const handleVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (held.status === "connected" || held.status === "connecting") return;
+      held.reconnectNow();
     };
 
     const handleOffline = () => {
@@ -346,10 +444,12 @@ export function useWebSocket(
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+    document.addEventListener("visibilitychange", handleVisible);
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisible);
       // The last holder disconnects; an overlapping remount (StrictMode, or a
       // route change that reuses the connection) keeps it alive.
       registry.release(serverId);
