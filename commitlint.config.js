@@ -8,11 +8,13 @@ export default {
       [
         "cli",
         "web",
+        "site",
         "docs",
         "relay",
         "api",
         "protocol",
         "crypto",
+        "db",
         "ui",
         "config",
         "logger",
