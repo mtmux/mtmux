@@ -54,6 +54,69 @@ export type RelayRuntime = {
   };
   /** Fires when a device authenticates or drops. */
   onConnectionsChanged?: (listener: () => void) => () => void;
+  /**
+   * Fires when a registered device successfully uses its session token.
+   *
+   * The relay is the only part of the process that sees a device authenticate,
+   * so without this the CLI's peer store cannot tell a phone in daily use from
+   * one abandoned at pairing — and `mtmux devices` expires the former on
+   * schedule. Optional for the same reason the two hooks above are: an older
+   * bundle this file is pointed at simply does not report it.
+   */
+  onSessionTokenUsed?: (listener: (deviceId: string) => void) => () => void;
+  /**
+   * Register a session token without going through the loopback HTTP endpoint.
+   *
+   * `registerDirectToken` POSTs to `/_pair/session`, which means the server has
+   * to be listening before trusted devices can be restored — and a phone that
+   * reconnected in that window was refused, which the browser treats as
+   * terminal and answers by wiping its credential and bouncing to `/start`.
+   * Registering in-process closes the window: nothing is accepting connections
+   * yet when it runs.
+   *
+   * Optional so an older bundle degrades to the HTTP path rather than crashing.
+   */
+  registerSessionToken?: (
+    token: string,
+    ttlMs?: number,
+    now?: number,
+    grant?: import("@repo/protocol").GrantRecord,
+    label?: string,
+    deviceId?: string,
+  ) => unknown;
+  /**
+   * Drop a session token from the live relay, for `mtmux devices revoke`.
+   *
+   * Optional for the same reason as the rest: an older bundle degrades to the
+   * old behaviour, where a revoked device kept its socket until a restart.
+   */
+  revokeSessionToken?: (token: string) => void;
+  /**
+   * The recorder, for the `/_control/record` endpoint.
+   *
+   * Optional like everything above it: a bundle that predates recording must
+   * make `mtmux record` say so plainly rather than crash the server it is
+   * embedded in.
+   */
+  recorder?: {
+    list(): import("@repo/protocol").RecordingInfo[];
+    start(options: {
+      target: import("@repo/protocol").RecordingTarget;
+      title?: string;
+    }): Promise<import("@repo/protocol").RecordingInfo>;
+    stop(
+      id: string,
+      reason?: import("@repo/protocol").RecordingStopReason,
+    ): Promise<import("@repo/protocol").RecordingInfo | null>;
+    stopAll(
+      reason?: import("@repo/protocol").RecordingStopReason,
+    ): Promise<void>;
+  };
+  /** The recordings index, for listing and deleting. */
+  recordings?: {
+    list(): Promise<import("@repo/protocol").RecordingInfo[]>;
+    remove(id: string): Promise<boolean>;
+  };
 };
 
 export type ServeOptions = {

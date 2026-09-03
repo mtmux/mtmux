@@ -14,6 +14,13 @@ import { doctor } from "./commands/doctor.js";
 import { status, stop } from "./commands/status.js";
 import { approve } from "./commands/approve.js";
 import { devicesList, devicesRevoke } from "./commands/devices.js";
+import {
+  recordList,
+  recordRemove,
+  recordShare,
+  recordStart,
+  recordStop,
+} from "./commands/record.js";
 import { login, logout, servers, upgrade, whoami } from "./commands/account.js";
 import { logs } from "./commands/logs.js";
 
@@ -258,6 +265,98 @@ shareCmd
         expires: opts.expires,
         label: opts.label,
         qr: opts.qr,
+      });
+    },
+  );
+
+/**
+ * `mtmux record` — capture what happened, to a file you own.
+ *
+ * A subcommand tree rather than a flag on `mtmux start`. Recording is something
+ * you start when the thing worth recording is about to happen; `--record` would
+ * mean deciding minutes earlier, and would make the answer to "am I recording?"
+ * a property of how the server was booted.
+ */
+const recordCmd = program
+  .command("record")
+  .description("Record a tmux session or pane to a file on this machine");
+
+const portOption = (cmd: Command) =>
+  cmd.option(
+    "-p, --port <number>",
+    "port mtmux is serving on",
+    (v) => parseInt(v, 10),
+    14100,
+  );
+
+recordCmd
+  .command("list")
+  .description("Show every recording on this machine")
+  .option("--json", "print one JSON document and nothing else")
+  .action((opts: { json?: boolean }) => recordList(opts.json === true));
+
+portOption(recordCmd.command("stop"))
+  .argument("[id]", "the rec_… id from `mtmux record list`")
+  .option("--all", "stop every recording")
+  .description("Stop a recording and close its file")
+  .action((id: string | undefined, opts: { port: number; all?: boolean }) =>
+    recordStop(id, opts.port, opts.all === true),
+  );
+
+portOption(recordCmd.command("rm"))
+  .argument("<id>", "the rec_… id from `mtmux record list`")
+  .description("Delete a recording and its file")
+  .action((id: string, opts: { port: number }) => recordRemove(id, opts.port));
+
+portOption(recordCmd.command("share"))
+  .argument("<id>", "the rec_… id from `mtmux record list`")
+  .option("--api <url>", "pairing service base URL")
+  .option("--expires <duration>", "24h, 7d, or never", "7d")
+  .option("--label <text>", "what to call this share in `mtmux share list`")
+  .option("--no-qr", "print only the code, without the QR")
+  .description("Give somebody a copy of a recording")
+  .action(
+    (
+      id: string,
+      opts: {
+        port: number;
+        api?: string;
+        expires: string;
+        label?: string;
+        qr: boolean;
+      },
+    ) =>
+      recordShare({
+        id,
+        port: opts.port,
+        api: opts.api,
+        expires: opts.expires,
+        label: opts.label,
+        qr: opts.qr,
+      }),
+  );
+
+portOption(recordCmd)
+  .argument("[session]", "the tmux session to record")
+  .option("--pane <id>", "record one pane (a tmux %id) instead of the session")
+  .option(
+    "--title <text>",
+    "what the recording is called, instead of the session name",
+  )
+  .action(
+    (
+      session: string | undefined,
+      opts: { port: number; pane?: string; title?: string },
+    ) => {
+      if (!session) {
+        recordCmd.help();
+        return;
+      }
+      return recordStart({
+        session,
+        port: opts.port,
+        pane: opts.pane,
+        title: opts.title,
       });
     },
   );

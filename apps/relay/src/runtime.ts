@@ -9,9 +9,26 @@ export {
   PAIR_LOCAL_PATH,
   PAIR_SESSION_PATH,
 } from "./server.js";
-export { issuePairingNonce, onPairingRedeemed } from "./pairing-local.js";
+export {
+  issuePairingNonce,
+  onPairingRedeemed,
+  onSessionTokenUsed,
+  registerSessionToken,
+  revokeSessionToken,
+} from "./pairing-local.js";
 export {
   connectionSummary,
   onConnectionsChanged,
   type ConnectedDevice,
 } from "./connection-manager.js";
+
+/**
+ * Recording, for `mtmux record`'s loopback control endpoint.
+ *
+ * Namespaced rather than re-exported one function at a time: `list` and
+ * `remove` come from the index and `start`/`stop` from the recorder, and
+ * flattening those into the runtime's top level would put four very
+ * generic names beside `wireConnections`.
+ */
+export * as recorder from "./recorder.js";
+export * as recordings from "./recordings-index.js";

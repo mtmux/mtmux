@@ -1,5 +1,10 @@
 import kleur from "kleur";
-import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
+import type {
+  GrantFiles,
+  GrantRecord,
+  GrantScope,
+  GrantSession,
+} from "@repo/protocol";
 import { isGrantActive } from "@repo/protocol";
 import * as configStore from "../config-store.js";
 import * as grantsStore from "../grants-store.js";
@@ -36,6 +41,16 @@ export type ShareOpts = {
   expires: string;
   label?: string;
   qr: boolean;
+  /**
+   * A ready-made scope, bypassing the session lookup.
+   *
+   * `mtmux record share` builds a recordings scope, which has no session names
+   * to resolve against the running relay. Everything downstream of the scope —
+   * the tunnel, the pairing loop, `registerDirectToken`, `grants.json` — is
+   * identical, which is the point of threading a scope through rather than
+   * writing a second copy of this function.
+   */
+  scope?: GrantScope;
 };
 
 export async function share(opts: ShareOpts): Promise<void> {
@@ -57,13 +72,19 @@ export async function share(opts: ShareOpts): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  let sessions: GrantSession[];
-  try {
-    sessions = await resolveShareSessions(opts.port, cfg.token, opts.session);
-  } catch (err) {
-    console.error(kleur.red(`  ✗ ${(err as Error).message}`));
-    process.exitCode = 1;
-    return;
+  let scope: GrantScope;
+  if (opts.scope) {
+    scope = opts.scope;
+  } else {
+    let sessions: GrantSession[];
+    try {
+      sessions = await resolveShareSessions(opts.port, cfg.token, opts.session);
+    } catch (err) {
+      console.error(kleur.red(`  ✗ ${(err as Error).message}`));
+      process.exitCode = 1;
+      return;
+    }
+    scope = { kind: "sessions", sessions };
   }
 
   const { key } = await configStore.ensureDeviceKey();
@@ -122,7 +143,7 @@ export async function share(opts: ShareOpts): Promise<void> {
   const preview: GrantRecord = {
     id: grantId,
     label: opts.label ?? `Share of ${wanted.join(", ")}`,
-    scope: { kind: "sessions", sessions },
+    scope,
     readOnly: opts.readOnly,
     files: opts.files,
     createdAt: Date.now(),

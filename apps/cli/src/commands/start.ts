@@ -50,6 +50,7 @@ import {
   type ApproveControl,
 } from "../approve-control.js";
 import { createDevicesControl } from "../devices-control.js";
+import { createRecordControl } from "../record-control.js";
 import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
 
 // The whole CLI is bundled into dist/bin.js, so this module's own directory IS
@@ -411,16 +412,31 @@ async function startHosted(opts: {
    * asks. Undefined means the caller does not care and arming simply stops.
    */
   onIdle?: () => void;
+  /**
+   * The tunnel came up after the boot deadline had already passed.
+   *
+   * Fires at most once, on a machine that has been serving locally in the
+   * meantime. Absent means the caller does not want a late tunnel, and the
+   * agent is stopped for good when the deadline passes.
+   */
+  onLateTunnel?: (hosted: Hosted) => void;
+  /**
+   * A way to stop the tunnel agent, handed over as soon as there is one.
+   *
+   * Separate from the returned `Hosted` because the interesting case is the one
+   * where this function throws: after the boot deadline the agent is
+   * deliberately left retrying, and without this the caller has no handle on it
+   * to shut down.
+   */
+  onAgent?: (stop: () => void) => void;
 }): Promise<Hosted> {
   const { key } = await configStore.ensureDeviceKey();
 
   // The agent signals readiness through a callback rather than a promise, so
   // wrap it in one — nothing below can run until the tunnel has an id.
   let announce!: (tunnelId: string) => void;
-  let abandon!: (err: Error) => void;
-  const ready = new Promise<string>((resolve, reject) => {
+  const ready = new Promise<string>((resolve) => {
     announce = resolve;
-    abandon = reject;
   });
 
   const agent = createTunnelAgent({
@@ -494,6 +510,10 @@ async function startHosted(opts: {
         return { approved: false, reason: answer.reason };
       }
 
+      // Minted before registration so the relay can name this peer when it
+      // reports the device using its token; the peer record below reuses it.
+      const deviceId = `browser-${Date.now().toString(36)}`;
+
       // Registration before admission, for the same reason as the code path:
       // admitting the keys first lets the browser authenticate against a relay
       // that has never heard of its token.
@@ -503,6 +523,8 @@ async function startHosted(opts: {
         request.keys.directToken,
         undefined,
         { label: request.deviceLabel, via: "request" },
+        configStore.PEER_EXPIRY_MS,
+        deviceId,
       );
       if (!registered) {
         console.log(
@@ -519,7 +541,6 @@ async function startHosted(opts: {
         label: deviceLabel(),
       });
 
-      const deviceId = `browser-${Date.now().toString(36)}`;
       agent.addSessionKeys(request.keys, {
         deviceId,
         label: request.deviceLabel,
@@ -560,258 +581,326 @@ async function startHosted(opts: {
 
   agent.start();
 
-  const timer = setTimeout(
-    () => abandon(new Error("the broker did not answer")),
-    TUNNEL_READY_TIMEOUT_MS,
-  );
-  let tunnelId: string;
-  try {
-    tunnelId = await ready;
-  } catch (err) {
-    // Leave nothing retrying in the background once we have given up on it.
-    agent.stop();
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const appOrigin = appOriginFor(opts.base);
-
   /**
-   * Failure budgets, one set per half.
+   * Everything that cannot happen until the tunnel has an id.
    *
-   * Per-half because the halves stopped sharing a fate once the QR got its own
-   * slot space. A sweep of the two-digit typed space kills typed codes and
-   * cannot touch a four-digit scan slot, so a shared counter would either bill
-   * the QR for the typed code's attacker or let the typed code coast on the
-   * QR's silence. See `rearmDecision` for why nothing but a completed pairing
-   * resets these.
+   * A function rather than straight-line code because the tunnel is allowed to
+   * arrive late. `mtmux start` gives the broker fifteen seconds before it
+   * settles for serving locally, and that deadline used to be final: it called
+   * `agent.stop()`, which disables the agent's reconnect permanently. One slow
+   * or briefly-unreachable broker at boot therefore cost the tunnel for the
+   * whole life of the process, with a single dim line to explain it. Now the
+   * deadline only stops the *waiting* — the agent keeps retrying, and this runs
+   * unchanged whenever it gets through.
    */
-  const failures: Record<HalfKind, RearmState> = {
-    typed: { ...NO_FAILURES },
-    scan: { ...NO_FAILURES },
-  };
+  const finishHosting = async (): Promise<Hosted> => {
+    const appOrigin = appOriginFor(opts.base);
 
-  /**
-   * The scan half's secret is 128 bits, so a failure there is never a guess —
-   * it is a claim that could not confirm, i.e. a bug or a stray client. The
-   * budget exists only so a misbehaving peer cannot spin the loop.
-   */
-  const limitsFor = (half: HalfKind): RearmLimits =>
-    half === "scan" ? { wrong: 20 } : {};
+    /**
+     * Failure budgets, one set per half.
+     *
+     * Per-half because the halves stopped sharing a fate once the QR got its own
+     * slot space. A sweep of the two-digit typed space kills typed codes and
+     * cannot touch a four-digit scan slot, so a shared counter would either bill
+     * the QR for the typed code's attacker or let the typed code coast on the
+     * QR's silence. See `rearmDecision` for why nothing but a completed pairing
+     * resets these.
+     */
+    const failures: Record<HalfKind, RearmState> = {
+      typed: { ...NO_FAILURES },
+      scan: { ...NO_FAILURES },
+    };
 
-  /** The live pairing behind each half, or null once it has stopped arming. */
-  const live: Record<HalfKind, HostedPairing | null> = {
-    typed: null,
-    scan: null,
-  };
+    /**
+     * The scan half's secret is 128 bits, so a failure there is never a guess —
+     * it is a claim that could not confirm, i.e. a bug or a stray client. The
+     * budget exists only so a misbehaving peer cannot spin the loop.
+     */
+    const limitsFor = (half: HalfKind): RearmLimits =>
+      half === "scan" ? { wrong: 20 } : {};
 
-  /**
-   * Which round each wired half belongs to.
-   *
-   * A successful pairing ends the round and cancels the other half, whose
-   * rejection then lands a microtask later. Without a token to check against,
-   * that late rejection would be read as a failure of the *new* round and
-   * re-arm on top of a code that had just been printed. This is the same job
-   * the old `decided` flag did, done in a way that survives the round being
-   * restarted immediately.
-   */
-  let round = 0;
+    /** The live pairing behind each half, or null once it has stopped arming. */
+    const live: Record<HalfKind, HostedPairing | null> = {
+      typed: null,
+      scan: null,
+    };
 
-  /** Timers for delayed re-arms, so `stop()` does not leave one pending. */
-  const pending = new Set<NodeJS.Timeout>();
+    /**
+     * Which round each wired half belongs to.
+     *
+     * A successful pairing ends the round and cancels the other half, whose
+     * rejection then lands a microtask later. Without a token to check against,
+     * that late rejection would be read as a failure of the *new* round and
+     * re-arm on top of a code that had just been printed. This is the same job
+     * the old `decided` flag did, done in a way that survives the round being
+     * restarted immediately.
+     */
+    let round = 0;
 
-  const hostOpts = () => ({
-    apiBase: opts.base,
-    buildDescriptor: () => {
-      // Read through to the agent rather than closing over the id captured at
-      // boot: `createTunnelAgent` reconnects on its own and comes back with a
-      // new id, so a code re-armed after a broker restart would otherwise seal
-      // a descriptor naming a tunnel that no longer exists — the browser pairs
-      // successfully and then cannot connect to anything.
-      const id = agent.tunnelId;
-      if (id === null) throw new PairingError("The tunnel is not connected.");
-      return {
-        candidates: opts.tunnelOnly ? [] : buildCandidates(opts.port, null),
-        tunnelId: id,
-        deviceId: key.deviceId,
-        publicKey: Buffer.from(key.publicKey).toString("hex"),
-        label: deviceLabel(),
-      };
-    },
-    seal: sealDescriptor,
-  });
+    /** Timers for delayed re-arms, so `stop()` does not leave one pending. */
+    const pending = new Set<NodeJS.Timeout>();
 
-  const inviteNow = (): PairingInvite => ({
-    code: live.typed?.code ?? null,
-    // The QR carries the long secret; only `code` is meant to be read aloud.
-    url: live.scan ? joinUrl(appOrigin, live.scan.code) : null,
-    host: appOrigin.replace(/^https?:\/\//, ""),
-  });
-
-  /**
-   * Park one half's mailbox and wire up what happens when it settles.
-   *
-   * Two mailboxes rather than one, because a mailbox commits to a single CPace
-   * password the moment it answers a claim — so a typed secret and a 128-bit
-   * one cannot share it. They are raced: whichever is claimed first wins the
-   * round and the other is cancelled, which destroys its mailbox immediately
-   * rather than leaving a live code nobody is watching.
-   *
-   * The point of the pair is that scanning a QR is not typing. Nobody reads a
-   * 128-bit secret off a screen, so there is no reason for the path almost
-   * everyone uses to carry the entropy of the fallback.
-   */
-  const armHalf = async (half: HalfKind): Promise<HostedPairing> => {
-    const myRound = round;
-    const pairing = await hostPairing({
-      ...hostOpts(),
-      secret: half === "typed" ? generateSecret() : generateLongSecret(),
-      space: half,
-    });
-    live[half] = pairing;
-
-    void pairing.paired
-      .then(async (result) => {
-        if (myRound !== round) return;
-        round += 1;
-        // The round is over, so the sibling code must stop being claimable.
-        const other: HalfKind = half === "typed" ? "scan" : "typed";
-        live[other]?.cancel();
-        live.typed = null;
-        live.scan = null;
-
-        // Registration BEFORE the agent will admit the keys, and this order is
-        // load-bearing now that the tunnel agent no longer injects the
-        // machine's own token. Admitting the keys first opens a window in
-        // which the browser can win the race, send its `auth` frame down the
-        // tunnel, and be refused because the relay has never been told about
-        // that token. A failure here must therefore *not* admit the keys.
-        const grant = opts.buildGrant?.(result.keys.directToken);
-        const registered = await registerDirectToken(
-          opts.port,
-          opts.cfg.token,
-          result.keys.directToken,
-          grant,
-          { label: result.peerLabel, via: "code" },
-        );
-        // A scoped pairing that could not be registered must not be admitted:
-        // the alternative is a browser that authenticates against a relay
-        // which has never heard of its token, and so falls through to nothing.
-        if (grant && !registered) {
-          console.log(
-            kleur.red("  ✗ Could not register the share. Nothing was shared."),
-          );
-          return;
-        }
-        const peerDeviceId =
-          result.peerDeviceId ?? `browser-${Date.now().toString(36)}`;
-        agent.addSessionKeys(result.keys, {
-          deviceId: peerDeviceId,
-          label: result.peerLabel,
-          restored: false,
-        });
-        if (grant) await grantsStore.add(grant);
-        await configStore.addPeer({
-          deviceId: peerDeviceId,
-          publicKey: result.peerPublicKey ?? "",
-          label: result.peerLabel,
-          pairedAt: Date.now(),
-          lastSeenAt: Date.now(),
-          directToken: result.keys.directToken,
-          sessionKeys: encodeSessionKeys(result.keys),
-        });
-        opts.onPaired(result.peerLabel);
-        // The one thing that clears the budgets: a pairing that completed.
-        failures.typed = { ...NO_FAILURES };
-        failures.scan = { ...NO_FAILURES };
-        opts.onRearm(await armRound(), "paired");
-      })
-      .catch((err: unknown) => {
-        if (myRound !== round) return;
-        live[half] = null;
-
-        const decision = rearmDecision(err, failures[half], limitsFor(half));
-        failures[half] = decision.state;
-
-        if (decision.warn) {
-          opts.onWarn?.({
-            warning: decision.warn,
-            half,
-            wrong: decision.state.wrong,
-            delayMs: decision.rearm ? decision.delayMs : 0,
-          });
-        }
-
-        if (!decision.rearm) {
-          // Nothing left to claim on either half — the invite is spent, and
-          // only a human may bring it back. On a machine with no TTY that is
-          // simply where arming stops, which is the fail-closed direction.
-          if (!live.typed && !live.scan) opts.onIdle?.();
-          return;
-        }
-
-        const reason: RearmReason =
-          decision.warn === null ? failureKindReason(err) : "wrong-code";
-        const again = () => {
-          void armHalf(half)
-            .then(() => opts.onRearm(inviteNow(), reason))
-            .catch((armErr: unknown) => {
-              // Arming itself failed — a 503, a dead tunnel. Say so and try
-              // again on the same budget rather than going quiet with no code.
-              console.log(
-                kleur.yellow(
-                  `  ! Could not get a fresh code (${(armErr as Error).message}).`,
-                ),
-              );
-              scheduleRearm(REARM_RETRY_MS);
-            });
+    const hostOpts = () => ({
+      apiBase: opts.base,
+      buildDescriptor: () => {
+        // Read through to the agent rather than closing over the id captured at
+        // boot: `createTunnelAgent` reconnects on its own and comes back with a
+        // new id, so a code re-armed after a broker restart would otherwise seal
+        // a descriptor naming a tunnel that no longer exists — the browser pairs
+        // successfully and then cannot connect to anything.
+        const id = agent.tunnelId;
+        if (id === null) throw new PairingError("The tunnel is not connected.");
+        return {
+          candidates: opts.tunnelOnly ? [] : buildCandidates(opts.port, null),
+          tunnelId: id,
+          deviceId: key.deviceId,
+          publicKey: Buffer.from(key.publicKey).toString("hex"),
+          label: deviceLabel(),
         };
-        const scheduleRearm = (delayMs: number) => {
-          if (delayMs <= 0) {
-            again();
+      },
+      seal: sealDescriptor,
+    });
+
+    const inviteNow = (): PairingInvite => ({
+      code: live.typed?.code ?? null,
+      // The QR carries the long secret; only `code` is meant to be read aloud.
+      url: live.scan ? joinUrl(appOrigin, live.scan.code) : null,
+      host: appOrigin.replace(/^https?:\/\//, ""),
+    });
+
+    /**
+     * Park one half's mailbox and wire up what happens when it settles.
+     *
+     * Two mailboxes rather than one, because a mailbox commits to a single CPace
+     * password the moment it answers a claim — so a typed secret and a 128-bit
+     * one cannot share it. They are raced: whichever is claimed first wins the
+     * round and the other is cancelled, which destroys its mailbox immediately
+     * rather than leaving a live code nobody is watching.
+     *
+     * The point of the pair is that scanning a QR is not typing. Nobody reads a
+     * 128-bit secret off a screen, so there is no reason for the path almost
+     * everyone uses to carry the entropy of the fallback.
+     */
+    const armHalf = async (half: HalfKind): Promise<HostedPairing> => {
+      const myRound = round;
+      const pairing = await hostPairing({
+        ...hostOpts(),
+        secret: half === "typed" ? generateSecret() : generateLongSecret(),
+        space: half,
+      });
+      live[half] = pairing;
+
+      void pairing.paired
+        .then(async (result) => {
+          if (myRound !== round) return;
+          round += 1;
+          // The round is over, so the sibling code must stop being claimable.
+          const other: HalfKind = half === "typed" ? "scan" : "typed";
+          live[other]?.cancel();
+          live.typed = null;
+          live.scan = null;
+
+          // Registration BEFORE the agent will admit the keys, and this order is
+          // load-bearing now that the tunnel agent no longer injects the
+          // machine's own token. Admitting the keys first opens a window in
+          // which the browser can win the race, send its `auth` frame down the
+          // tunnel, and be refused because the relay has never been told about
+          // that token. A failure here must therefore *not* admit the keys.
+          const grant = opts.buildGrant?.(result.keys.directToken);
+          const peerDeviceId =
+            result.peerDeviceId ?? `browser-${Date.now().toString(36)}`;
+          const registered = await registerDirectToken(
+            opts.port,
+            opts.cfg.token,
+            result.keys.directToken,
+            grant,
+            { label: result.peerLabel, via: "code" },
+            configStore.PEER_EXPIRY_MS,
+            peerDeviceId,
+          );
+          // A scoped pairing that could not be registered must not be admitted:
+          // the alternative is a browser that authenticates against a relay
+          // which has never heard of its token, and so falls through to nothing.
+          if (grant && !registered) {
+            console.log(
+              kleur.red(
+                "  ✗ Could not register the share. Nothing was shared.",
+              ),
+            );
             return;
           }
-          const timer = setTimeout(() => {
-            pending.delete(timer);
-            again();
-          }, delayMs);
-          timer.unref();
-          pending.add(timer);
-        };
-        scheduleRearm(decision.delayMs);
-      });
+          agent.addSessionKeys(result.keys, {
+            deviceId: peerDeviceId,
+            label: result.peerLabel,
+            restored: false,
+          });
+          if (grant) await grantsStore.add(grant);
+          await configStore.addPeer({
+            deviceId: peerDeviceId,
+            publicKey: result.peerPublicKey ?? "",
+            label: result.peerLabel,
+            pairedAt: Date.now(),
+            lastSeenAt: Date.now(),
+            directToken: result.keys.directToken,
+            sessionKeys: encodeSessionKeys(result.keys),
+            // Without this the scope is lost at the process boundary and
+            // `restoreTrustedDevices` re-registers a read-only share with the
+            // run of the machine.
+            ...(grant ? { grantId: grant.id } : {}),
+          });
+          opts.onPaired(result.peerLabel);
+          // The one thing that clears the budgets: a pairing that completed.
+          failures.typed = { ...NO_FAILURES };
+          failures.scan = { ...NO_FAILURES };
+          opts.onRearm(await armRound(), "paired");
+        })
+        .catch((err: unknown) => {
+          if (myRound !== round) return;
+          live[half] = null;
 
-    return pairing;
+          const decision = rearmDecision(err, failures[half], limitsFor(half));
+          failures[half] = decision.state;
+
+          if (decision.warn) {
+            opts.onWarn?.({
+              warning: decision.warn,
+              half,
+              wrong: decision.state.wrong,
+              delayMs: decision.rearm ? decision.delayMs : 0,
+            });
+          }
+
+          if (!decision.rearm) {
+            // Nothing left to claim on either half — the invite is spent, and
+            // only a human may bring it back. On a machine with no TTY that is
+            // simply where arming stops, which is the fail-closed direction.
+            if (!live.typed && !live.scan) opts.onIdle?.();
+            return;
+          }
+
+          const reason: RearmReason =
+            decision.warn === null ? failureKindReason(err) : "wrong-code";
+          const again = () => {
+            void armHalf(half)
+              .then(() => opts.onRearm(inviteNow(), reason))
+              .catch((armErr: unknown) => {
+                // Arming itself failed — a 503, a dead tunnel. Say so and try
+                // again on the same budget rather than going quiet with no code.
+                console.log(
+                  kleur.yellow(
+                    `  ! Could not get a fresh code (${(armErr as Error).message}).`,
+                  ),
+                );
+                scheduleRearm(REARM_RETRY_MS);
+              });
+          };
+          const scheduleRearm = (delayMs: number) => {
+            if (delayMs <= 0) {
+              again();
+              return;
+            }
+            const timer = setTimeout(() => {
+              pending.delete(timer);
+              again();
+            }, delayMs);
+            timer.unref();
+            pending.add(timer);
+          };
+          scheduleRearm(decision.delayMs);
+        });
+
+      return pairing;
+    };
+
+    /** Arm both halves as one fresh round. */
+    const armRound = async (): Promise<PairingInvite> => {
+      await Promise.all([armHalf("typed"), armHalf("scan")]);
+      return inviteNow();
+    };
+
+    const invite = await armRound();
+    return {
+      agent,
+      invite,
+      /** Mint a code on demand, after arming has gone idle. */
+      rearm: async () => {
+        round += 1;
+        failures.typed = { ...NO_FAILURES };
+        failures.scan = { ...NO_FAILURES };
+        live.typed?.cancel();
+        live.scan?.cancel();
+        live.typed = null;
+        live.scan = null;
+        return armRound();
+      },
+      stop: () => {
+        for (const timer of pending) clearTimeout(timer);
+        pending.clear();
+        agent.stop();
+      },
+    };
   };
 
-  /** Arm both halves as one fresh round. */
-  const armRound = async (): Promise<PairingInvite> => {
-    await Promise.all([armHalf("typed"), armHalf("scan")]);
-    return inviteNow();
-  };
+  /**
+   * The boot deadline, kept separate from `ready`.
+   *
+   * `ready` must stay pending rather than reject, because a rejected promise
+   * can never deliver the tunnel id that arrives two minutes later — and
+   * delivering it is the entire point of not giving up.
+   */
+  const deadline = new Promise<never>((_, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("the broker did not answer")),
+      TUNNEL_READY_TIMEOUT_MS,
+    );
+    timer.unref?.();
+    void ready.then(
+      () => clearTimeout(timer),
+      () => clearTimeout(timer),
+    );
+  });
+  // Nothing awaits `deadline` once `ready` wins the race, and an unobserved
+  // rejection would take the process down.
+  deadline.catch(() => {});
 
-  const invite = await armRound();
-  return {
-    agent,
-    invite,
-    /** Mint a code on demand, after arming has gone idle. */
-    rearm: async () => {
-      round += 1;
-      failures.typed = { ...NO_FAILURES };
-      failures.scan = { ...NO_FAILURES };
-      live.typed?.cancel();
-      live.scan?.cancel();
-      live.typed = null;
-      live.scan = null;
-      return armRound();
-    },
-    stop: () => {
-      for (const timer of pending) clearTimeout(timer);
-      pending.clear();
+  /*
+   * Hand the caller a way to stop the agent even if hosting never completes.
+   *
+   * On the late-tunnel path this function throws, so `hosted` is never
+   * assigned and `shutdown()`'s `hosted?.stop()` is a no-op — leaving the
+   * agent's backoff loop and an open broker socket running after Ctrl-C, on a
+   * socket that is not unref'd, so the process would not exit.
+   */
+  opts.onAgent?.(() => agent.stop());
+
+  try {
+    await Promise.race([ready, deadline]);
+  } catch (err) {
+    if (opts.onLateTunnel) {
+      // Deliberately not `agent.stop()`: the agent's own backoff loop is the
+      // only thing that can recover from a broker that was merely slow, and
+      // stopping it is what turned a fifteen-second hiccup into a process that
+      // would never be reachable from outside the LAN again.
+      void ready.then(
+        async () => {
+          try {
+            opts.onLateTunnel?.(await finishHosting());
+          } catch {
+            // Arming a code late is best-effort. The LAN server is already up
+            // and already told the user it is on its own; failing here must
+            // not take it down.
+          }
+        },
+        () => {},
+      );
+    } else {
+      // No caller to hand a late tunnel to, so leave nothing retrying.
       agent.stop();
-    },
-  };
+    }
+    throw err;
+  }
+
+  return finishHosting();
 }
 
 /** How long to wait before retrying an arm that failed outright. */
@@ -1012,6 +1101,7 @@ export async function restoreTrustedDevices(
    * rather than the restore logic that actually regressed.
    */
   register: typeof registerDirectToken = registerDirectToken,
+  now: number = Date.now(),
 ): Promise<RestoreResult> {
   const peers = await configStore.listPeers();
   let restored = 0;
@@ -1019,8 +1109,26 @@ export async function restoreTrustedDevices(
   let needRekey = 0;
   const trusted: RestoredPeer[] = [];
 
+  /*
+   * Scoped peers get their scope back, or they do not come back at all.
+   *
+   * An omitted grant means the full grant to the relay, so re-registering a
+   * `mtmux share` token without one silently promoted a read-only,
+   * single-session share to full machine access on the next restart. Read once
+   * here rather than per peer — most installs have no grants at all.
+   */
+  const grantsById = new Map(
+    (await grantsStore.active(now)).map((g) => [g.id, g]),
+  );
+
   for (const peer of peers) {
-    if (configStore.isPeerExpired(peer)) continue;
+    if (configStore.isPeerExpired(peer, now)) continue;
+    const grant = peer.grantId ? grantsById.get(peer.grantId) : undefined;
+    if (peer.grantId && !grant) {
+      // The share it belonged to has expired or been revoked. Restoring it
+      // unscoped is the escalation; restoring it at all is wrong.
+      continue;
+    }
     if (!peer.directToken) {
       // Paired before `directToken` was stored. These used to work over the
       // tunnel *only* because the agent injected the machine's own token on
@@ -1030,11 +1138,21 @@ export async function restoreTrustedDevices(
       needRepair += 1;
       continue;
     }
+    // The relay holds session tokens in memory only, so every boot re-derives
+    // this window rather than resuming one. Handing it what the peer record
+    // has left is what stops the relay from running a shorter clock than the
+    // trust it is standing in for — the bug that made a paired phone stop
+    // working a day later while `mtmux start` still listed it as trusted.
     if (
-      !(await register(port, authToken, peer.directToken, undefined, {
-        label: peer.label,
-        via: "code",
-      }))
+      !(await register(
+        port,
+        authToken,
+        peer.directToken,
+        grant,
+        { label: peer.label, via: "code" },
+        configStore.peerLifetimeRemainingMs(peer, now),
+        peer.deviceId,
+      ))
     ) {
       continue;
     }
@@ -1192,10 +1310,65 @@ export async function start(opts: StartOpts) {
   const approveControl = createApproveControl({ authToken: cfg.token });
   approvals = approveControl;
 
+  const recordControl = createRecordControl({
+    authToken: cfg.token,
+    ...(relay.recorder && relay.recordings
+      ? {
+          recorder: {
+            list: relay.recordings.list,
+            start: relay.recorder.start,
+            stop: (id: string) => relay.recorder!.stop(id, "requested"),
+            stopAll: () => relay.recorder!.stopAll("requested"),
+            remove: relay.recordings.remove,
+          },
+        }
+      : {}),
+  });
+
   const devicesControl = createDevicesControl({
     authToken: cfg.token,
     summary: relay.connectionSummary,
+    ...(relay.revokeSessionToken
+      ? { revokeToken: relay.revokeSessionToken }
+      : {}),
   });
+
+  /*
+   * Restore the devices we already trust *before* anything can connect.
+   *
+   * `registerDirectToken` reaches the relay over loopback HTTP, so doing this
+   * after `serve` left a window — seconds, with several peers and a 3s timeout
+   * each — in which a returning phone authenticated against a relay that had
+   * not been told about it yet. The browser treats `auth:failure` as terminal:
+   * it clears the stored token and navigates to `/start`, so the user is asked
+   * to pair again for what was a startup ordering bug. Registering in-process
+   * needs no listener and closes the window entirely.
+   */
+  const registerInProcess = relay.registerSessionToken;
+  const restoreEarly: typeof registerDirectToken | null = registerInProcess
+    ? async (
+        _port,
+        _authToken,
+        directToken,
+        grant,
+        notice,
+        ttlMs,
+        deviceId,
+      ) => {
+        registerInProcess(
+          directToken,
+          ttlMs,
+          undefined,
+          grant,
+          notice?.label,
+          deviceId,
+        );
+        return true;
+      }
+    : null;
+  const earlyRestore = restoreEarly
+    ? await restoreTrustedDevices(opts.port, cfg.token, restoreEarly)
+    : null;
 
   const { shutdown: stopServing } = await serve({
     relay,
@@ -1205,14 +1378,17 @@ export async function start(opts: StartOpts) {
     portHintCommand: "mtmux start",
     controlHandler: async (req, res) =>
       (await approveControl.handle(req, res)) ||
-      (await devicesControl.handle(req, res)),
+      (await devicesControl.handle(req, res)) ||
+      (await recordControl.handle(req, res)),
   });
 
   const localUrl = `http://localhost:${opts.port}`;
   const lanUrl = resolveLanUrl(host, opts.port, lan);
 
+  // Only reached with a bundle that predates `registerSessionToken`, which
+  // still has to go over HTTP and so still has to wait for the listener.
   const { restored, needRepair, needRekey, trusted } =
-    await restoreTrustedDevices(opts.port, cfg.token);
+    earlyRestore ?? (await restoreTrustedDevices(opts.port, cfg.token));
 
   // Flags beat the stored setting, and `--trust-reconnect` beats
   // `--confirm-reconnect` if somebody passes both — the explicit "not now" is
@@ -1233,6 +1409,13 @@ export async function start(opts: StartOpts) {
 
   let hosted: Hosted | null = null;
   let note: string | null = null;
+  /**
+   * Set by `shutdown()` below, and read by anything that can still fire after
+   * it — the late tunnel above all, which can arrive minutes after Ctrl-C.
+   */
+  let shuttingDown = false;
+  /** Stops the tunnel agent even when hosting never finished. */
+  let stopAgent: (() => void) | null = null;
 
   const lanInterface = WILDCARD.has(host) ? (lan?.iface ?? null) : null;
 
@@ -1422,6 +1605,37 @@ export async function start(opts: StartOpts) {
           console.log(kleur.dim("    Press enter for a new code."));
           waitForRearm();
         },
+        onAgent: (stop) => {
+          stopAgent = stop;
+        },
+        onLateTunnel: (late) => {
+          /*
+           * The user may have given up and pressed Ctrl-C while we were still
+           * retrying. Arming two pairing mailboxes, printing a live code and
+           * rewriting the state file for a machine they believe is stopped is
+           * worse than doing nothing — and the `serverState.write` below would
+           * race the `clear()` in `shutdown`, leaving a state file pointing at
+           * a dead pid.
+           */
+          if (shuttingDown) {
+            late.stop();
+            return;
+          }
+          // The banner has already been printed, saying the machine is serving
+          // locally. Correct that rather than leaving a stale claim on screen.
+          hosted = late;
+          note = null;
+          void serverState.write(record(late.invite.url)).catch(() => {});
+          // `--json` printed one object and is being read by a script, not a
+          // person. Emitting a banner into it now would corrupt that output.
+          if (opts.json) return;
+          clearWaitingLine();
+          console.log(kleur.green("  ✓ The tunnel came up."));
+          console.log(
+            kleur.dim("    Here's a code for pairing a device anywhere:"),
+          );
+          reprint(late.invite);
+        },
       });
     } catch (err) {
       // The tunnel is a convenience, not a dependency. An offline machine, a
@@ -1520,6 +1734,34 @@ export async function start(opts: StartOpts) {
 
   watchConnectedDevices(relay, opts.json === true);
 
+  /*
+   * Keep `lastSeenAt` honest.
+   *
+   * The relay is the only part of this process that sees a device
+   * authenticate, and its session-token window has slid on every use since the
+   * TTL fix. Without this the peer store never heard about any of it: a phone
+   * used every day still showed its pairing date under "last seen" and was
+   * expired by `mtmux devices` ninety days after it was first paired, while
+   * the relay — whose window had been renewing all along — carried on letting
+   * it in. Two stores, one rule, and only one of them could observe it.
+   *
+   * Throttled because this writes the config file. An hour's resolution is far
+   * finer than a ninety-day window needs, and it means a reconnect storm costs
+   * one write rather than one per attempt.
+   */
+  const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
+  const lastTouched = new Map<string, number>();
+  relay.onSessionTokenUsed?.((deviceId) => {
+    const now = Date.now();
+    const previous = lastTouched.get(deviceId);
+    if (previous !== undefined && now - previous < TOUCH_INTERVAL_MS) return;
+    lastTouched.set(deviceId, now);
+    void configStore.touchPeer(deviceId, now).catch(() => {
+      // Bookkeeping on a file that may be read-only or full. Losing it costs
+      // accuracy in `mtmux devices`, and must not cost the device its session.
+    });
+  });
+
   await serverState.write(record(hosted?.invite.url ?? null));
 
   // A LAN nonce is single-use, so once a phone has signed in the code on screen
@@ -1558,15 +1800,18 @@ export async function start(opts: StartOpts) {
     await openBrowser(openUrl).catch(() => {});
   }
 
-  let stopping = false;
   const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log("\n  Stopping…");
     stopHeartbeat?.();
     stopMirror?.();
     approveControl.close();
     hosted?.stop();
+    // `hosted` is null on the late-tunnel path — hosting threw and the agent
+    // was deliberately left retrying — so without this its backoff loop and
+    // its open broker socket survive Ctrl-C and hold the process up.
+    stopAgent?.();
     void serverState.clear();
     stopServing();
   };
