@@ -352,7 +352,18 @@ async function startPaneCapture(
 
   const fifoPath = index.recordingPath(`${filename}.pipe`);
   assertShellSafePath(fifoPath);
-  await execFileAsync("mkfifo", ["-m", "600", fifoPath]);
+  try {
+    await execFileAsync("mkfifo", ["-m", "600", fifoPath]);
+  } catch (err) {
+    // POSIX requires `mkfifo`, so this is a stripped container rather than a
+    // normal machine — but an ENOENT surfacing as "spawn mkfifo ENOENT" tells
+    // the user nothing about which half of the feature is unavailable.
+    throw new RecordingError(
+      "MKFIFO_UNAVAILABLE",
+      `Could not create the pipe this needs (${(err as Error).message}). ` +
+        "Recording a whole session does not use one.",
+    );
+  }
   recording.fifoPath = fifoPath;
 
   const screen = await tmux.capturePaneById(paneId).catch(() => "");

@@ -285,6 +285,23 @@ describe("pane recording", () => {
     ).rejects.toMatchObject({ code: "PANE_ALREADY_PIPED" });
   });
 
+  it("names mkfifo when the pipe cannot be created", async () => {
+    // POSIX requires it, so this is a stripped container — but "spawn mkfifo
+    // ENOENT" tells the user nothing about which half of the feature is gone.
+    execFileMock.mockImplementationOnce((_cmd, _args, cb) =>
+      // `display-message #{pane_pipe}` — not piped.
+      cb(null, { stdout: "0\n", stderr: "" }),
+    );
+    execFileMock.mockImplementationOnce((_cmd, _args, cb) =>
+      cb(new Error("spawn mkfifo ENOENT"), { stdout: "", stderr: "" }),
+    );
+    await expect(
+      recorder.start({
+        target: { kind: "pane", session: "work", paneId: "%7" },
+      }),
+    ).rejects.toMatchObject({ code: "MKFIFO_UNAVAILABLE" });
+  });
+
   it("leaves no index row behind when a start fails", async () => {
     execFileMock.mockImplementationOnce((_cmd, _args, cb) =>
       cb(null, { stdout: "1\n", stderr: "" }),

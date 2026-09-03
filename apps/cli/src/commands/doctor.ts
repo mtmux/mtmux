@@ -66,6 +66,36 @@ async function checkTmux(): Promise<Check> {
 }
 
 /**
+ * `mkfifo`, which only `mtmux record --pane` needs.
+ *
+ * A `warn`, never a `fail`: everything else in mtmux works without it, and so
+ * does recording a whole session — only pane capture uses a named pipe, and
+ * only because `pipe-pane` writes raw bytes that have to be timestamped and
+ * encoded on the way to a `.cast`. POSIX requires it, so this is really only
+ * ever a very stripped container.
+ */
+async function checkMkfifo(): Promise<Check> {
+  try {
+    await exec("mkfifo", ["--version"]);
+    return { name: "mkfifo", level: "ok", detail: "available" };
+  } catch {
+    // BSD `mkfifo` (macOS) has no `--version` and exits non-zero on it, so a
+    // failure here is not yet an answer. `command -v` is.
+    try {
+      await exec("sh", ["-c", "command -v mkfifo"]);
+      return { name: "mkfifo", level: "ok", detail: "available" };
+    } catch {
+      return {
+        name: "mkfifo",
+        level: "warn",
+        detail: "not found — `mtmux record --pane` will not work",
+        fix: "Install coreutils. Recording a whole session does not need it.",
+      };
+    }
+  }
+}
+
+/**
  * Whether the tmux server is reachable, which is not the same as tmux being
  * installed: a socket owned by another user is the classic "no sessions
  * listed" cause on a shared box.
@@ -205,6 +235,7 @@ export async function doctor(opts: DoctorOpts): Promise<void> {
     await checkNode(),
     await checkTmux(),
     await checkTmuxServer(),
+    await checkMkfifo(),
     await checkPort(opts.port),
     await checkConfigPermissions(),
     await checkBroker(base),
