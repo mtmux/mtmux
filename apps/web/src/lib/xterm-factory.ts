@@ -95,15 +95,30 @@ function patchRenderServiceDimensions(terminal: XTerm): void {
 
 export function createXterm(options: XtermOptions): XtermBundle {
   const theme = getTerminalTheme(options.themeName);
+
+  /*
+   * An absent option is omitted, never passed as `undefined`.
+   *
+   * xterm does not fall back to its default for a key that is present with an
+   * undefined value — it stores it. `scrollback` is then used as
+   * `rows + scrollback`, which is `NaN`, and the buffer's `new Array(NaN)`
+   * throws `RangeError: Invalid array length` from inside the `Terminal`
+   * constructor. The live terminal never hit this because it always passes a
+   * real number; the player, which wants xterm's own default, did.
+   */
   const terminal = new XTerm({
     fontSize: options.fontSize,
     fontFamily: options.fontFamily,
-    cursorStyle: options.cursorStyle,
-    cursorBlink: options.cursorBlink,
-    scrollback: options.scrollback,
     theme: terminalThemeToXterm(theme),
     allowProposedApi: true,
     macOptionIsMeta: true,
+    ...(options.cursorStyle ? { cursorStyle: options.cursorStyle } : {}),
+    ...(options.cursorBlink !== undefined
+      ? { cursorBlink: options.cursorBlink }
+      : {}),
+    ...(options.scrollback !== undefined
+      ? { scrollback: options.scrollback }
+      : {}),
     ...(options.disableStdin ? { disableStdin: true } : {}),
     ...(options.cols ? { cols: options.cols } : {}),
     ...(options.rows ? { rows: options.rows } : {}),

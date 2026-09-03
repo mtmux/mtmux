@@ -37,10 +37,18 @@ export function PlayerControls({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-3">
+      {/* A named group so the transport is addressable as a unit — by assistive
+          tech, and by the e2e spec, which would otherwise have to guess which
+          "Play" on the page is this one. */}
+      <div
+        role="group"
+        aria-label="Playback controls"
+        className="flex items-center gap-3"
+      >
         <Button
           size="icon"
           variant="secondary"
+          className="size-11 shrink-0"
           onClick={() => dispatch({ type: "toggle" })}
           aria-label={
             state.playing
@@ -84,7 +92,7 @@ export function PlayerControls({
             dispatch({ type: "speed", speed: nextSpeed(state.speed) })
           }
           aria-label={`Playback speed: ${state.speed}×. Tap to change.`}
-          className="font-mono text-xs tabular-nums"
+          className="h-11 shrink-0 font-mono text-xs tabular-nums"
         >
           {state.speed}×
         </Button>

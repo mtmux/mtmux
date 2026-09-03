@@ -55,9 +55,18 @@ export type CastPlayerProps = {
   /** The raw `.cast` text. */
   source: string;
   title?: string;
+  /**
+   * What the relay's index says about this recording being cut off.
+   *
+   * OR'd with what the parser found, because the two catch different things: a
+   * `kill -9` mid-write leaves a torn last line the parser sees, but a recording
+   * the startup sweep closed from its own row can be byte-perfect on disk and
+   * still be missing its ending. Only the index knows about the second.
+   */
+  truncated?: boolean;
 };
 
-export function CastPlayer({ source, title }: CastPlayerProps) {
+export function CastPlayer({ source, title, truncated }: CastPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XtermBundle | null>(null);
   const [cast, setCast] = useState<Cast | null>(null);
@@ -116,9 +125,35 @@ export function CastPlayer({ source, title }: CastPlayerProps) {
       rows: cast.header.height,
     });
     xtermRef.current = bundle;
-    bundle.fitAddon.fit();
+
+    /*
+     * Fit only once the container has a real box.
+     *
+     * `fitAddon.fit()` divides the container's size by the cell size, so on a
+     * container that is still zero-height — which it is on the first paint,
+     * inside a flex column that has not resolved yet — it computes a
+     * non-positive row count and xterm throws `RangeError: Invalid array
+     * length` out of its buffer allocation, taking the whole player down behind
+     * the error boundary.
+     *
+     * A `ResizeObserver` rather than a one-shot timeout: the same callback then
+     * handles a rotated phone and a collapsed sidebar too.
+     */
+    const safeFit = () => {
+      const box = containerRef.current?.getBoundingClientRect();
+      if (!box || box.width < 1 || box.height < 1) return;
+      try {
+        bundle.fitAddon.fit();
+      } catch {
+        // Renderer not ready. The observer fires again.
+      }
+    };
+    safeFit();
+    const observer = new ResizeObserver(safeFit);
+    observer.observe(containerRef.current);
 
     return () => {
+      observer.disconnect();
       bundle.terminal.dispose();
       xtermRef.current = null;
     };
@@ -229,7 +264,7 @@ export function CastPlayer({ source, title }: CastPlayerProps) {
         state={state}
         dispatch={dispatch}
         title={title ?? cast?.header.title}
-        truncated={cast?.truncated ?? false}
+        truncated={(cast?.truncated ?? false) || truncated === true}
         totalBytes={compiled?.totalBytes ?? 0}
       />
     </div>

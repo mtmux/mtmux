@@ -78,7 +78,10 @@ export function RecordingViewer({ recordingId }: { recordingId: string }) {
   }, [client, recordingId]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+    // `h-dvh` less the app shell's header rather than `h-full`: the parent is
+    // not a flex container with a resolved height, so `h-full` collapses to
+    // zero and the terminal has nothing to fit into.
+    <div className="flex h-[calc(100dvh-4rem)] min-h-0 flex-col gap-3 p-4">
       <div className="flex items-center gap-2">
         <Link
           href="/r"
@@ -105,7 +108,11 @@ export function RecordingViewer({ recordingId }: { recordingId: string }) {
         </div>
       ) : (
         <div className="min-h-0 flex-1">
-          <CastPlayer source={source} title={recording?.title} />
+          <CastPlayer
+            source={source}
+            title={recording?.title}
+            truncated={recording?.truncated}
+          />
         </div>
       )}
     </div>
