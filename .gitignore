@@ -5,6 +5,7 @@ node_modules/
 dist/
 .next/
 .next-cli/
+.next-dev/
 out/
 
 # Turbo
@@ -58,3 +59,9 @@ data/
 # Playwright run output (traces, screenshots, .last-run.json)
 test-results/
 playwright-report/
+
+# Local worktrees (see .worktrees/<branch>) — checkouts, not source.
+.worktrees/
+
+# Local screenshot scratch helper.
+.shot.mjs
