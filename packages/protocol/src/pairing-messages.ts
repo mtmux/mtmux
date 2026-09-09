@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { MAX_LABEL_LENGTH, sanitizeLabel } from "./display-label";
+import { ProtocolVersionSchema } from "./version";
 
 /**
  * Wire format for hosted pairing and the fallback tunnel.
@@ -40,9 +42,9 @@ const blob = (maxBytes: number) =>
  * pairings the broker can hold at once.
  *
  * No namespacing is needed on the broker's side: slots are keyed on the exact
- * string, and "49" and "0049" are distinct keys of distinct lengths.
+ * string, and "492" and "0492" are distinct keys of distinct lengths.
  */
-export const SlotSchema = z.string().regex(/^(\d{2}|\d{4})$/);
+export const SlotSchema = z.string().regex(/^(\d{3}|\d{4})$/);
 /** Opaque broker-assigned identifiers. */
 export const MailboxIdSchema = z.string().min(8).max(64);
 export const TunnelIdSchema = z.string().min(8).max(64);
@@ -333,8 +335,18 @@ export const PairRequestMessage = z.object({
   type: z.literal("pair:request"),
   requestId: RequestIdSchema,
   commitment,
-  /** Shown to the human deciding. Never trusted for anything else. */
-  deviceLabel: z.string().max(120),
+  /**
+   * Shown to the human deciding. Never trusted for anything else.
+   *
+   * Sanitised at parse rather than merely bounded: this string is printed into
+   * the SAS prompt, and control characters in it can redraw that prompt.
+   */
+  deviceLabel: z
+    .string()
+    .max(MAX_LABEL_LENGTH)
+    // Not point-free: zod passes its refinement ctx as a second argument,
+    // which would land in `maxLength` and truncate every label to "".
+    .transform((raw) => sanitizeLabel(raw)),
   accountEmail: z.string().max(320),
 });
 
@@ -419,10 +431,21 @@ export const RequestServerMessage = z.discriminatedUnion("type", [
  * POST /v1/pair/new
  *
  * `space` picks which slot space to draw from. The default is `typed` and must
- * stay that way forever: every CLI up to 0.5 and every browser bundled inside
- * one posts an empty body, and all of them expect a two-digit slot back.
+ * stay that way forever: a browser bundled inside a CLI posts an empty body
+ * and must still land in the typed space. The width of a typed slot is a
+ * separate question, and moved to three digits in 0.7.0.
  */
 export const PairNewRequest = z.object({
+  /**
+   * The protocol this client speaks. Required, and its absence is itself the
+   * signal: every client before 0.7.0 sent no `v`, and none of them can
+   * complete a pairing against this broker.
+   *
+   * The broker answers 426 before it parses, so this schema never sees a
+   * versionless body in practice — it is here so a client cannot omit `v` and
+   * be quietly accepted by some other consumer of the schema.
+   */
+  v: ProtocolVersionSchema,
   space: z.enum(["typed", "scan"]).optional(),
 });
 
@@ -483,6 +506,7 @@ export const REQUEST_TTL_MS = 120_000;
 
 /** POST /v1/pair/claim */
 export const PairClaimRequest = z.object({
+  v: ProtocolVersionSchema,
   slot: SlotSchema,
   share: hex(32),
   ad: z.string().max(256),
@@ -493,33 +517,22 @@ export const ClaimIdSchema = z.string().min(8).max(64);
 
 export const PairClaimResponse = z.object({
   /**
-   * Whether anything was waiting on that slot. Deliberately not a count.
+   * Handle for `WS /v1/claim/:claimId`, where the claimant collects the replies.
    *
-   * This used to report how many live mailboxes the claim was fanned out to,
-   * which handed any unauthenticated caller an exact read on how many pairings
-   * were in flight on a slot — free enumeration, repeatable, no crypto needed.
-   * A claimant only ever needed to know whether to open a socket; how many
-   * peers there are it discovers by counting the ones that answer.
-   */
-  waiting: z.boolean(),
-  /**
-   * Compatibility only, and clamped to 0 or 1.
-   *
-   * Clients up to mtmux 0.4.0 parse this response strictly and require this
-   * field, so dropping it would break `mtmux pair` on every install already out
-   * there. Clamped it says exactly what `waiting` says. Nothing new should read
-   * it, and it can go once 0.4.x is no longer in the wild.
-   */
-  offered: z.number().int().min(0).max(1).optional(),
-  /**
-   * Handle for `WS /v1/claim/:claimId`, where the CLI collects the replies.
-   *
-   * The claim is a POST (per plan) but the answer is inherently many-valued
-   * and asynchronous, so the socket is separate. Messages produced before the
-   * socket attaches are buffered for the mailbox TTL, which removes the race
-   * between fan-out and connect.
+   * The claim is a POST but the answer is inherently many-valued and
+   * asynchronous, so the socket is separate — and since 0.7.0 the socket is
+   * also where the claim is *fanned out*. The POST reserves nothing and looks
+   * at no mailbox, which is why it can no longer report whether anything was
+   * waiting: `waiting` and `offered` are gone, and a claimant learns what is
+   * there by counting the peers that answer on the socket.
    */
   claimId: ClaimIdSchema,
+  /**
+   * When the claim lapses if no socket attaches — a short window, seconds not
+   * minutes. It is extended to the full mailbox TTL the moment one does, so
+   * this is a deadline to connect by, never a deadline to finish by.
+   */
+  expiresAt: z.number(),
 });
 
 /** GET /v1/discover */
@@ -543,9 +556,15 @@ export const DiscoverResponse = z.object({
  * a machine it does not own. The commitment is opaque to the broker.
  */
 export const PairRequestBody = z.object({
+  v: ProtocolVersionSchema,
   serverId: z.string().min(8).max(64),
   /** How the machine should describe the asker to the human at the keyboard. */
-  deviceLabel: z.string().max(120),
+  deviceLabel: z
+    .string()
+    .max(MAX_LABEL_LENGTH)
+    // Not point-free: zod passes its refinement ctx as a second argument,
+    // which would land in `maxLength` and truncate every label to "".
+    .transform((raw) => sanitizeLabel(raw)),
 });
 
 export const SealedDescriptor = z.object({
@@ -557,7 +576,10 @@ export const SealedDescriptor = z.object({
   deviceId: hex(8),
   publicKey: hex(32),
   /** Human label for the device list, e.g. "gagan@thinkpad". */
-  label: z.string().max(128),
+  label: z
+    .string()
+    .max(128)
+    .transform((raw) => sanitizeLabel(raw, 128)),
 });
 
 // ---------------------------------------------------------------------------

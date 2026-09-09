@@ -12,6 +12,7 @@ import {
   tryDeserializePairingServerMessage,
   tryDeserializeTunnelServerMessage,
 } from "./pairing-messages";
+import { PROTOCOL_VERSION } from "./version";
 
 const HEX32 = "a".repeat(64);
 const HEX16 = "b".repeat(32);
@@ -85,27 +86,28 @@ describe("pairing server messages", () => {
       PairingServerMessage.safeParse({
         type: "pair:ready",
         mailboxId: "mailbox-123",
-        slot: "49",
+        slot: "492",
         expiresAt: Date.now() + 1000,
       }).success,
     ).toBe(true);
   });
 
-  it("accepts a two- or four-digit slot, leading zeros allowed", () => {
-    // Two spaces, not one: the typed code routes on two digits and the scanned
-    // one on four, so that a sweep of the small typed space cannot reach a
-    // scanned pairing. Widths in between are not a thing.
+  it("accepts a three- or four-digit slot, leading zeros allowed", () => {
+    // Two spaces, not one: the typed code routes on three digits and the
+    // scanned one on four, so that a sweep of the typed space cannot reach a
+    // scanned pairing. Nothing else is a slot — two digits was the 0.6.x width
+    // and is refused outright, which is what makes the break clean.
     const base = {
       type: "pair:ready" as const,
       mailboxId: "mailbox-123",
       expiresAt: 1,
     };
-    for (const slot of ["00", "49", "0000", "0049"]) {
+    for (const slot of ["000", "492", "0000", "0492"]) {
       expect(PairingServerMessage.safeParse({ ...base, slot }).success).toBe(
         true,
       );
     }
-    for (const slot of ["0", "490", "00490", "4a", ""]) {
+    for (const slot of ["0", "49", "00492", "4a2", ""]) {
       expect(PairingServerMessage.safeParse({ ...base, slot }).success).toBe(
         false,
       );
@@ -249,7 +251,8 @@ describe("HTTP bodies", () => {
   it("validates a claim request", () => {
     expect(
       PairClaimRequest.safeParse({
-        slot: "49",
+        v: PROTOCOL_VERSION,
+        slot: "492",
         share: HEX32,
         ad: "cli",
         sid: HEX16,
@@ -259,10 +262,11 @@ describe("HTTP bodies", () => {
 
   it("rejects a claim carrying anything secret-shaped in the slot", () => {
     // A client that posted the whole code would hand the broker the PAKE
-    // password. Neither typed length is a valid slot width, so both bounce.
-    for (const slot of ["492716", "49271638"]) {
+    // password. No typed code length is a valid slot width, so they bounce.
+    for (const slot of ["492716", "492716384"]) {
       expect(
         PairClaimRequest.safeParse({
+          v: PROTOCOL_VERSION,
           slot,
           share: HEX32,
           ad: "cli",

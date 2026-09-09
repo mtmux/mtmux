@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MIN_PAIR_CLI_VERSION, semverGte } from "./semver-gte";
+import { MIN_PAIR_CLI_VERSION, semverGte } from "./semver";
 
 describe("semverGte", () => {
   it("orders by major, then minor, then patch", () => {
@@ -42,7 +42,7 @@ describe("semverGte", () => {
   it("gates the pairing-length notice on a real version", () => {
     // `mtmux pair` below this parses six digits and refuses the eight the app
     // now shows, with a message that cannot be fixed after the fact.
-    expect(semverGte("0.5.0", MIN_PAIR_CLI_VERSION)).toBe(false);
-    expect(semverGte("0.6.0", MIN_PAIR_CLI_VERSION)).toBe(true);
+    expect(semverGte("0.6.3", MIN_PAIR_CLI_VERSION)).toBe(false);
+    expect(semverGte("0.7.0", MIN_PAIR_CLI_VERSION)).toBe(true);
   });
 });

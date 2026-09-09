@@ -47,6 +47,8 @@ export const WindowInfoSchema = z.object({
   active: z.boolean(),
   paneCount: z.number().int(),
   layout: z.string(),
+  /** tmux's `window_activity_flag`: output arrived while you were elsewhere. */
+  activity: z.boolean().optional(),
   dimensions: TerminalSizeSchema.optional(),
 });
 export type WindowInfo = z.infer<typeof WindowInfoSchema>;
