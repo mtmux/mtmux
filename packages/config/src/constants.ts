@@ -1,4 +1,4 @@
-export const APP_NAME = "ccremote";
+export const APP_NAME = "mtmux";
 
 export const PORTS = {
   WEB: 14100,

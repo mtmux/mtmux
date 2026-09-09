@@ -190,11 +190,27 @@
   --accent: var(--surface-panel);
   --accent-foreground: var(--text-strong);
   --destructive: var(--signal-failed);
-  /* Not `--text-inverse`: that is the *scheme's* inverse, which in light mode
-     is near-white on a mid-red (fine) and in dark mode would be near-black on
-     a mid-red (2.4:1). The destructive fill is mid-lightness in both schemes,
-     so its text is near-white in both. */
-  --destructive-foreground: oklch(0.98 0.006 140);
+  /* `--text-inverse`, and the comment that used to be here was wrong about
+     why not.
+
+     It claimed near-black on the dark scheme's mid-red was 2.4:1. It is not:
+     the dark fill is L = 0.6994, and `--text-inverse` on it is **6.86:1**. The
+     near-white it pinned instead was the failing pair — **2.72:1** in dark
+     mode, under both the 4.5 and the 3.0 floor, on the button that deletes
+     things. Light mode is unaffected, because `--text-inverse` there *is* that
+     near-white and stays at 6.03:1.
+
+     The general rule holds and is worth stating: destructive is mid-lightness
+     in both schemes, so its text has to flip with the scheme rather than being
+     pinned to one end. Asserted per scheme in `theme-contrast.test.ts`. */
+  --destructive-foreground: var(--text-inverse);
+  /* Known-failing and deliberately unchanged: `--line` against the surfaces is
+     1.41:1 light / 1.31:1 dark, below the 3:1 WCAG 1.4.11 floor for a control
+     boundary. Raising `--line` would darken every divider and card edge in the
+     app, and the fix is a separate stronger token for *control* borders —
+     `--line-strong` exists but is not what shadcn's `--border` maps to. That is
+     a design decision, not a bug fix, so it is recorded rather than smuggled in
+     here. `theme-contrast.test.ts` documents the same thing. */
   --border: var(--line);
   --input: var(--line);
   --ring: var(--brand);
@@ -520,20 +536,27 @@
     scrollbar-color: var(--color-line-strong) transparent;
     scrollbar-width: thin;
   }
-  ::-webkit-scrollbar {
+  /*
+   * The same exclusion as above, and for the same reason.
+   *
+   * It was missing here, so the WebKit rules restyled xterm's viewport to a
+   * 10px bar anyway — exactly the reflow the comment above says to avoid, on
+   * the one element it names.
+   */
+  *:not(.xterm-viewport)::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
-  ::-webkit-scrollbar-track {
+  *:not(.xterm-viewport)::-webkit-scrollbar-track {
     background: transparent;
   }
-  ::-webkit-scrollbar-thumb {
+  *:not(.xterm-viewport)::-webkit-scrollbar-thumb {
     background-color: var(--color-line-strong);
     border: 3px solid transparent;
     border-radius: 999px;
     background-clip: content-box;
   }
-  ::-webkit-scrollbar-thumb:hover {
+  *:not(.xterm-viewport)::-webkit-scrollbar-thumb:hover {
     background-color: var(--color-text-faint);
   }
 
@@ -590,6 +613,24 @@
 @utility select-none-prompt {
   user-select: none;
   -webkit-user-select: none;
+}
+
+/*
+ * Hide the native scrollbar on a scroller that has its own affordance.
+ *
+ * Three horizontal strips have asked for this class since they were written —
+ * the mobile keyboard toolbar, the window tabs and the file breadcrumbs — and
+ * it did not exist: not a Tailwind builtin, not a plugin, no `@utility`. It
+ * quietly resolved to nothing and the strips inherited `scrollbar-width: thin`
+ * from the base layer above, which is a visible bar under a row of buttons.
+ */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Preserve column alignment in hand-authored terminal output. */
