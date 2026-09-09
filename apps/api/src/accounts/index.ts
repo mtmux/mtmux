@@ -118,17 +118,20 @@ export type CreateAccountsOptions = {
   config?: AccountsConfig;
   /** See `RouteDeps.pairRequest`. Absent means the route answers 503. */
   pairRequest?: RouteDeps["pairRequest"];
+  /** See `RouteDeps.upgradeRequired`. Absent means no floor on this route. */
+  upgradeRequired?: RouteDeps["upgradeRequired"];
 };
 
 export function createAccounts({
   db,
   config = accountsConfig,
   pairRequest,
+  upgradeRequired,
 }: CreateAccountsOptions): Accounts {
   if (!db) return createStub();
 
   try {
-    return createLiveAccounts(db, config, pairRequest);
+    return createLiveAccounts(db, config, pairRequest, upgradeRequired);
   } catch (err) {
     // Almost certainly a configuration error — a bad base URL, a plugin that
     // refused its options. Logged loudly, but it still must not stop the
@@ -145,6 +148,7 @@ function createLiveAccounts(
   db: Db,
   config: AccountsConfig,
   pairRequest?: RouteDeps["pairRequest"],
+  upgradeRequired?: RouteDeps["upgradeRequired"],
 ): Accounts {
   const entitlements = createEntitlements(db);
   const billing = createBilling(db, config, entitlements);
@@ -175,6 +179,7 @@ function createLiveAccounts(
     entitlements,
     billing,
     pairRequest,
+    upgradeRequired,
   };
 
   async function authenticate(

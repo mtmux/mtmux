@@ -7,6 +7,7 @@ import {
   generateDeviceKey,
   signChallenge,
 } from "@repo/crypto";
+import { PROTOCOL_VERSION } from "@repo/protocol";
 import {
   startApiServer,
   routeSocketPath,
@@ -44,9 +45,14 @@ async function post(path: string, body?: unknown) {
   };
 }
 
-/** Open a socket and collect messages until `predicate` is satisfied. */
-function open(path: string) {
-  const url = base.replace("http:", "ws:") + path;
+/**
+ * Open a socket and collect messages until `predicate` is satisfied. Every
+ * path picks up the current protocol version, because the upgrade handler
+ * answers a raw 426 to anything below the floor.
+ */
+function open(path: string, v: number | null = PROTOCOL_VERSION) {
+  const url =
+    base.replace("http:", "ws:") + path + (v === null ? "" : `?v=${v}`);
   const ws = new WebSocket(url);
   const received: Record<string, unknown>[] = [];
   const waiters: {
@@ -114,9 +120,11 @@ describe("HTTP surface", () => {
   });
 
   it("opens a mailbox", async () => {
-    const { status, body } = await post("/v1/pair/new");
+    const { status, body } = await post("/v1/pair/new", {
+      v: PROTOCOL_VERSION,
+    });
     expect(status).toBe(200);
-    expect((body as { slot: string }).slot).toMatch(/^\d{2}$/);
+    expect((body as { slot: string }).slot).toMatch(/^\d{3}$/);
   });
 
   it("404s an unknown path", async () => {
@@ -124,16 +132,22 @@ describe("HTTP surface", () => {
   });
 
   it("rejects a malformed claim body", async () => {
-    expect((await post("/v1/pair/claim", { slot: "bad" })).status).toBe(400);
+    expect(
+      (await post("/v1/pair/claim", { v: PROTOCOL_VERSION, slot: "bad" }))
+        .status,
+    ).toBe(400);
   });
 
   it("survives a body that is not JSON", async () => {
+    // Unparseable reads as `undefined`, which carries no version, so the floor
+    // answers before the schema ever sees it. The point of the test is that
+    // the process stays up and the caller gets an answer.
     const res = await fetch(`${base}/v1/pair/claim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{{{",
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(426);
   });
 
   it("answers CORS preflight", async () => {
@@ -169,7 +183,7 @@ describe("websocket routing", () => {
   });
 
   it("delivers pair:ready over a real socket", async () => {
-    const { body } = await post("/v1/pair/new");
+    const { body } = await post("/v1/pair/new", { v: PROTOCOL_VERSION });
     const { mailboxId, slot } = body as { mailboxId: string; slot: string };
     const sock = open(`/v1/pair/${mailboxId}`);
     await sock.opened;
@@ -187,57 +201,56 @@ describe("websocket routing", () => {
   });
 
   it("carries a claim from HTTP through to the browser's socket", async () => {
-    const { body } = await post("/v1/pair/new");
+    const { body } = await post("/v1/pair/new", { v: PROTOCOL_VERSION });
     const { mailboxId, slot } = body as { mailboxId: string; slot: string };
     const browser = open(`/v1/pair/${mailboxId}`);
     await browser.opened;
     await browser.waitFor("pair:ready");
 
     const claim = await post("/v1/pair/claim", {
+      v: PROTOCOL_VERSION,
       slot,
       share: "a".repeat(64),
       ad: "cli",
       sid: "b".repeat(32),
     });
-    expect((claim.body as { waiting: boolean }).waiting).toBe(true);
+    // The POST reaches no mailbox. The claim socket is what fans it out, so
+    // this is also the end-to-end proof that a bare POST delivers nothing.
+    const { claimId } = claim.body as { claimId: string };
+    const cli = open(`/v1/claim/${claimId}`);
+    await cli.opened;
 
     const peerShare = await browser.waitFor("pair:peer-share");
     expect(peerShare.share).toBe("a".repeat(64));
     expect(typeof peerShare.peer).toBe("string");
     browser.ws.close();
+    cli.ws.close();
   });
 
-  it("buffers messages produced before the CLI's socket attaches", async () => {
-    // The CLI POSTs its claim and only then connects, so fan-out replies can
-    // legitimately beat the socket. Nothing may be lost in that window.
-    const { body } = await post("/v1/pair/new");
+  it("buffers messages produced before the holder's socket attaches", async () => {
+    // A mailbox is opened over HTTP and its socket connects a moment later, so
+    // a claim that attaches in that window fans out to a mailbox with no sink.
+    // Nothing may be lost there — the alternative is a pairing that silently
+    // never hears the claimant it was opened for.
+    const { body } = await post("/v1/pair/new", { v: PROTOCOL_VERSION });
     const { mailboxId, slot } = body as { mailboxId: string; slot: string };
-    const browser = open(`/v1/pair/${mailboxId}`);
-    await browser.opened;
-    await browser.waitFor("pair:ready");
 
     const claim = await post("/v1/pair/claim", {
+      v: PROTOCOL_VERSION,
       slot,
       share: "a".repeat(64),
       ad: "cli",
       sid: "b".repeat(32),
     });
     const { claimId } = claim.body as { claimId: string };
-
-    const peerShare = await browser.waitFor("pair:peer-share");
-    // Browser answers while the CLI is still not connected.
-    browser.send({
-      type: "pair:share",
-      peer: peerShare.peer,
-      share: "c".repeat(64),
-      ad: "browser",
-    });
-    await new Promise((r) => setTimeout(r, 50));
-
     const cli = open(`/v1/claim/${claimId}`);
     await cli.opened;
-    const buffered = await cli.waitFor("pair:peer-share");
-    expect(buffered.share).toBe("c".repeat(64));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const browser = open(`/v1/pair/${mailboxId}`);
+    await browser.opened;
+    const buffered = await browser.waitFor("pair:peer-share");
+    expect(buffered.share).toBe("a".repeat(64));
 
     browser.ws.close();
     cli.ws.close();
@@ -353,5 +366,88 @@ describe("clientIp", () => {
       "127.0.0.1",
     );
     expect(clientIp(req({}))).toBe("unknown");
+  });
+});
+
+describe("the protocol floor", () => {
+  // Its own server: the floor is checked *after* the rate limiters, so a
+  // shared instance would answer 429 to the probes below rather than 426.
+  let floorApi: ApiServer;
+  let floorBase: string;
+
+  beforeAll(async () => {
+    floorApi = await startApiServer(0, "127.0.0.1");
+    const { port } = floorApi.server.address() as AddressInfo;
+    floorBase = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await floorApi.close();
+  });
+
+  async function floorPost(path: string, body: unknown) {
+    const res = await fetch(`${floorBase}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: res.status,
+      body: (await res.json().catch(() => null)) as unknown,
+    };
+  }
+
+  /**
+   * The status a socket upgrade was refused with. `ws` surfaces a non-101
+   * response as `unexpected-response` rather than a close code, which is the
+   * whole reason the handler answers a raw `HTTP/1.1 426` instead of
+   * completing the upgrade and closing.
+   */
+  function upgradeStatus(path: string, v: number | null) {
+    const url =
+      floorBase.replace("http:", "ws:") + path + (v === null ? "" : `?v=${v}`);
+    const ws = new WebSocket(url);
+    return new Promise<number>((resolve, reject) => {
+      ws.on("unexpected-response", (_req, res) => {
+        ws.close();
+        resolve(res.statusCode ?? 0);
+      });
+      ws.once("open", () => {
+        ws.close();
+        reject(new Error("upgrade succeeded"));
+      });
+      ws.once("error", reject);
+    });
+  }
+
+  it("publishes its floor", async () => {
+    const res = await fetch(`${floorBase}/v1/version`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { protocol: number; floor: number };
+    expect(body.protocol).toBe(PROTOCOL_VERSION);
+    expect(body.floor).toBeLessThanOrEqual(PROTOCOL_VERSION);
+  });
+
+  it("answers 426 to a body with no version", async () => {
+    for (const path of ["/v1/pair/new", "/v1/pair/claim"]) {
+      const res = await floorPost(path, { slot: "492" });
+      expect(res.status).toBe(426);
+      expect((res.body as { minProtocol: number }).minProtocol).toBe(
+        PROTOCOL_VERSION,
+      );
+    }
+  });
+
+  it("answers 426 to a body from a 0.6.x client", async () => {
+    for (const path of ["/v1/pair/new", "/v1/pair/claim"]) {
+      expect((await floorPost(path, { v: 1, slot: "492" })).status).toBe(426);
+    }
+  });
+
+  it("refuses an upgrade below the floor before any frame is sent", async () => {
+    for (const path of ["/v1/agent", "/v1/pair/mbx-abcdefgh"]) {
+      expect(await upgradeStatus(path, null)).toBe(426);
+      expect(await upgradeStatus(path, 1)).toBe(426);
+    }
   });
 });

@@ -201,6 +201,44 @@ describe("dodo webhooks", () => {
     }
   });
 
+  /**
+   * Cancelling at the end of a period, which is not a cancellation event.
+   *
+   * Dodo leaves the subscription `active` and flips
+   * `cancel_at_next_billing_date`; the delivery is `subscription.updated`.
+   * Before this was handled, the flag never reached the mirror, so someone who
+   * cancelled kept being told "Renews on …" until the day it stopped — and the
+   * panel's "Ending" badge was unreachable code.
+   */
+  it("mirrors a cancellation scheduled for the end of the period", async () => {
+    const h = await startHarness(ENV);
+    try {
+      const { id: userId } = await h.signUp("scheduled@example.com");
+
+      const active = subscriptionEvent("subscription.active", "active");
+      active.data.metadata = { userId };
+      expect((await deliver(h, active, "evt_a")).status).toBe(200);
+      expect((await planOf(h, userId))?.cancelAtPeriodEnd).toBe(false);
+
+      const scheduled = subscriptionEvent("subscription.updated", "active", {
+        cancel_at_next_billing_date: true,
+      });
+      scheduled.data.metadata = { userId };
+      expect((await deliver(h, scheduled, "evt_b")).status).toBe(200);
+
+      const row = await planOf(h, userId);
+      // Still Pro — they paid for the rest of the period — but now visibly
+      // ending, which is the whole difference the UI renders.
+      expect(row).toMatchObject({
+        plan: "pro",
+        status: "active",
+        cancelAtPeriodEnd: true,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
   it("rejects a delivery with no webhook-id", async () => {
     const h = await startHarness(ENV);
     try {

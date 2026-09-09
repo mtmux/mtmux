@@ -142,7 +142,24 @@ describe("entitlements", () => {
       bytes: 42,
       seconds: 7,
       sessions: 1,
+      // A count as of now rather than a sum over the month — this account has
+      // registered nothing.
+      servers: 0,
     });
+  });
+
+  it("reports the machine count, which is the limit free accounts hit", async () => {
+    // The billing panel renders this beside the traffic meter, and it is the
+    // only free-plan limit a single person collides with, so a summary that
+    // omitted it left the panel unable to explain the 402 they had just seen.
+    await db.insert(servers).values({
+      id: "srv_usage",
+      userId: USER,
+      name: "one",
+      slug: "one",
+      publicKey: "a".repeat(64),
+    });
+    expect((await entitlements.usageThisMonth(USER)).servers).toBe(1);
   });
 
   it("ignores a zero-byte, zero-second session", async () => {
@@ -164,7 +181,9 @@ describe("entitlements", () => {
 
     const decision = await entitlements.checkServerLimit(USER);
     expect(decision.allowed).toBe(false);
-    expect(decision.reason).toContain("1 server");
+    // "machine", not "server": this string is rendered verbatim in the
+    // dashboard's 402 dialog, and the dashboard calls them machines.
+    expect(decision.reason).toContain("1 machine");
 
     await mirrorSubscription(db, {
       userId: USER,

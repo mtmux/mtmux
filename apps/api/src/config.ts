@@ -26,16 +26,56 @@ const ConfigSchema = z.object({
   upgradesPerMinute: z.coerce.number().int().positive().default(60),
 
   /**
-   * Source-independent ceilings on claims.
+   * Source-independent ceilings on claims, charged when a claim attaches its
+   * socket rather than when it POSTs.
    *
    * These carry the guessing bound. A per-IP limit isolates one client, which
    * an attacker with a botnet or a CDN in front of it simply does not have to
-   * be; these two apply no matter who is asking. Twelve per slot per minute
-   * against a 10^4 secret is a ~14-hour expected search of a code that lives
-   * for three minutes.
+   * be; these two apply no matter who is asking.
+   *
+   * The global number is derived: an attacker must never sweep the slot space
+   * faster than codes are reissued, so `rate × (TTL / 60s) < SLOT_COUNT` —
+   * 2000 slots and a three-minute TTL put the bound under 333/min. The
+   * per-slot number is four because, with a claim burning its mailbox the
+   * moment it attaches, the first attached claim on a slot ends every pairing
+   * on it: nothing honest needs more. Against a 10^6 secret that is one
+   * verified guess per code, which is the whole design.
    */
-  slotClaimsPerMinute: z.coerce.number().int().positive().default(12),
-  globalClaimsPerMinute: z.coerce.number().int().positive().default(600),
+  slotClaimsPerMinute: z.coerce.number().int().positive().default(4),
+  globalClaimsPerMinute: z.coerce.number().int().positive().default(200),
+
+  /**
+   * Oldest pairing protocol this broker answers; 0 turns the floor off.
+   *
+   * Empty rather than absent by default so the shipped value is
+   * `MIN_PROTOCOL_VERSION` from `@repo/protocol` — the broker resolves it, not
+   * this schema, because a self-hoster overriding it should not also have to
+   * track what our current floor is. Set `API_MIN_PROTOCOL=0` to accept
+   * everything, which is the right setting for anyone whose users cannot
+   * upgrade on our schedule.
+   */
+  minProtocol: z
+    .string()
+    .default("")
+    .transform((s) => (s === "" ? null : Number(s)))
+    .refine((n) => n === null || (Number.isInteger(n) && n >= 0), {
+      message: "API_MIN_PROTOCOL must be a non-negative integer",
+    }),
+
+  /**
+   * One line shown to every running client. The advisory half of the kill
+   * switch: it lets an operator warn about a bad release without shipping one.
+   */
+  advisory: z.string().max(256).default(""),
+
+  /**
+   * The CLI version `/v1/version` names as current. Empty says nothing.
+   *
+   * Deliberately not read from our own `package.json`: the broker and the CLI
+   * are versioned separately and deploy on different days, so a broker that
+   * inferred it would tell people to install a version npm has never seen.
+   */
+  latestCli: z.string().max(64).default(""),
 
   /** Tunnel quotas, per tunnel. */
   tunnelMaxBytes: z.coerce
@@ -65,6 +105,9 @@ export const config = ConfigSchema.parse({
   port: process.env.API_PORT,
   host: process.env.API_HOST,
   corsOrigins: process.env.API_CORS_ORIGINS,
+  minProtocol: process.env.API_MIN_PROTOCOL,
+  advisory: process.env.API_ADVISORY,
+  latestCli: process.env.API_LATEST_CLI,
   claimsPerMinute: process.env.API_CLAIMS_PER_MINUTE,
   mailboxesPerMinute: process.env.API_MAILBOXES_PER_MINUTE,
   discoversPerMinute: process.env.API_DISCOVERS_PER_MINUTE,

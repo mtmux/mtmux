@@ -69,6 +69,16 @@ export type RouteDeps = {
     deviceId: string,
     body: { deviceLabel: string; accountEmail: string },
   ) => { status: number; body: unknown };
+  /**
+   * The broker's protocol floor, applied to `POST /v1/pair/request`.
+   *
+   * Passed in rather than imported so the accounts service keeps working with
+   * no broker attached — and so a self-hoster's floor, which lives in the
+   * broker's config, is the one that applies here too.
+   */
+  upgradeRequired?: (
+    rawBody: unknown,
+  ) => { status: number; body: Record<string, unknown> } | null;
 };
 
 export type RouteContext = {
@@ -113,6 +123,15 @@ export async function handleAccountRoute(
   if (pathname === "/v1/pair/request" && method === "POST") {
     const body = await readBody(req, PairRequestBody);
     if (!body.ok) {
+      // A body that fails to parse because it predates the protocol version is
+      // an upgrade, not a malformed request, and the two must not be conflated
+      // — "malformed" sends the reader hunting for a typo they cannot find.
+      // `readBody` hands back the raw value so this can be told apart.
+      const tooOld = deps.upgradeRequired?.(body.raw);
+      if (tooOld) {
+        sendJson(res, tooOld.status, tooOld.body);
+        return true;
+      }
       sendJson(res, body.status, { error: body.error });
       return true;
     }

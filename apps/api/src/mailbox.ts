@@ -5,7 +5,7 @@ import { MAX_PEERS_PER_SLOT, type PairingServerMessage } from "@repo/protocol";
  * Pending pairings, keyed by mailbox and indexed by slot.
  *
  * The broker's entire knowledge of a pairing lives here, and it is deliberately
- * thin: a two-digit slot, opaque blobs in flight, and timers. There is no
+ * thin: a three-digit slot, opaque blobs in flight, and timers. There is no
  * password, no hash of one, and no mapping from a mailbox to an IP — a
  * subpoena or a heap dump should yield nothing worth having.
  *
@@ -19,7 +19,7 @@ export const MAILBOX_TTL_MS = 3 * 60 * 1000;
 /**
  * Live mailboxes allowed on one slot.
  *
- * A slot is two digits and deliberately shared, so honest collisions happen and
+ * A slot is three digits and deliberately shared, so honest collisions happen and
  * the number cannot be one. But it must be small: a claim is fanned out to
  * every live mailbox on the slot, so `M` mailboxes seeded with `M` different
  * guessed secrets buy an attacker `M` parallel tries against each victim claim
@@ -35,33 +35,26 @@ export const MAX_MAILBOXES_PER_SLOT = MAX_PEERS_PER_SLOT;
  * Live mailboxes across every slot. Bounds the store's memory; the per-IP
  * mailbox limiter is what stops one client getting near it.
  *
- * This has never actually been reachable, and now it is. The binding limit used
- * to be `SLOT_COUNT × MAX_MAILBOXES_PER_SLOT` = 200, of which every `mtmux
- * start` consumed two — one for the typed code and one for the QR — so the real
- * ceiling was about 100 concurrent starts. Moving the QR onto its own
- * four-digit space takes the typed ceiling to ~200 starts and adds 20,000 scan
- * slots behind it, which is the first time this number has had anything to do.
+ * The binding limit is `SLOT_COUNT × MAX_MAILBOXES_PER_SLOT`, which the
+ * three-digit slot takes from 200 to 4000 in the typed space, with 20,000 scan
+ * slots behind it. Two digits was the real ceiling on the whole service —
+ * about 100 concurrent `mtmux start`s, since each consumes a typed mailbox and
+ * a scan one — and the reason the slot had to widen.
  */
 export const MAX_LIVE_MAILBOXES = 10_000;
 
 /**
- * How long a POSTed claim holds a mailbox before its socket must attach.
+ * How long a claim lives before its socket must attach.
  *
- * A claim reserves the mailboxes it was fanned out to, and only *burns* them
- * once it proves itself by opening its WebSocket. Without the reservation two
- * claims could race the same mailbox and each get a guess; without the lapse a
- * bare POST would take a code out of circulation for its whole TTL. The window
- * only has to cover POST → upgrade on a live connection.
- *
- * Five rather than ten seconds because the reservation is itself a denial of
- * service: a bare POST reserves every live mailbox on a slot, so at the
- * per-slot claim rate an attacker blocks every honest claim with no socket and
- * no crypto at all. Halving the window halves what that costs us, which is a
- * mitigation and not a fix — the fix is for the reservation to require proof of
- * a connection before it holds anything, which is a protocol change and is not
- * this one.
+ * A claim now reserves nothing: fan-out happens when the socket attaches, so a
+ * POST that never connects has taken no mailbox out of circulation and there is
+ * nothing to lapse. What remains is bookkeeping — an unattached claim is an
+ * object in a map, and a POST flood should not be able to park them for three
+ * minutes. Fifteen seconds covers POST → upgrade on any live connection, and
+ * `extendClaim` gives the claim the full mailbox TTL the moment it attaches, so
+ * a slow exchange is never cut short.
  */
-export const OFFER_TTL_MS = 5 * 1000;
+export const CLAIM_ATTACH_TTL_MS = 15 * 1000;
 
 /** Where broker-generated messages go once a socket is attached. */
 export type Sink = (message: PairingServerMessage) => void;
@@ -72,24 +65,18 @@ export type Mailbox = {
   readonly createdAt: number;
   readonly expiresAt: number;
   /**
-   * Set once a claim has *proved itself* by attaching its socket. A mailbox is
-   * burned by exactly one claim in its lifetime; that single-shot rule is what
-   * caps an attacker at one 1-in-10,000 guess per code.
+   * Set once, by the claim that this mailbox was fanned out to when that claim
+   * attached its socket. A mailbox is claimed by exactly one claim in its
+   * lifetime; that single-shot rule is what caps an attacker at one
+   * 1-in-1,000,000 guess per code.
    *
-   * Deliberately not set at POST time. An unauthenticated POST costs nothing,
-   * so burning on it let one request retire every pairing on a slot — a
-   * service-wide outage with no crypto and no protocol participation.
+   * There is deliberately no intermediate "offered" state. Fan-out and claim
+   * are now the same instant — an attaching socket is the first thing a
+   * claimant does that a flood of anonymous POSTs cannot — so there is no
+   * window in which a mailbox is spoken for but not yet spent, and therefore no
+   * way to hold a code hostage without spending a guess on it.
    */
   claimedBy: string | null;
-  /**
-   * Claim this mailbox has been fanned out to but which has not yet attached a
-   * socket. Routing follows this as well as `claimedBy`, so the holder can
-   * answer immediately; liveness does not, so the mailbox is not offered to a
-   * second claim while one is in flight.
-   */
-  offeredTo: string | null;
-  /** When an unproven offer lapses and the mailbox is offerable again. */
-  offerExpiresAt: number;
   /** Opaque handle shared with the claimant for this conversation. */
   peer: string | null;
   sink: Sink | null;
@@ -101,7 +88,11 @@ export type Claim = {
   readonly id: string;
   readonly slot: string;
   readonly createdAt: number;
-  readonly expiresAt: number;
+  /**
+   * Two clocks: `CLAIM_ATTACH_TTL_MS` from creation, then the full mailbox TTL
+   * from the moment a socket attaches. Mutable for exactly that reason.
+   */
+  expiresAt: number;
   sink: Sink | null;
   pending: PairingServerMessage[];
   /** peer handle → mailbox id, for routing replies back. */
@@ -115,29 +106,22 @@ export interface MailboxStore {
    */
   createMailbox(slot: string, now?: number): Mailbox | null;
   getMailbox(id: string, now?: number): Mailbox | null;
-  /**
-   * Every mailbox on a slot that is live, unburned, and not already in flight
-   * with another claim.
-   */
+  /** Every mailbox on a slot that is live and unclaimed. Never mutates. */
   liveMailboxesForSlot(slot: string, now?: number): Mailbox[];
-  /** Fan a claim out to a mailbox without yet spending its single guess. */
-  offerMailbox(
-    mailbox: Mailbox,
-    claimId: string,
-    peer: string,
-    now?: number,
-  ): void;
   /**
-   * Spend the guess. Called when a claim attaches its socket, which is the
-   * first point at which it has done anything an attacker cannot do for free.
+   * Spend the guess: bind a mailbox to a claim, once and only once.
+   *
+   * Returns whether this claim won. A boolean rather than a void makes the
+   * single-shot rule testable, and makes the contract a compare-and-set that a
+   * Redis or Durable Objects store can implement honestly.
    */
-  burnOffer(mailbox: Mailbox, claimId: string): void;
-  /** The claim a mailbox is talking to, proven or merely offered. */
-  claimIdFor(mailbox: Mailbox, now?: number): string | null;
+  claimMailbox(mailbox: Mailbox, claimId: string, peer: string): boolean;
   destroyMailbox(id: string): void;
 
   createClaim(slot: string, now?: number): Claim;
   getClaim(id: string, now?: number): Claim | null;
+  /** Give an attached claim the full mailbox TTL. */
+  extendClaim(claim: Claim, now?: number): void;
   destroyClaim(id: string): void;
 
   /** Deliver to a sink, buffering if the socket has not attached yet. */
@@ -202,8 +186,6 @@ export function createMailboxStore(
         createdAt: now,
         expiresAt: now + ttlMs,
         claimedBy: null,
-        offeredTo: null,
-        offerExpiresAt: 0,
         peer: null,
         sink: null,
         pending: [],
@@ -240,37 +222,16 @@ export function createMailboxStore(
         }
         // One claim per mailbox, ever.
         if (mailbox.claimedBy !== null) continue;
-        // An offer that never attached a socket lapses, and the mailbox
-        // returns to circulation rather than being lost for its whole TTL.
-        if (mailbox.offeredTo !== null) {
-          if (mailbox.offerExpiresAt > now) continue;
-          mailbox.offeredTo = null;
-          mailbox.offerExpiresAt = 0;
-          mailbox.peer = null;
-        }
         live.push(mailbox);
       }
       return live;
     },
 
-    offerMailbox(mailbox, claimId, peer, now = Date.now()) {
-      mailbox.offeredTo = claimId;
-      mailbox.offerExpiresAt = now + OFFER_TTL_MS;
-      mailbox.peer = peer;
-    },
-
-    burnOffer(mailbox, claimId) {
-      // Only the claim the mailbox is actually talking to can spend its guess.
-      if (mailbox.offeredTo !== claimId) return;
+    claimMailbox(mailbox, claimId, peer) {
+      if (mailbox.claimedBy !== null) return false;
       mailbox.claimedBy = claimId;
-    },
-
-    claimIdFor(mailbox, now = Date.now()) {
-      if (mailbox.claimedBy !== null) return mailbox.claimedBy;
-      if (mailbox.offeredTo !== null && mailbox.offerExpiresAt > now) {
-        return mailbox.offeredTo;
-      }
-      return null;
+      mailbox.peer = peer;
+      return true;
     },
 
     destroyMailbox: removeMailbox,
@@ -280,7 +241,7 @@ export function createMailboxStore(
         id: id("clm"),
         slot,
         createdAt: now,
-        expiresAt: now + ttlMs,
+        expiresAt: now + CLAIM_ATTACH_TTL_MS,
         sink: null,
         pending: [],
         peers: new Map(),
@@ -297,6 +258,10 @@ export function createMailboxStore(
         return null;
       }
       return claim;
+    },
+
+    extendClaim(claim, now = Date.now()) {
+      claim.expiresAt = now + ttlMs;
     },
 
     destroyClaim(id) {

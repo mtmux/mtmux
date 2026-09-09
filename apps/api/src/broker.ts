@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { createLogger } from "@repo/logger";
 import {
+  MIN_PAIR_CLI_VERSION,
+  MIN_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
   PairClaimRequest,
   PairNewRequest,
   // Long enough to walk to the machine and read six digits; short enough that
@@ -9,6 +12,7 @@ import {
   REQUEST_TTL_MS,
   tryDeserializePairingClientMessage,
   tryDeserializeRequestClientMessage,
+  meetsProtocolFloor,
   tryDeserializeTunnelClientMessage,
   type PairingServerMessage,
   type RequestServerMessage,
@@ -64,24 +68,17 @@ function retryAfterSeconds(random: () => number = Math.random): number {
 /** A request is four messages; more than this is a bug or an abuse. */
 const MAX_PENDING_REQUEST = 8;
 
-/**
- * Bucket key for the per-slot claim limit.
- *
- * Read off the raw body before validation, because a malformed claim should
- * still be charged to whichever slot it names — otherwise the limit is dodged
- * by sending rubbish. An unreadable slot falls back to the global bucket.
- */
-function slotKeyOf(rawBody: unknown): string {
-  const slot = (rawBody as { slot?: unknown } | null)?.slot;
-  return typeof slot === "string" ? `slot:${slot}` : GLOBAL_KEY;
+/** Bucket key for the per-slot claim limit. */
+function slotKey(slot: string): string {
+  return `slot:${slot}`;
 }
 
 /**
  * The pairing broker.
  *
  * Everything here is deliberately blind. The broker routes by a public
- * two-digit slot, copies opaque blobs between two sockets, and enforces
- * quotas. It never sees the four-digit secret, the derived keys, or a single
+ * three-digit slot, copies opaque blobs between two sockets, and enforces
+ * quotas. It never sees the six-digit secret, the derived keys, or a single
  * byte of terminal traffic — and it must stay that way, because a broker that
  * knew the whole code could run the PAKE against both sides at once and hand
  * an attacker a root shell.
@@ -123,6 +120,29 @@ export type BrokerDeps = {
   /** Per-IP ceiling on WebSocket upgrades. */
   upgradeLimiter?: RateLimiter;
   quotas?: { maxBytes: number; maxMinutes: number; maxStreams: number };
+  /**
+   * Oldest protocol this broker answers. Zero disables the floor entirely.
+   *
+   * A knob and not a constant, because a floor is a control over other
+   * people's software: whoever runs a broker should decide what it refuses,
+   * and a self-hoster whose users cannot upgrade on our schedule must be able
+   * to turn it off.
+   */
+  minProtocolVersion?: number;
+  /**
+   * A line every client shows its user. The advisory half of the kill switch:
+   * with it we can warn about a bad release without shipping one.
+   */
+  advisory?: string;
+  /**
+   * The CLI version this broker would like people on, for `/v1/version`.
+   *
+   * Absent by default. A self-hosted broker that pins its users to an older
+   * CLI should not be made to advertise ours, and a broker that has no opinion
+   * should say nothing rather than send everyone chasing a version it cannot
+   * vouch for.
+   */
+  latestCli?: string;
   /**
    * Ties a tunnel to an account, so plan limits mean something and usage can
    * be billed.
@@ -181,6 +201,11 @@ export function createBroker(deps: BrokerDeps = {}) {
       logger.info({ source }, "Tunnel id secret resolved");
       return createTunnelRegistry(quotas, { idSecret: secret });
     })();
+  /**
+   * Per-IP ceiling on the claim POST. Purely to bound claim-object allocation
+   * — the POST no longer touches a mailbox, so this is not a guessing bound and
+   * must never be mistaken for one.
+   */
   const claimLimiter = deps.claimLimiter ?? createRateLimiter(5);
   const mailboxLimiter = deps.mailboxLimiter ?? createRateLimiter(10);
   /**
@@ -191,9 +216,21 @@ export function createBroker(deps: BrokerDeps = {}) {
    * caps tries against any one code, and the global ceiling caps tries against
    * the service — which together is what makes "you cannot brute force this" a
    * budget rather than a hope.
+   *
+   * Both are charged in `attachClaimSocket`, not on the POST. A claim only
+   * becomes a guess when its socket attaches, so charging at POST spent the
+   * budget on requests that never cost an attacker anything and let a flood of
+   * them exhaust the ceiling that honest claimants share.
+   *
+   * The global number is derived, not chosen: an attacker must never be able to
+   * sweep the slot space faster than codes are reissued, so
+   * `rate × (MAILBOX_TTL_MS / 60_000) < SLOT_COUNT` — with 2000 slots and a
+   * three-minute TTL, anything under 333/min. 200 leaves headroom either way.
+   * The per-slot number is 4 because, with the claim atomic, the first attached
+   * claim on a slot ends every pairing on it: nothing honest needs more.
    */
-  const slotClaimLimiter = deps.slotClaimLimiter ?? createRateLimiter(12);
-  const globalClaimLimiter = deps.globalClaimLimiter ?? createRateLimiter(600);
+  const slotClaimLimiter = deps.slotClaimLimiter ?? createRateLimiter(4);
+  const globalClaimLimiter = deps.globalClaimLimiter ?? createRateLimiter(200);
   const discoverLimiter = deps.discoverLimiter ?? createRateLimiter(30);
   /**
    * The upgrade path was the one door with no limit on it at all: every socket
@@ -201,6 +238,50 @@ export function createBroker(deps: BrokerDeps = {}) {
    * made the HTTP limits above bypassable for anything reachable over WS.
    */
   const upgradeLimiter = deps.upgradeLimiter ?? createRateLimiter(60);
+  const minProtocolVersion = deps.minProtocolVersion ?? MIN_PROTOCOL_VERSION;
+  const advisory = deps.advisory ?? "";
+  const latestCli = deps.latestCli ?? "";
+
+  /**
+   * 426 for a caller that does not speak the current protocol, or null.
+   *
+   * Read off the raw body *before* validation and after the rate limiters. The
+   * order matters both ways: after, so a version probe is budgeted like any
+   * other request; before, so a 0.6.x client gets "upgrade" rather than
+   * "malformed claim" — the schemas now require `v`, and a 400 would send the
+   * reader looking for a typo in a code that is fine.
+   */
+  function upgradeRequired(
+    rawBody: unknown,
+  ): (HttpResult & { body: Record<string, unknown> }) | null {
+    const declared = (rawBody as { v?: unknown } | null)?.v;
+    const version =
+      typeof declared === "number" || typeof declared === "string"
+        ? Number(declared)
+        : null;
+    if (
+      meetsProtocolFloor(
+        Number.isFinite(version) ? version : null,
+        minProtocolVersion,
+      )
+    ) {
+      return null;
+    }
+    return {
+      status: 426,
+      body: {
+        error:
+          "This version of mtmux is too old to pair. Run: npm i -g mtmux@latest",
+        minProtocol: minProtocolVersion,
+        minCli: MIN_PAIR_CLI_VERSION,
+      },
+    };
+  }
+
+  /** The socket half of the same check, for the `upgrade` handler. */
+  function socketVersionAccepted(declared: number | null): boolean {
+    return meetsProtocolFloor(declared, minProtocolVersion);
+  }
 
   /**
    * Claim payloads, kept only long enough to fan them out and reply.
@@ -360,9 +441,12 @@ export function createBroker(deps: BrokerDeps = {}) {
       };
     }
 
-    // An unreadable body is treated as an empty one rather than a 400: every
-    // client up to 0.5 POSTs with no body at all, and all of them must keep
-    // getting a typed slot. `typed` is the default forever, for that reason.
+    const tooOld = upgradeRequired(rawBody);
+    if (tooOld) return tooOld;
+
+    // An unreadable body past the version gate is treated as an empty one
+    // rather than a 400: `space` is optional and `typed` is its default
+    // forever, so a caller that says nothing about it must still get a slot.
     const parsed = PairNewRequest.safeParse(rawBody ?? {});
     const space = parsed.success ? (parsed.data.space ?? "typed") : "typed";
     const draw = space === "scan" ? generateQrSlot : generateSlot;
@@ -398,27 +482,26 @@ export function createBroker(deps: BrokerDeps = {}) {
   }
 
   function pairClaim(ip: string, rawBody: unknown): HttpResult {
-    // Three independent budgets, cheapest first. The per-IP window isolates one
-    // client; the per-slot and global windows are what actually bound guessing,
-    // because an attacker picks its own source addresses but cannot pick how
-    // many claims the broker will answer.
-    const limits: Array<[RateLimiter, string, string]> = [
-      [claimLimiter, ip, "Too many pairing attempts"],
-      [slotClaimLimiter, slotKeyOf(rawBody), "Too many attempts on that code"],
-      [globalClaimLimiter, GLOBAL_KEY, "Pairing is busy. Try again shortly."],
-    ];
-    for (const [limiter, key, error] of limits) {
-      if (limiter.take(key, now())) continue;
+    // One budget here, and it is not a guessing bound. This POST fans nothing
+    // out and touches no mailbox: it validates a body, mints a 128-bit claim id
+    // and hands it back. All it can cost the broker is the claim object, so all
+    // it is limited for is the claim object. The budgets that bound guessing
+    // are charged in `attachClaimSocket`, where a claim has actually done
+    // something an attacker cannot do for free.
+    if (!claimLimiter.take(ip, now())) {
       return {
         status: 429,
-        body: { error },
+        body: { error: "Too many pairing attempts" },
         headers: {
           "Retry-After": String(
-            Math.max(1, Math.ceil(limiter.retryAfterMs(key, now()) / 1000)),
+            Math.max(1, Math.ceil(claimLimiter.retryAfterMs(ip, now()) / 1000)),
           ),
         },
       };
     }
+
+    const tooOld = upgradeRequired(rawBody);
+    if (tooOld) return tooOld;
 
     const parsed = PairClaimRequest.safeParse(rawBody);
     if (!parsed.success) {
@@ -429,48 +512,21 @@ export function createBroker(deps: BrokerDeps = {}) {
     const claim = store.createClaim(slot, now());
     claimPayloads.set(claim.id, { share, ad, sid });
 
-    // Fan out to every live mailbox on the slot. Slots are shared on purpose,
-    // so they never run out; only the mailbox whose four-digit secret matches
-    // will produce a confirmation that verifies.
-    //
-    // This *offers* rather than claims. The guess is only spent when the claim
-    // attaches its socket — see `attachClaimSocket` — so a flood of bare POSTs
-    // cannot retire a single honest pairing.
-    const targets = store.liveMailboxesForSlot(slot, now());
-    for (const mailbox of targets) {
-      const peer = newPeerHandle();
-      store.offerMailbox(mailbox, claim.id, peer, now());
-      claim.peers.set(peer, mailbox.id);
-      store.deliver(mailbox, {
-        type: "pair:peer-share",
-        peer,
-        share,
-        ad,
-        sid,
-      });
-    }
-
-    logger.info({ offered: targets.length }, "Claim fanned out");
+    logger.info("Claim opened");
     return {
       status: 200,
-      // Both fields constant, and that is the whole point.
+      // A claim id and a deadline, and nothing else.
       //
-      // A boolean was already better than a count, but it was still a free
-      // liveness oracle: one unauthenticated POST, no socket, no crypto and no
-      // guess spent, told the caller whether anything was live on that slot.
-      // A hundred POSTs mapped the entire typed space, and an attacker could
-      // then spend its real budget only where something was waiting.
-      //
-      // So the POST now says nothing at all, and the truth moved onto the
-      // socket — where it costs a rate-limited WebSocket upgrade and *burns*,
-      // which turns a sweep from free reconnaissance into the attack itself.
+      // `waiting` and `offered` are gone. Both were compatibility with clients
+      // up to 0.4.0 and both had been pinned to constants, because a POST that
+      // reported whether anything was live on a slot was a free liveness oracle
+      // — a hundred of them mapped the whole typed space, and an attacker could
+      // then spend its real budget only where something was waiting. Now the
+      // POST could not answer that question even if it wanted to: it does not
+      // look at the slot at all. The answer lives on the socket, where it costs
+      // an upgrade, burns the claim, and is charged to both guessing budgets.
       // See `attachClaimSocket`.
-      //
-      // `waiting` must stay present and stay `true`: both clients branch on it
-      // and would refuse to open a socket at all if it were false, and clients
-      // up to 0.4.0 parse this response strictly, so `offered` cannot simply be
-      // dropped either.
-      body: { claimId: claim.id, waiting: true, offered: 1 },
+      body: { claimId: claim.id, expiresAt: claim.expiresAt },
     };
   }
 
@@ -528,6 +584,28 @@ export function createBroker(deps: BrokerDeps = {}) {
     return {
       status: 200,
       body: { requestId, expiresAt: now() + REQUEST_TTL_MS },
+    };
+  }
+
+  /**
+   * GET /v1/version — the kill switch's read side.
+   *
+   * `floor` is what this broker refuses below; `latest` is what it would like
+   * clients to be on. `advisory` is the channel that lets an operator say
+   * something urgent to every running CLI without shipping code — a doctor
+   * check and `mtmux start` both read it. Empty by default: a broker with
+   * nothing to say must say nothing, or the line stops being read.
+   */
+  function version(): HttpResult {
+    return {
+      status: 200,
+      body: {
+        protocol: PROTOCOL_VERSION,
+        floor: minProtocolVersion,
+        minCli: MIN_PAIR_CLI_VERSION,
+        ...(latestCli ? { latest: latestCli } : {}),
+        ...(advisory ? { advisory } : {}),
+      },
     };
   }
 
@@ -598,12 +676,19 @@ export function createBroker(deps: BrokerDeps = {}) {
 
     let established = false;
 
+    /**
+     * The claim this mailbox was burned by, if the two still agree.
+     *
+     * Symmetric with `ownedMailbox` on the claim socket: the mailbox names a
+     * claim, and the claim's routing table must still name this mailbox under
+     * the same peer handle. Either half alone would let the holder keep talking
+     * to a claim that has moved on, or to a conversation another claim owns.
+     */
     function claimFor(box: Mailbox): Claim | null {
-      // Follows an offer as well as a burn: the holder is sent the claimant's
-      // share the moment it is POSTed and answers straight away, which is
-      // routinely before the claim's socket has attached.
-      const claimId = store.claimIdFor(box, now());
-      return claimId ? store.getClaim(claimId, now()) : null;
+      if (!box.claimedBy || !box.peer) return null;
+      const claim = store.getClaim(box.claimedBy, now());
+      if (!claim) return null;
+      return claim.peers.get(box.peer) === box.id ? claim : null;
     }
 
     return {
@@ -717,16 +802,59 @@ export function createBroker(deps: BrokerDeps = {}) {
       socket.close(1008, "Claim already attached");
       return null;
     }
-    store.attach(claim, pairSink(socket));
 
+    // The guessing budgets are charged here, and only here.
+    //
     // Attaching is the first thing a claimant does that a flood of anonymous
-    // POSTs cannot: it costs a real connection the broker has already counted.
-    // So this is where the guess is spent, and from here the mailboxes this
-    // claim was offered are single-shot exactly as before.
-    for (const mailboxId of claim.peers.values()) {
-      const offered = store.getMailbox(mailboxId, now());
-      if (offered) store.burnOffer(offered, claim.id);
+    // POSTs cannot: it costs a real connection the broker has already counted
+    // through `upgradeLimiter`. Charging at POST instead let free requests
+    // exhaust the ceiling that honest claimants share, which turned the bound
+    // that protects codes into a denial of service against them.
+    const budgets: Array<[RateLimiter, string]> = [
+      [slotClaimLimiter, slotKey(claim.slot)],
+      [globalClaimLimiter, GLOBAL_KEY],
+    ];
+    for (const [limiter, key] of budgets) {
+      if (limiter.take(key, now())) continue;
+      socket.send(
+        JSON.stringify({ type: "pair:failed", reason: "rate-limited" }),
+      );
+      // The claim goes with it: a refused attach has spent nothing, but leaving
+      // the object alive would let one POST be retried against the limiter
+      // until it happened to fit.
+      store.destroyClaim(claim.id);
+      claimPayloads.delete(claim.id);
+      socket.close(1013, "Too many attempts");
+      return null;
     }
+
+    store.attach(claim, pairSink(socket));
+    // A claim that has attached is in a live exchange, so it gets the full
+    // mailbox TTL rather than the fifteen seconds it was minted with.
+    store.extendClaim(claim, now());
+
+    // Fan out *now*, not at POST time. Claiming a mailbox and being offered one
+    // are the same instant, so there is no window in which a mailbox is spoken
+    // for but unspent — which is what an unauthenticated POST used to be able
+    // to hold open, and is the whole of C-2.
+    const payload = claimPayloads.get(claim.id);
+    if (payload) {
+      for (const mailbox of store.liveMailboxesForSlot(claim.slot, now())) {
+        const peer = newPeerHandle();
+        // Compare-and-set. A mailbox is claimed once in its lifetime; a loser
+        // simply is not part of this conversation.
+        if (!store.claimMailbox(mailbox, claim.id, peer)) continue;
+        claim.peers.set(peer, mailbox.id);
+        store.deliver(mailbox, {
+          type: "pair:peer-share",
+          peer,
+          share: payload.share,
+          ad: payload.ad,
+          sid: payload.sid,
+        });
+      }
+    }
+    logger.info({ peers: claim.peers.size }, "Claim fanned out");
 
     // Nothing was waiting on that slot. This is the answer the POST used to
     // give away for free; here it has cost an upgrade the limiter counted, and
@@ -745,9 +873,20 @@ export function createBroker(deps: BrokerDeps = {}) {
       return null;
     }
 
-    function mailboxFor(peer: string): Mailbox | null {
+    /**
+     * The mailbox this claim owns under `peer`, or null.
+     *
+     * Belt and braces now that the offer window is gone: the routing table and
+     * the mailbox must agree in both directions, so a claim can never act on a
+     * mailbox that a different claim burned — including one it was routed to
+     * before its own socket existed.
+     */
+    function ownedMailbox(peer: string): Mailbox | null {
       const mailboxId = claim!.peers.get(peer);
-      return mailboxId ? store.getMailbox(mailboxId, now()) : null;
+      if (!mailboxId) return null;
+      const mailbox = store.getMailbox(mailboxId, now());
+      if (!mailbox || mailbox.claimedBy !== claim!.id) return null;
+      return mailbox;
     }
 
     return {
@@ -764,7 +903,7 @@ export function createBroker(deps: BrokerDeps = {}) {
           // failed. Destroy that mailbox: one wrong guess burns the code, which
           // is the entire guessing bound.
           if (msg.peer) {
-            const mailbox = mailboxFor(msg.peer);
+            const mailbox = ownedMailbox(msg.peer);
             if (mailbox) {
               store.deliver(mailbox, {
                 type: "pair:failed",
@@ -782,7 +921,7 @@ export function createBroker(deps: BrokerDeps = {}) {
           return;
         }
 
-        const mailbox = mailboxFor(msg.peer);
+        const mailbox = ownedMailbox(msg.peer);
         if (!mailbox) {
           store.deliver(claim, {
             type: "pair:failed",
@@ -793,19 +932,13 @@ export function createBroker(deps: BrokerDeps = {}) {
         }
 
         if (msg.type === "pair:share") {
-          // The claimant's first share travels in the POST body, so this is
-          // only reached by a client that sends a second one. Forwarding it
-          // costs the broker nothing and keeps the two sockets symmetric; a
-          // peer that already has a CPace run in flight ignores it.
-          store.deliver(mailbox, {
-            type: "pair:peer-share",
-            peer: msg.peer,
-            share: msg.share,
-            ad: msg.ad,
-            // Always the claimant's own sid, so both ends agree on the CPace
-            // session id without the broker inventing one.
-            sid: claimPayloads.get(claim.id)?.sid ?? "0".repeat(32),
-          });
+          // The claimant's share travels in the POST body and is fanned out
+          // from there, so a second one on this socket is not a client we
+          // support — and forwarding it is the only way a holder can ever see
+          // two peer-shares for one peer, which is the shape a confused or
+          // hostile claimant would need to run two CPace attempts on one
+          // mailbox. Refuse it rather than keeping the sockets symmetric.
+          socket.close(1008, "Share belongs in the claim body");
           return;
         }
 
@@ -845,8 +978,8 @@ export function createBroker(deps: BrokerDeps = {}) {
         //
         // A successful pairing removes its peer from `claim.peers` first, so
         // this cannot fire on the happy path.
-        for (const [peer, mailboxId] of claim.peers) {
-          const mailbox = store.getMailbox(mailboxId, now());
+        for (const peer of [...claim.peers.keys()]) {
+          const mailbox = ownedMailbox(peer);
           if (!mailbox) continue;
           store.deliver(mailbox, {
             type: "pair:failed",
@@ -1193,8 +1326,15 @@ export function createBroker(deps: BrokerDeps = {}) {
     pairRequest,
     discover,
     health,
+    version,
     /** Whether this address may open another socket. See `upgradeLimiter`. */
     allowUpgrade: (ip: string) => upgradeLimiter.take(ip, now()),
+    /** Whether a socket declaring this `?v=` clears the broker's floor. */
+    socketVersionAccepted,
+    /** The floor, for `/v1/version` and for the 426 body on a socket. */
+    minProtocolVersion,
+    /** 426 body for an HTTP caller that is too old, or null. */
+    upgradeRequired,
     attachMailboxSocket,
     attachClaimSocket,
     attachAgentSocket,

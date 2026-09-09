@@ -113,3 +113,60 @@ describe("the product catalogue", () => {
     expect(planForProduct(bare, "")).toBeNull();
   });
 });
+
+describe("choosing between test and live credentials", () => {
+  // The whole point of the split: the key and both product ids move together,
+  // so there is no configuration in which a live key charges against a test
+  // product id or the reverse.
+  const both = {
+    DODO_PAYMENTS_TEST_API_KEY: "sk_test",
+    DODO_PAYMENTS_LIVE_API_KEY: "sk_live",
+    DODO_WEBHOOK_KEY_TEST: "whsec_test",
+    DODO_WEBHOOK_KEY_LIVE: "whsec_live",
+    DODO_PRODUCT_PRO_MONTHLY_TEST: "pdt_test_m",
+    DODO_PRODUCT_PRO_MONTHLY_LIVE: "pdt_live_m",
+    DODO_PRODUCT_PRO_YEARLY_TEST: "pdt_test_y",
+    DODO_PRODUCT_PRO_YEARLY_LIVE: "pdt_live_y",
+  };
+
+  it("uses the test set by default", () => {
+    const c = buildAccountsConfig(both);
+    expect(c.dodoEnvironment).toBe("test_mode");
+    expect(c.dodoApiKey).toBe("sk_test");
+    expect(c.dodoWebhookKey).toBe("whsec_test");
+    expect(productIdFor(c, "pro", "monthly")).toBe("pdt_test_m");
+    expect(productIdFor(c, "pro", "yearly")).toBe("pdt_test_y");
+    // …and a live product must not grant anything while in test mode.
+    expect(planForProduct(c, "pdt_live_m")).toBeNull();
+  });
+
+  it("swaps the whole set on one variable", () => {
+    const c = buildAccountsConfig({ ...both, DODO_ENVIRONMENT: "live_mode" });
+    expect(c.dodoApiKey).toBe("sk_live");
+    expect(c.dodoWebhookKey).toBe("whsec_live");
+    expect(productIdFor(c, "pro", "monthly")).toBe("pdt_live_m");
+    expect(planForProduct(c, "pdt_test_m")).toBeNull();
+  });
+
+  it("lets the unsuffixed variables win, so old deployments keep working", () => {
+    const c = buildAccountsConfig({
+      ...both,
+      DODO_PAYMENTS_API_KEY: "sk_pinned",
+      DODO_PRODUCT_PRO_MONTHLY: "pdt_pinned",
+      DODO_ENVIRONMENT: "live_mode",
+    });
+    expect(c.dodoApiKey).toBe("sk_pinned");
+    expect(productIdFor(c, "pro", "monthly")).toBe("pdt_pinned");
+    // Unpinned values still follow the mode.
+    expect(productIdFor(c, "pro", "yearly")).toBe("pdt_live_y");
+  });
+
+  it("enables billing once a mode-selected key and product exist", () => {
+    expect(buildAccountsConfig({}).billingEnabled).toBe(false);
+    expect(
+      buildAccountsConfig({ DODO_PAYMENTS_TEST_API_KEY: "sk_test" })
+        .billingEnabled,
+    ).toBe(false);
+    expect(buildAccountsConfig(both).billingEnabled).toBe(true);
+  });
+});

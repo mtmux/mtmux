@@ -2,6 +2,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createLogger } from "@repo/logger";
+import { protocolVersionFromUrl } from "@repo/protocol";
 import { config } from "./config.js";
 import {
   createBroker,
@@ -153,6 +154,11 @@ export async function handleApiRequest(
     return;
   }
 
+  if (url.pathname === "/v1/version" && req.method === "GET") {
+    send(broker.version());
+    return;
+  }
+
   if (url.pathname === "/v1/pair/new" && req.method === "POST") {
     send(broker.pairNew(ip, await readJsonBody(req)));
     return;
@@ -243,6 +249,10 @@ export async function startApiServer(
       brokerRef.current
         ? brokerRef.current.pairRequest(deviceId, body)
         : { status: 503, body: { error: "Not ready" } },
+    // The broker owns the floor, including a self-hoster's override of it, so
+    // this route asks it rather than importing the constant.
+    upgradeRequired: (rawBody) =>
+      brokerRef.current?.upgradeRequired(rawBody) ?? null,
   });
 
   const broker = createBroker({
@@ -255,6 +265,11 @@ export async function startApiServer(
     globalClaimLimiter: createRateLimiter(config.globalClaimsPerMinute),
     discoverLimiter: createRateLimiter(config.discoversPerMinute),
     upgradeLimiter: createRateLimiter(config.upgradesPerMinute),
+    ...(config.minProtocol === null
+      ? {}
+      : { minProtocolVersion: config.minProtocol }),
+    advisory: config.advisory,
+    latestCli: config.latestCli,
     quotas: {
       maxBytes: config.tunnelMaxBytes,
       maxMinutes: config.tunnelMaxMinutes,
@@ -293,7 +308,7 @@ export async function startApiServer(
    * What that cost was not "a reconnect". Losing the pairing socket makes the
    * CLI mint a **fresh code** ("Reconnected. Here's a fresh code"), so on this
    * deployment the code on screen was being replaced every minute or two. Read
-   * eight digits, walk to another machine, type them — and they were already
+   * nine digits, walk to another machine, type them — and they were already
    * dead. The claim then fails as a wrong code, which by design burns that code
    * and mints another, so the next attempt races the same clock. Four of those
    * and the CLI starts backing off with "someone is guessing"; eight and it
@@ -334,6 +349,31 @@ export async function startApiServer(
     // reachable over WS as fast as sockets could be opened.
     if (!broker.allowUpgrade(clientIp(req))) {
       socket.write("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    // The version floor, before `handleUpgrade` rather than as a close code.
+    //
+    // A raw 426 is strictly better than closing an established socket: `ws`
+    // surfaces it as `unexpected-response` carrying the status, at the cost of
+    // zero protocol frames, so a CLI can say "update mtmux" instead of
+    // retrying a handshake that will never work.
+    //
+    // `/v1/tunnel` is deliberately exempt. Its two ends are both clients and
+    // neither negotiates anything with the broker, and enforcing here would
+    // sever live sessions the moment the floor was raised rather than at their
+    // next reconnect. `/v1/agent` is where a stale CLI is actually stopped —
+    // which is the piece that is easiest to miss and worst to get wrong: a
+    // 0.6.x CLI left online with a working tunnel makes *every* new browser
+    // fail trial decryption with an opaque "no matching pairing".
+    if (
+      route.kind !== "tunnel" &&
+      !broker.socketVersionAccepted(protocolVersionFromUrl(req.url ?? "/"))
+    ) {
+      socket.write(
+        "HTTP/1.1 426 Upgrade Required\r\n" +
+          `MTMux-Min-Protocol: ${broker.minProtocolVersion}\r\n\r\n`,
+      );
       socket.destroy();
       return;
     }

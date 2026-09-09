@@ -1,5 +1,6 @@
 {
   "name": "@app/api",
+  "license": "MIT",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,8 +9,10 @@
     "build": "node scripts/build.mjs",
     "start": "node dist/index.js",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
+    "test": "vitest run",
+    "dodo:products": "tsx --env-file-if-exists=../../.env scripts/dodo-products.ts",
+    "dodo:webhook-smoke": "tsx --env-file-if-exists=../../.env scripts/dodo-webhook-smoke.ts"
   },
   "dependencies": {
     "@better-auth/passkey": "1.6.25",

@@ -15,6 +15,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { createDb, migrate, type Db } from "@repo/db";
 
+import { createBroker } from "../broker.js";
 import { buildAccountsConfig, type AccountsConfig } from "./config.js";
 import { createAccounts } from "./index.js";
 import type { Accounts } from "./types.js";
@@ -57,7 +58,15 @@ export async function startHarness(
     ...env,
   });
 
-  const accounts = createAccounts({ db, config });
+  // The real broker, for the one thing accounts borrows from it: the protocol
+  // floor that `/v1/pair/request` answers with. `server.ts` wires it the same
+  // way, and wiring is what this harness exists to cover.
+  const broker = createBroker();
+  const accounts = createAccounts({
+    db,
+    config,
+    upgradeRequired: (raw) => broker.upgradeRequired(raw),
+  });
 
   handle = (req, res) => {
     void accounts

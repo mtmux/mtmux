@@ -66,6 +66,16 @@ export type MonthUsage = {
   bytes: number;
   seconds: number;
   sessions: number;
+  /**
+   * Registered machines right now — deliberately *not* a monthly figure.
+   *
+   * It rides along here because it is the only limit on the free plan a person
+   * actually collides with (`PLANS.free.servers === 1`), so the billing panel
+   * needs it beside the traffic meter or the panel cannot explain the 402 they
+   * just saw. Everything else in this type is a sum over the month; this is a
+   * count as of now, which is why it says so rather than being read as one.
+   */
+  servers: number;
 };
 
 export type Entitlements = {
@@ -216,12 +226,18 @@ export function createEntitlements(db: Db): Entitlements {
         and(eq(tunnelUsage.userId, userId), like(tunnelUsage.day, `${month}%`)),
       );
 
+    const serverRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(servers)
+      .where(eq(servers.userId, userId));
+
     const row = rows[0];
     return {
       month,
       bytes: Number(row?.bytes ?? 0),
       seconds: Number(row?.seconds ?? 0),
       sessions: Number(row?.sessions ?? 0),
+      servers: Number(serverRows[0]?.count ?? 0),
     };
   }
 
@@ -264,7 +280,7 @@ export function createEntitlements(db: Db): Entitlements {
       if (!exceeds(used, limit)) return ALLOWED;
       return {
         allowed: false,
-        reason: `The ${candidate} plan covers ${limit} server${limit === 1 ? "" : "s"}.`,
+        reason: `The ${candidate} plan covers ${limit} machine${limit === 1 ? "" : "s"}.`,
       };
     });
   }
@@ -295,7 +311,7 @@ export function createEntitlements(db: Db): Entitlements {
       if (!exceeds(used, limit)) return ALLOWED;
       return {
         allowed: false,
-        reason: `The ${candidate} plan trusts ${limit} browsers per server.`,
+        reason: `The ${candidate} plan trusts ${limit} browsers per machine.`,
       };
     });
   }
@@ -305,7 +321,7 @@ export function createEntitlements(db: Db): Entitlements {
       if (limitsFor(candidate).namedServers) return ALLOWED;
       return {
         allowed: false,
-        reason: "Renaming a server is a Pro feature.",
+        reason: "Renaming a machine is a Pro feature.",
       };
     });
   }

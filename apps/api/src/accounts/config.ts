@@ -216,7 +216,40 @@ export type AccountsConfig = z.infer<typeof AccountsConfigSchema> & {
   passkeyRpId: string;
 };
 
+/**
+ * The Dodo mode, resolved before the rest of the config, because three other
+ * values are selected by it.
+ *
+ * Duplicating the schema's default here is deliberate: the schema cannot see
+ * the raw environment, and the key selection has to happen *before* the parse
+ * that would otherwise tell us the mode. Both default to `test_mode`, and the
+ * `routes.test.ts` cases pin them together.
+ */
+function dodoModeOf(env: NodeJS.ProcessEnv): "test_mode" | "live_mode" {
+  return env.DODO_ENVIRONMENT === "live_mode" ? "live_mode" : "test_mode";
+}
+
+/**
+ * Pick the value for the active Dodo mode.
+ *
+ * The unsuffixed variable wins when it is set, so every deployment that
+ * configured Dodo before the split keeps working untouched. Otherwise the mode
+ * chooses — which is the whole point: one `DODO_ENVIRONMENT=live_mode` flips
+ * the key *and* both product ids together, and there is no state in which a
+ * live key is used with test product ids.
+ */
+function byMode(
+  mode: "test_mode" | "live_mode",
+  override: string | undefined,
+  test: string | undefined,
+  live: string | undefined,
+): string | undefined {
+  if (override) return override;
+  return (mode === "live_mode" ? live : test) || undefined;
+}
+
 function build(env: NodeJS.ProcessEnv): AccountsConfig {
+  const dodoMode = dodoModeOf(env);
   const parsed = AccountsConfigSchema.parse({
     databaseUrl: env.DATABASE_URL,
     baseUrl: env.BETTER_AUTH_URL,
@@ -239,12 +272,32 @@ function build(env: NodeJS.ProcessEnv): AccountsConfig {
     githubClientSecret: env.GITHUB_CLIENT_SECRET,
     passkeyRpId: env.PASSKEY_RP_ID,
     passkeyRpName: env.PASSKEY_RP_NAME,
-    dodoApiKey: env.DODO_PAYMENTS_API_KEY,
+    dodoApiKey: byMode(
+      dodoMode,
+      env.DODO_PAYMENTS_API_KEY,
+      env.DODO_PAYMENTS_TEST_API_KEY,
+      env.DODO_PAYMENTS_LIVE_API_KEY,
+    ),
     dodoEnvironment: env.DODO_ENVIRONMENT,
-    dodoWebhookKey: env.DODO_WEBHOOK_KEY,
+    dodoWebhookKey: byMode(
+      dodoMode,
+      env.DODO_WEBHOOK_KEY,
+      env.DODO_WEBHOOK_KEY_TEST,
+      env.DODO_WEBHOOK_KEY_LIVE,
+    ),
     dodoCreateCustomerOnSignUp: env.DODO_CREATE_CUSTOMER_ON_SIGNUP,
-    dodoProductProMonthly: env.DODO_PRODUCT_PRO_MONTHLY,
-    dodoProductProYearly: env.DODO_PRODUCT_PRO_YEARLY,
+    dodoProductProMonthly: byMode(
+      dodoMode,
+      env.DODO_PRODUCT_PRO_MONTHLY,
+      env.DODO_PRODUCT_PRO_MONTHLY_TEST,
+      env.DODO_PRODUCT_PRO_MONTHLY_LIVE,
+    ),
+    dodoProductProYearly: byMode(
+      dodoMode,
+      env.DODO_PRODUCT_PRO_YEARLY,
+      env.DODO_PRODUCT_PRO_YEARLY_TEST,
+      env.DODO_PRODUCT_PRO_YEARLY_LIVE,
+    ),
   });
 
   const baseUrl =

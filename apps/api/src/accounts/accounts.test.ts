@@ -163,6 +163,27 @@ describe("the account API", () => {
     }
   });
 
+  it("answers 426, not 400, to a pairing request that predates the floor", async () => {
+    // A 0.6.x CLI posts a body with no `v`. It fails the schema, but reporting
+    // it as malformed sends the reader hunting for a typo that is not there —
+    // the honest answer names the protocol floor and the fix.
+    const h = await start();
+    try {
+      const { token } = await h.signUp("old@example.com");
+      const res = await h.request("/v1/pair/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...bearer(token) },
+        body: JSON.stringify({ serverId: "srv_abcdefgh" }),
+      });
+      expect(res.status).toBe(426);
+      expect((await res.json()) as { minProtocol: number }).toMatchObject({
+        minProtocol: expect.any(Number) as number,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
   it("refuses an unauthenticated request", async () => {
     const h = await start();
     try {
@@ -247,7 +268,7 @@ describe("the account API", () => {
         error: string;
         upgradeUrl: string;
       };
-      expect(body.error).toContain("1 server");
+      expect(body.error).toContain("1 machine");
       // Must be a route apps/web actually serves — a 402 linking to a 404 is
       // worse than a 402 with no link.
       expect(body.upgradeUrl).toBe("http://localhost:14100/settings/billing");

@@ -138,6 +138,18 @@ export function createWebhookHandlers(
     onSubscriptionExpired: async (payload) => apply(payload.data),
     onSubscriptionFailed: async (payload) => apply(payload.data),
     onSubscriptionPlanChanged: async (payload) => apply(payload.data),
+    /**
+     * Everything else that changes a live subscription — and in practice, the
+     * one that matters most: **scheduling a cancellation.**
+     *
+     * Cancelling at the end of a period is not a `subscription.cancelled`
+     * event; the subscription stays `active` and only
+     * `cancel_at_next_billing_date` flips. Without this handler that flag never
+     * reaches the mirror, so someone who cancels is shown "Renews on …" right
+     * up until the day it silently stops — the panel's "Ending" badge and its
+     * "Pro access continues until …" line were unreachable.
+     */
+    onSubscriptionUpdated: async (payload) => apply(payload.data),
 
     // Payments are logged but do not move entitlement on their own: the
     // subscription events are authoritative about what someone may do, and a

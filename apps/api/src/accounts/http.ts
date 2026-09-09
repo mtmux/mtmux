@@ -44,7 +44,7 @@ export function sendNoContent(res: ServerResponse): void {
 
 export type BodyResult<T> =
   | { ok: true; data: T }
-  | { ok: false; status: number; error: string };
+  | { ok: false; status: number; error: string; raw?: unknown };
 
 /**
  * Read and validate a JSON body against a zod schema.
@@ -79,6 +79,10 @@ export async function readBody<T extends z.ZodTypeAny>(
       error: first
         ? `${where ? `${where}: ` : ""}${first.message}`
         : "Invalid request body.",
+      // Carried so a caller can tell "too old to speak this protocol" apart
+      // from "malformed", which are the same zod failure and very different
+      // answers to give a reader.
+      raw: parsed,
     };
   }
   return { ok: true, data: result.data as z.infer<T> };
