@@ -1,5 +1,9 @@
 import kleur from "kleur";
 import * as configStore from "../config-store.js";
+import * as serverState from "../server-state.js";
+import { DEVICES_REVOKE_PATH } from "../devices-control.js";
+import { readAccessLog, ACCESS_LOG_PATH } from "../access-log.js";
+import { displayLabel } from "@repo/protocol";
 
 /**
  * Browsers this machine has paired with.
@@ -18,6 +22,59 @@ function ago(at: number): string {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * Who has actually connected, from the relay's own append-only record.
+ *
+ * `mtmux devices` answers "who *may* connect"; this answers "who did". They
+ * are different questions, and until now only the first had an answer — a
+ * device that authenticated, looked around and left showed up nowhere at all.
+ */
+export async function devicesHistory(
+  opts: { limit?: number } = {},
+): Promise<void> {
+  const events = await readAccessLog();
+  if (events.length === 0) {
+    console.log("");
+    console.log(kleur.dim("  Nothing has connected to this machine yet."));
+    console.log(
+      kleur.dim("  The log starts at ") + kleur.bold(ACCESS_LOG_PATH) + ".",
+    );
+    console.log("");
+    return;
+  }
+
+  const limit = opts.limit ?? 50;
+  const shown = events.slice(-limit);
+  console.log("");
+  for (const e of shown) {
+    const when = new Date(e.at);
+    const stamp = Number.isNaN(when.getTime()) ? e.at : when.toLocaleString();
+    const mark = e.event === "connected" ? kleur.green("→") : kleur.dim("←");
+    const scope =
+      e.scope === "all" && !e.readOnly && e.files !== "none"
+        ? "full"
+        : [e.scope, e.readOnly ? "read-only" : null, `files:${e.files}`]
+            .filter(Boolean)
+            .join(" ");
+    const tail =
+      e.event === "disconnected" && e.seconds !== undefined
+        ? kleur.dim(`  (${e.seconds}s)`)
+        : "";
+    console.log(
+      `  ${mark} ${kleur.dim(stamp)}  ${displayLabel(e.label, "unknown device")}` +
+        `  ${kleur.dim(`${e.transport} · ${scope}`)}${tail}`,
+    );
+  }
+  console.log("");
+  if (events.length > shown.length) {
+    console.log(
+      kleur.dim(`  ${events.length - shown.length} older entries in `) +
+        kleur.bold(ACCESS_LOG_PATH),
+    );
+    console.log("");
+  }
 }
 
 export async function devicesList(): Promise<void> {
@@ -52,7 +109,46 @@ export async function devicesList(): Promise<void> {
   console.log("");
 }
 
+/**
+ * Tell a running server to forget the token too.
+ *
+ * The peer record is only what the *next* boot restores from; the live relay
+ * holds its own in-memory copy with a sliding ninety-day window that the
+ * revoked device's own traffic keeps renewing. Best-effort by nature — there
+ * may be no server running, and revoking the record is still the right thing to
+ * do when there isn't.
+ */
+async function revokeOnRunningServer(token: string): Promise<boolean> {
+  const state = await serverState.read();
+  if (!state) return false;
+  try {
+    const cfg = await configStore.load();
+    const res = await fetch(
+      `http://127.0.0.1:${state.port}${DEVICES_REVOKE_PATH}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.token}`,
+        },
+        body: JSON.stringify({ token }),
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (!res.ok) return false;
+    const body = (await res.json()) as { applied?: boolean };
+    return body.applied === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function devicesRevoke(deviceId: string): Promise<void> {
+  // Read before removing: the peer record is where the token lives, and the
+  // running relay needs it to drop the live session.
+  const peer = (await configStore.listPeers()).find(
+    (p) => p.deviceId === deviceId,
+  );
   const removed = await configStore.removePeer(deviceId);
   if (!removed) {
     console.error(kleur.red(`✗ No device with id ${deviceId}.`));
@@ -60,10 +156,19 @@ export async function devicesRevoke(deviceId: string): Promise<void> {
     process.exitCode = 1;
     return;
   }
+
+  const dropped = peer?.directToken
+    ? await revokeOnRunningServer(peer.directToken)
+    : false;
+
   console.log(kleur.green("✓ Revoked."));
-  // Being honest about scope: forgetting the key stops future reconnects, but a
-  // browser already attached keeps its live socket until the server restarts.
   console.log(
-    kleur.dim("  It can no longer reconnect. Restart mtmux to drop it now."),
+    dropped
+      ? kleur.dim("  Its session is gone and it can no longer reconnect.")
+      : // Still said out loud when it could not be applied, because the
+        // difference matters: an attached browser keeps its live socket.
+        kleur.dim(
+          "  It can no longer reconnect. Restart mtmux to drop it now.",
+        ),
   );
 }

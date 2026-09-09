@@ -8,7 +8,7 @@ import type {
 import { isGrantActive } from "@repo/protocol";
 import * as configStore from "../config-store.js";
 import * as grantsStore from "../grants-store.js";
-import { apiBase } from "../api.js";
+import { resolveApiBase } from "../api.js";
 import { qrLines } from "../banner.js";
 import { hostPairing } from "../pairing-client.js";
 import {
@@ -66,7 +66,7 @@ export async function share(opts: ShareOpts): Promise<void> {
   }
 
   const cfg = await configStore.load();
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
   const wanted = opts.session
     .split(",")
     .map((s) => s.trim())

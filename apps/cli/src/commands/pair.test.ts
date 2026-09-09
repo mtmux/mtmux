@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type os from "node:os";
 import {
-  FrameOpener,
+  openOnce,
   deriveSessionKeys,
   randomBytes,
   utf8ToBytes,
@@ -95,7 +95,7 @@ describe("sealDescriptor", () => {
 
   it("is readable only by a peer holding the CLI→browser key", async () => {
     const sealed = await sealDescriptor(keys, descriptor);
-    const opened = await new FrameOpener(keys.s2c, "s2c").open(sealed);
+    const opened = await openOnce(keys.s2c, "s2c", sealed);
     expect(JSON.parse(new TextDecoder().decode(opened))).toEqual(descriptor);
   });
 
@@ -106,14 +106,14 @@ describe("sealDescriptor", () => {
     expect(asText).not.toContain("tnl-abcdefgh");
 
     const wrongKey = deriveSessionKeys(randomBytes(64), utf8ToBytes("other"));
-    await expect(
-      new FrameOpener(wrongKey.s2c, "s2c").open(sealed),
-    ).rejects.toThrow(/failed authentication/);
+    await expect(openOnce(wrongKey.s2c, "s2c", sealed)).rejects.toThrow(
+      /failed authentication/,
+    );
   });
 
   it("produces something the descriptor schema round-trips", async () => {
     const sealed = await sealDescriptor(keys, descriptor);
-    const opened = await new FrameOpener(keys.s2c, "s2c").open(sealed);
+    const opened = await openOnce(keys.s2c, "s2c", sealed);
     expect(
       SealedDescriptor.safeParse(JSON.parse(new TextDecoder().decode(opened)))
         .success,

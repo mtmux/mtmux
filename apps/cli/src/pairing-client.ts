@@ -14,6 +14,7 @@ import {
 } from "@repo/crypto";
 import {
   MAX_PEERS_PER_SLOT,
+  PROTOCOL_VERSION,
   PairClaimResponse,
   PairNewResponse,
   codeDeadline,
@@ -62,7 +63,7 @@ export { PairingError } from "./pairing-exchange.js";
 
 /** Claiming a code someone else is showing. */
 export type ClaimTransport = {
-  postClaim(body: unknown): Promise<{ claimId: string; waiting: boolean }>;
+  postClaim(body: unknown): Promise<{ claimId: string }>;
   openClaimSocket(claimId: string): Promise<PairingSocket>;
 };
 
@@ -132,19 +133,17 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
   const channelId = utf8ToBytes(slot);
   const cpace = cpaceStart(utf8ToBytes(secret), channelId, sid);
 
-  const { claimId, waiting } = await opts.transport.postClaim({
+  const { claimId } = await opts.transport.postClaim({
     slot,
     share: bytesToHex(cpace.share),
     ad: AD_CLI,
     sid: bytesToHex(sid),
   });
 
-  if (!waiting) {
-    throw new PairingError(
-      "No pairing is waiting for that code.",
-      "Codes expire after three minutes. Reload the page for a new one.",
-    );
-  }
+  // Whether anything is waiting on that slot is not knowable from the POST any
+  // more — the broker fans out when the socket attaches, and answers with
+  // `pair:failed / peer-gone` there if nothing was live. `runExchange` already
+  // renders that.
 
   const socket = await opts.transport.openClaimSocket(claimId);
 
@@ -217,7 +216,7 @@ export async function pairWithCode(opts: PairOptions): Promise<PairingResult> {
 
 export type HostedPairing = {
   /**
-   * Slot and secret concatenated: eight digits for a typed secret, or slot + 22
+   * Slot and secret concatenated: nine digits for a typed secret, or slot + 22
    * base64url characters when `secret` was a long one. `mtmux start` shows the
    * first and puts the second in the QR.
    */
@@ -265,7 +264,7 @@ export type HostOptions = {
  * Park a mailbox and wait for a browser to claim it.
  *
  * Re-arming is deliberately just calling this again with the same options:
- * nothing is carried between codes. Every call generates a fresh four-digit
+ * nothing is carried between codes. Every call generates a fresh six-digit
  * secret, opens a fresh mailbox on a fresh slot, and takes a fresh socket, so a
  * spent code shares no state with its replacement — which is what makes "one
  * guess burns the code" survive re-arming.
@@ -297,15 +296,14 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
   const exchange: Exchange = runExchange({
     socket,
     side: "mailbox",
-    // `maxPeers` is deliberately unset. A mailbox is burned by exactly one
-    // claim, but a claim that POSTs and never opens a socket only ever
-    // *offers*: that lapses, the mailbox returns to circulation, and another
-    // claim may legitimately arrive before the code expires. So a second peer
-    // here is normal, not the broker misbehaving.
-    //
-    // No straggler window either: ruling a peer out means its confirmation
-    // failed, and the broker destroys the mailbox on that — so nothing further
-    // can arrive and there is nothing to wait for.
+    // One claim per mailbox, and now one *ever*: fan-out and burn are the same
+    // instant, so a mailbox that has answered a peer can never be offered to a
+    // second one. A second peer here is the broker misbehaving, and refusing it
+    // is the holder's own check on that rather than trust in the broker.
+    maxPeers: 1,
+    // No straggler window: ruling a peer out means its confirmation failed, and
+    // the broker destroys the mailbox on that — so nothing further can arrive
+    // and there is nothing to wait for.
     noMatchGraceMs: 0,
     buildDescriptor: opts.buildDescriptor,
     seal: opts.seal,
@@ -373,8 +371,8 @@ export async function hostPairing(opts: HostOptions): Promise<HostedPairing> {
           "Check your network — the code will be retried.",
           "lost",
         ),
-      // Unreachable: `maxPeers` is unset on this side. Present because the
-      // exchange asks every caller for its own wording.
+      // A mailbox is claimed once, so a second peer means the broker offered
+      // this code to two claimants. Nothing to do but abandon the code.
       tooManyPeers: () =>
         new PairingError(
           "The pairing service behaved unexpectedly.",
@@ -443,9 +441,36 @@ export function retryAfterMs(
 
 /** Default transport: real HTTP + WebSocket against the broker. */
 export function httpTransport(apiBase: string): PairingTransport {
+  /** The one message a client that is too old can act on. */
+  function tooOld(): PairingError {
+    return new PairingError(
+      "This version of mtmux is too old to pair.",
+      "Run: npm i -g mtmux@latest",
+    );
+  }
+
   function openSocket(path: string): Promise<PairingSocket> {
-    const ws = new WebSocket(`${apiBase.replace(/^http/, "ws")}${path}`);
+    // `?v=` on the socket as well as in the body: the broker answers a raw 426
+    // from its upgrade handler, before any frames, so a client that is too old
+    // learns it from the handshake rather than from a close code it would have
+    // to guess the meaning of.
+    const ws = new WebSocket(
+      `${apiBase.replace(/^http/, "ws")}${path}?v=${PROTOCOL_VERSION}`,
+    );
     return new Promise((resolve, reject) => {
+      ws.once("unexpected-response", (_req, res) => {
+        ws.removeAllListeners("error");
+        reject(
+          res.statusCode === 426
+            ? new PairingError(
+                "This version of mtmux is too old to pair.",
+                "Run: npm i -g mtmux@latest",
+              )
+            : new PairingError(
+                `Pairing service returned ${res.statusCode ?? "no status"}.`,
+              ),
+        );
+      });
       ws.once("error", reject);
       ws.once("open", () => {
         ws.removeAllListeners("error");
@@ -464,8 +489,12 @@ export function httpTransport(apiBase: string): PairingTransport {
       const res = await fetch(`${apiBase}/v1/pair/claim`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        // `v` is added here rather than by the caller so the exchange logic
+        // never has to know the protocol version, and so a test transport is
+        // not obliged to fake one.
+        body: JSON.stringify({ ...(body as object), v: PROTOCOL_VERSION }),
       });
+      if (res.status === 426) throw tooOld();
       if (res.status === 429) {
         throw new PairingError(
           "Too many pairing attempts from this network.",
@@ -490,8 +519,9 @@ export function httpTransport(apiBase: string): PairingTransport {
         const res = await fetch(`${apiBase}/v1/pair/new`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(space ? { space } : {}),
+          body: JSON.stringify({ v: PROTOCOL_VERSION, ...(space ? { space } : {}) }),
         });
+        if (res.status === 426) throw tooOld();
         if (res.status === 429) {
           throw new PairingError(
             "Too many pairing codes requested from this network.",

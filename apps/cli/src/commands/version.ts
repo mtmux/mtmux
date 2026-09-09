@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildInfo } from "../build-info.js";
 
 const exec = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,7 +18,11 @@ export async function version() {
   } catch {
     // tmux not installed
   }
+  const build = buildInfo();
   console.log(`mtmux     ${pkg.version}`);
+  console.log(
+    `build     ${build.sha}${build.builtAt ? ` (${build.builtAt})` : ""}`,
+  );
   console.log(`node      ${process.versions.node}`);
   console.log(`tmux      ${tmux}`);
   console.log(`platform  ${process.platform}/${process.arch}`);

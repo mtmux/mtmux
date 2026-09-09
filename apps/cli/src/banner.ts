@@ -49,7 +49,7 @@ export type BannerOpts = {
   /**
    * Draw the QR block. `--no-qr` clears this and the code is still printed —
    * the two are separate because a terminal that mangles block characters can
-   * still relay six digits perfectly well.
+   * still relay nine digits perfectly well.
    */
   showQr?: boolean;
   /**

@@ -11,7 +11,8 @@ import { banner, renderBannerLines, type PairingInvite } from "../banner.js";
 import { primaryLanAddress, type LanAddress } from "../lan.js";
 import { checkTmux, checkNode } from "../preflight.js";
 import { serve, type RelayRuntime } from "../serve.js";
-import { apiBase } from "../api.js";
+import { resolveApiBase } from "../api.js";
+import { describeUpdate, fetchBrokerVersion } from "../update-check.js";
 import { LOG_PATH, followLog, rotateIfNeeded } from "../log-file.js";
 import { formatLogLine } from "./logs.js";
 import {
@@ -52,6 +53,7 @@ import {
 import { createDevicesControl } from "../devices-control.js";
 import { createRecordControl } from "../record-control.js";
 import type { GrantFiles, GrantRecord, GrantSession } from "@repo/protocol";
+import { displayLabel } from "@repo/protocol";
 
 // The whole CLI is bundled into dist/bin.js, so this module's own directory IS
 // dist/ at runtime — not dist/commands/, which is where tsc used to put it.
@@ -477,10 +479,10 @@ async function startHosted(opts: {
           );
           console.log("");
           console.log(
-            `    ${kleur.dim("Device ")}  ${req.deviceLabel || "unknown device"}`,
+            `    ${kleur.dim("Device ")}  ${displayLabel(req.deviceLabel, "unknown device")}`,
           );
           console.log(
-            `    ${kleur.dim("Account")}  ${req.accountEmail || "unknown account"}`,
+            `    ${kleur.dim("Account")}  ${displayLabel(req.accountEmail, "unknown account")}`,
           );
           console.log(
             `    ${kleur.dim("Code   ")}  ${kleur.bold(formatSas(req.sas))}`,
@@ -555,7 +557,11 @@ async function startHosted(opts: {
         directToken: request.keys.directToken,
         sessionKeys: encodeSessionKeys(request.keys),
       });
-      console.log(kleur.green(`  ✓ ${request.deviceLabel} connected.`));
+      console.log(
+        kleur.green(
+          `  ✓ ${displayLabel(request.deviceLabel, "A device")} connected.`,
+        ),
+      );
 
       return { approved: true, sealedDescriptor: bytesToBase64Url(sealed) };
     },
@@ -600,7 +606,7 @@ async function startHosted(opts: {
      * Failure budgets, one set per half.
      *
      * Per-half because the halves stopped sharing a fate once the QR got its own
-     * slot space. A sweep of the two-digit typed space kills typed codes and
+     * slot space. A sweep of the typed slot space kills typed codes and
      * cannot touch a four-digit scan slot, so a shared counter would either bill
      * the QR for the typed code's attacker or let the typed code coast on the
      * QR's silence. See `rearmDecision` for why nothing but a completed pairing
@@ -1251,7 +1257,22 @@ export async function start(opts: StartOpts) {
   const version = cliVersion();
   const lan = primaryLanAddress();
   const host = resolveHost(opts.host, lan);
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
+
+  /*
+   * The update check, started here and read after the banner.
+   *
+   * In flight while the relay boots and the tunnel is negotiated, so by the
+   * time anything is printed it has almost always already answered — and if it
+   * has not, it is capped and its failure is silence. `--local` never asks:
+   * invariant #4 says that path contacts nobody, and a version check is still
+   * contact. `--json` never asks either, because the document it prints is a
+   * contract and an advisory is not part of it.
+   */
+  const updateCheck =
+    opts.local || opts.json
+      ? Promise.resolve(null)
+      : fetchBrokerVersion(base).catch(() => null);
 
   const cfg = opts.token ? { token: opts.token } : await configStore.load();
   // Relay reads these on first import. Set BEFORE we import relay modules.
@@ -1730,6 +1751,24 @@ export async function start(opts: StartOpts) {
       kleur.dim("    They were paired before mtmux stored a per-device token."),
     );
     console.log("");
+  }
+
+  if (!opts.json) {
+    const notice = describeUpdate(version, await updateCheck);
+    if (notice.kind !== "current" || notice.advisory) {
+      // Under the banner, so the "Waiting…" line is no longer the bottom of
+      // the screen and must not be erased when a device pairs.
+      waitingLineOnScreen = false;
+      const colour = notice.kind === "outdated" ? kleur.yellow : kleur.dim;
+      if (notice.kind !== "current") {
+        console.log(colour(`  mtmux ${notice.detail}`));
+        if (notice.fix) console.log(kleur.dim(`    ${notice.fix}`));
+      }
+      // The operator's own words, printed verbatim and last. This is the only
+      // channel that reaches a running CLI without a release.
+      if (notice.advisory) console.log(kleur.yellow(`  ${notice.advisory}`));
+      console.log("");
+    }
   }
 
   watchConnectedDevices(relay, opts.json === true);

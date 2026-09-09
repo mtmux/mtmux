@@ -6,6 +6,35 @@ import { existsSync } from "node:fs";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const REPO = path.resolve(ROOT, "../..");
 
+/**
+ * The commit this build came from, stamped into the bundle.
+ *
+ * A published CLI ships no `.git`, so without this the only provenance a
+ * binary carries is a version number it asserts about itself — and the one
+ * time that matters is when we are trying to work out which tree a report
+ * came from. `GITHUB_SHA` first so a CI build records what CI checked out;
+ * `-dirty` because a build from uncommitted work must never claim a commit.
+ */
+function buildStamp() {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 12);
+  try {
+    const sha = execSync("git rev-parse --short=12 HEAD", {
+      cwd: REPO,
+      encoding: "utf8",
+    }).trim();
+    const dirty = execSync("git status --porcelain", {
+      cwd: REPO,
+      encoding: "utf8",
+    }).trim();
+    return dirty ? `${sha}-dirty` : sha;
+  } catch {
+    // A tarball, or git is not installed. Unknown is honest; a guess is not.
+    return "unknown";
+  }
+}
+
+const BUILD = { sha: buildStamp(), builtAt: new Date().toISOString() };
+
 function run(cmd, opts = {}) {
   console.log(`$ ${cmd}`);
   execSync(cmd, { stdio: "inherit", ...opts });
@@ -94,6 +123,9 @@ await build({
     "open",
     "qrcode-terminal",
   ],
+  define: {
+    __MTMUX_BUILD__: JSON.stringify(BUILD),
+  },
   banner: {
     js: "import { createRequire as _mtmuxCreateRequire } from 'module'; const require = _mtmuxCreateRequire(import.meta.url);",
   },

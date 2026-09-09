@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import kleur from "kleur";
 import { formatSas } from "@repo/crypto";
+import { displayLabel } from "@repo/protocol";
 
 /**
  * The prompt a browser's access request raises on this machine.
@@ -49,8 +50,8 @@ export function renderAccessRequest(req: AccessPromptInput): string[] {
     "",
     kleur.bold("  A browser wants to pair with this machine"),
     "",
-    `    ${kleur.dim("Device ")}  ${req.deviceLabel || "unknown device"}`,
-    `    ${kleur.dim("Account")}  ${req.accountEmail || "unknown account"}`,
+    `    ${kleur.dim("Device ")}  ${displayLabel(req.deviceLabel, "unknown device")}`,
+    `    ${kleur.dim("Account")}  ${displayLabel(req.accountEmail, "unknown account")}`,
     `    ${kleur.dim("Code   ")}  ${kleur.bold(formatSas(req.sas))}`,
     "",
   ];

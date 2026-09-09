@@ -1,6 +1,6 @@
 import kleur from "kleur";
 import openBrowser from "open";
-import { apiBase } from "../api.js";
+import { resolveApiBase } from "../api.js";
 import { appOriginFor } from "./start.js";
 import { qrLines } from "../banner.js";
 import * as configStore from "../config-store.js";
@@ -16,7 +16,7 @@ export type AccountOpts = { api?: string };
 
 /** `mtmux login` — device authorization, so a headless box can still sign in. */
 export async function login(opts: AccountOpts & { open?: boolean }) {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
 
   const existing = await configStore.getAccount(base);
   if (existing) {
@@ -66,7 +66,7 @@ export async function login(opts: AccountOpts & { open?: boolean }) {
 }
 
 export async function logout(opts: AccountOpts) {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
   const account = await configStore.getAccount(base);
   if (!account) {
     console.log(kleur.dim("Not signed in."));
@@ -80,7 +80,7 @@ export async function logout(opts: AccountOpts) {
 }
 
 export async function whoami(opts: AccountOpts) {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
   const account = await configStore.getAccount(base);
   if (!account) {
     console.log(kleur.dim("Not signed in.  Run `mtmux login`."));
@@ -112,7 +112,7 @@ export async function whoami(opts: AccountOpts) {
  * of truth that goes stale silently.
  */
 export async function upgrade(opts: AccountOpts & { open?: boolean }) {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
   const account = await configStore.getAccount(base);
   if (!account) {
     console.log(kleur.dim("Sign in first:  ") + kleur.bold("mtmux login"));
@@ -128,7 +128,26 @@ export async function upgrade(opts: AccountOpts & { open?: boolean }) {
     body: JSON.stringify({ plan: "pro" }),
   });
   if (!res.ok) {
-    console.error(kleur.red(`✗ Could not start checkout (${res.status}).`));
+    // The broker's own reason, when it gave one. A 503 here means it has no
+    // payment provider configured — which is the *normal* state for a
+    // self-hosted broker, and telling someone "503" when the answer is "this
+    // server doesn't sell anything" sends them looking for an outage.
+    const reason = await res
+      .json()
+      .then((body: unknown) =>
+        body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : null,
+      )
+      .catch(() => null);
+    console.error(
+      kleur.red(`✗ ${reason ?? `Could not start checkout (${res.status}).`}`),
+    );
+    if (res.status === 503) {
+      console.error(
+        kleur.dim("  Self-hosted mtmux has no plan limits, so there is nothing to buy."),
+      );
+    }
     process.exitCode = 1;
     return;
   }
@@ -160,7 +179,7 @@ function ago(at: number | null): string {
 }
 
 export async function servers(opts: AccountOpts) {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
   const account = await configStore.getAccount(base);
   if (!account) {
     console.log(kleur.dim("Not signed in.  Run `mtmux login`."));

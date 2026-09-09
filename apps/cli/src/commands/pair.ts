@@ -1,9 +1,10 @@
 import os from "node:os";
 import kleur from "kleur";
-import { FrameSealer, utf8ToBytes, type SessionKeys } from "@repo/crypto";
+import { sealOnce, utf8ToBytes, type SessionKeys } from "@repo/crypto";
 import type { GrantRecord, SealedDescriptor } from "@repo/protocol";
+import { sanitizeLabel } from "@repo/protocol";
 import * as configStore from "../config-store.js";
-import { apiBase, discoverPublicIp } from "../api.js";
+import { resolveApiBase, discoverPublicIp } from "../api.js";
 import { getLanAddresses } from "../lan.js";
 import {
   pairWithCode,
@@ -53,9 +54,18 @@ export function buildCandidates(
   return candidates.slice(0, 8);
 }
 
+/**
+ * How this machine names itself to the browser it pairs with.
+ *
+ * Sanitised and bounded on the way *out*, not only on the way in. A username
+ * or hostname is not attacker-controlled in the usual sense, but it is
+ * unbounded, it is not ours to trust, and it lands in someone else's UI — and
+ * the peer that receives it is entitled to the same guarantee we demand of the
+ * labels we receive.
+ */
 export function deviceLabel(): string {
   const user = os.userInfo().username;
-  return `${user}@${os.hostname()}`;
+  return sanitizeLabel(`${user}@${os.hostname()}`);
 }
 
 /**
@@ -87,6 +97,24 @@ export async function registerDirectToken(
    * on it — the token is what grants access, and this is only ever displayed.
    */
   notice?: { label: string; via: "code" | "request" },
+  /**
+   * How long the relay should keep honouring this token while it is in use.
+   *
+   * The relay's own default is a 24 h idle window, which is right for the
+   * LAN-QR flow and wrong for a device paired by code: that device's trust
+   * lives in the CLI's peer store and lasts 90 days, so leaving the relay on
+   * its default is what cut a working phone off after a day. Pass the peer
+   * record's remaining lifetime and the two views cannot diverge.
+   */
+  ttlMs?: number,
+  /**
+   * The peer record this token belongs to, when there is one.
+   *
+   * The relay hands it back through `onSessionTokenUsed` every time the device
+   * authenticates, which is how `lastSeenAt` learns that a phone is still in
+   * use. Omitted by `mtmux share`, whose tokens are not peers.
+   */
+  deviceId?: string,
 ): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/_pair/session`, {
@@ -99,6 +127,8 @@ export async function registerDirectToken(
         token: directToken,
         ...(grant ? { grant } : {}),
         ...(notice ?? {}),
+        ...(ttlMs !== undefined ? { ttlMs } : {}),
+        ...(deviceId ? { deviceId } : {}),
       }),
       signal: AbortSignal.timeout(3000),
     });
@@ -119,17 +149,25 @@ async function localServerIsUp(port: number): Promise<boolean> {
   }
 }
 
-/** Seal the descriptor for the browser using the CLI→browser frame key. */
+/**
+ * Seal the descriptor for the browser under its own subkey.
+ *
+ * `sealOnce` rather than a bare `FrameSealer`: the descriptor gets both a
+ * fresh salt and the `descriptor` purpose label, so it shares neither a key
+ * nor a nonce with the tunnel frames that follow. It used to share both —
+ * this function and `tunnel-agent.ts` each sealed under `s2c` at counter 0,
+ * which handed the broker two ciphertexts under one nonce on every hosted
+ * pairing, one of them a JSON object with a public schema.
+ */
 export async function sealDescriptor(
   keys: SessionKeys,
   descriptor: SealedDescriptor,
 ): Promise<Uint8Array> {
-  const sealer = new FrameSealer(keys.s2c, "s2c");
-  return sealer.seal(utf8ToBytes(JSON.stringify(descriptor)));
+  return sealOnce(keys.s2c, "s2c", utf8ToBytes(JSON.stringify(descriptor)));
 }
 
 export async function pair(opts: PairOpts): Promise<void> {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
 
   if (!opts.code) {
     console.log();
@@ -222,7 +260,33 @@ export async function pair(opts: PairOpts): Promise<void> {
     // the keys first leaves a window where the browser can present a token the
     // relay has not yet been told about. A failure here therefore leaves the
     // keys unadmitted rather than half-paired.
-    await registerDirectToken(opts.port, config.token, result.keys.directToken);
+    //
+    // The lifetime handed over is the peer record's, not the relay's default:
+    // trust for a device paired by code is owned by the CLI's peer store, and
+    // a relay running a shorter clock of its own is what silently dropped a
+    // working device a day later.
+    const registered = await registerDirectToken(
+      opts.port,
+      config.token,
+      result.keys.directToken,
+      undefined,
+      { label: result.peerLabel, via: "code" },
+      configStore.PEER_EXPIRY_MS,
+    );
+    if (!registered) {
+      agent.stop();
+      console.error(
+        kleur.red("✗ Paired, but the local server refused the session token."),
+      );
+      console.error(
+        kleur.dim(
+          `  Nothing was admitted. Check that ${kleur.bold("mtmux start")} is still` +
+            ` running on port ${opts.port}, then pair again.`,
+        ),
+      );
+      process.exitCode = 1;
+      return;
+    }
 
     // The agent is the other end of the browser's seal, so it needs this
     // pairing's key schedule before the browser opens a stream. Registering it

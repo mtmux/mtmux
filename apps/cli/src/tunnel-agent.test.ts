@@ -8,6 +8,7 @@ import {
   deriveSessionKeys,
   FrameSealer,
   FrameOpener,
+  StreamOpener,
   bytesToBase64Url,
   base64UrlToBytes,
   utf8ToBytes,
@@ -31,12 +32,20 @@ function sessionKeys(): SessionKeys {
  */
 function browserEnd(keys: SessionKeys) {
   const sealer = new FrameSealer(keys.c2s, "c2s");
-  const opener = new FrameOpener(keys.s2c, "s2c");
+  // Bound lazily on the agent's first reply, which is where its salt rides.
+  let opener: FrameOpener | null = null;
   return {
     seal: async (line: string) =>
       bytesToBase64Url(await sealer.seal(utf8ToBytes(line))),
-    open: async (data: string) =>
-      new TextDecoder().decode(await opener.open(base64UrlToBytes(data))),
+    open: async (data: string) => {
+      const bytes = base64UrlToBytes(data);
+      if (!opener) {
+        const bound = await StreamOpener.bind(keys.s2c, "s2c", bytes);
+        opener = bound.opener;
+        return new TextDecoder().decode(bound.plaintext);
+      }
+      return new TextDecoder().decode(await opener.open(bytes));
+    },
   };
 }
 
@@ -60,6 +69,10 @@ function fakeSocket() {
   const onOpen: (() => void)[] = [];
   let closed = false;
 
+  let terminated = false;
+  let pings = 0;
+  let onPong: (() => void) | null = null;
+
   const socket: LocalSocket & AgentSocket = {
     send: (data) => sent.push(data),
     close: () => {
@@ -74,6 +87,18 @@ function fakeSocket() {
       onClose = cb;
     },
     onOpen: (cb) => onOpen.push(cb),
+    ping: () => {
+      pings += 1;
+    },
+    onPong: (cb) => {
+      onPong = cb;
+    },
+    terminate: () => {
+      terminated = true;
+      if (closed) return;
+      closed = true;
+      onClose?.();
+    },
   };
 
   return {
@@ -82,6 +107,14 @@ function fakeSocket() {
     get closed() {
       return closed;
     },
+    get terminated() {
+      return terminated;
+    },
+    get pings() {
+      return pings;
+    },
+    /** The far end answered — or sent a keepalive of its own. */
+    pong: () => onPong?.(),
     parsed: () => sent.map((s) => JSON.parse(s) as Record<string, unknown>),
     ofType(type: string) {
       return sent
@@ -100,7 +133,14 @@ function fakeSocket() {
   };
 }
 
-function harness(overrides: { retryDelays?: number[] } = {}) {
+function harness(
+  overrides: {
+    retryDelays?: number[];
+    keepalive?: NonNullable<
+      Parameters<typeof createTunnelAgent>[0]["keepalive"]
+    >;
+  } = {},
+) {
   const key = generateDeviceKey();
   const brokers: ReturnType<typeof fakeSocket>[] = [];
   const locals: ReturnType<typeof fakeSocket>[] = [];
@@ -127,6 +167,7 @@ function harness(overrides: { retryDelays?: number[] } = {}) {
       // Run synchronously so reconnect behaviour is deterministic.
       if (overrides.retryDelays === undefined) run();
     },
+    ...(overrides.keepalive ? { keepalive: overrides.keepalive } : {}),
   });
 
   return { agent, key, brokers, locals, retries, bound };
@@ -370,6 +411,65 @@ describe("stream plumbing", () => {
 
     expect(h.locals[0]!.sent).toContain("from-alice");
     expect(h.locals[1]!.sent).toContain("from-bob");
+  });
+
+  /**
+   * Two browsers on one pairing — a laptop and a phone, or the same tab after
+   * a reconnect. Each stream carries its own salt, so each derives its own
+   * frame key from the one session key, and neither can read the other.
+   */
+  it("binds two streams on one keyring entry, and keeps them separate", async () => {
+    const h = harness();
+    const keys = sessionKeys();
+    h.agent.addSessionKeys(keys);
+    h.agent.start();
+    register(h);
+
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-a" });
+    h.brokers[0]!.deliver({ type: "stream:open", streamId: "str-b" });
+    h.locals[0]!.open();
+    h.locals[1]!.open();
+
+    const first = browserEnd(keys);
+    const second = browserEnd(keys);
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-a",
+      data: await first.seal("from-laptop"),
+    });
+    h.brokers[0]!.deliver({
+      type: "stream:frame",
+      streamId: "str-b",
+      data: await second.seal("from-phone"),
+    });
+    await flush();
+
+    expect(h.locals[0]!.sent).toContain("from-laptop");
+    expect(h.locals[1]!.sent).toContain("from-phone");
+
+    // The agent's replies are sealed under each stream's own subkey. Once each
+    // browser has bound to its own stream, neither can read the other's — a
+    // spliced frame fails authentication because the salt, and therefore the
+    // key, differs.
+    h.locals[0]!.deliverRaw('{"type":"pong"}');
+    h.locals[1]!.deliverRaw('{"type":"pong"}');
+    await flush();
+
+    const frameFor = (streamId: string) =>
+      h.brokers[0]!.parsed()
+        .filter((m) => m.type === "stream:frame" && m.streamId === streamId)
+        .map((m) => m.data as string);
+
+    const toA = frameFor("str-a");
+    const toB = frameFor("str-b");
+    expect(toA).toHaveLength(1);
+    expect(toB).toHaveLength(1);
+
+    expect(await first.open(toA[0]!)).toBe('{"type":"pong"}');
+    expect(await second.open(toB[0]!)).toBe('{"type":"pong"}');
+
+    // Now bound, and cross-reading must fail.
+    await expect(second.open(toA[0]!)).rejects.toThrow();
   });
 
   it("refuses a stream no known pairing can open", async () => {
@@ -815,5 +915,127 @@ describe("admitStream", () => {
 
     expect(asked).toBe(0);
     expect(h.locals[0]!.closed).toBe(true);
+  });
+});
+
+/**
+ * A clock and a timer the test drives by hand, so keepalive behaviour is
+ * checked at exact instants rather than by sleeping.
+ */
+function keepaliveDriver(intervalMs = 30_000, deadlineMs = 75_000) {
+  let now = 0;
+  const ticks = new Set<() => void>();
+  return {
+    opts: {
+      intervalMs,
+      deadlineMs,
+      now: () => now,
+      schedule: (_ms: number, tick: () => void) => {
+        ticks.add(tick);
+        return () => ticks.delete(tick);
+      },
+    },
+    /** Move the clock, then run whatever timers are armed. */
+    advance(ms: number) {
+      now += ms;
+      for (const tick of [...ticks]) tick();
+    },
+    get timers() {
+      return ticks.size;
+    },
+  };
+}
+
+describe("broker keepalive", () => {
+  /**
+   * Why this exists at all: the broker already pings the agent, but that is a
+   * one-way guarantee — it lets the *broker* drop a dead agent and tells the
+   * agent nothing. On a half-open socket (a suspended laptop, a dropped NAT
+   * mapping) no close ever arrives, so `onClose` never fires and the reconnect
+   * loop never arms. The agent then advertises a tunnel id that routes nowhere
+   * until the CLI is restarted, which is exactly what was reported.
+   */
+  it("pings a quiet socket rather than assuming it is alive", () => {
+    const clock = keepaliveDriver();
+    const h = harness({ keepalive: clock.opts });
+    h.agent.start();
+    register(h);
+
+    clock.advance(30_000);
+    expect(h.brokers[0]!.pings).toBe(1);
+    expect(h.brokers[0]!.terminated).toBe(false);
+  });
+
+  it("terminates a socket that stops answering, and reconnects", () => {
+    const clock = keepaliveDriver();
+    const h = harness({ keepalive: clock.opts });
+    h.agent.start();
+    register(h);
+
+    clock.advance(30_000); // ping
+    clock.advance(30_000); // ping
+    expect(h.brokers[0]!.terminated).toBe(false);
+
+    clock.advance(30_000); // 90s of silence, past the 75s deadline
+    // Terminate, not close: a graceful close on a half-open socket waits for a
+    // reply that is never coming.
+    expect(h.brokers[0]!.terminated).toBe(true);
+    expect(h.retries).toEqual([0]);
+    expect(h.brokers).toHaveLength(2);
+    expect(h.agent.status).toBe("connecting");
+  });
+
+  it("treats an inbound frame as proof of life", () => {
+    const clock = keepaliveDriver();
+    const h = harness({ keepalive: clock.opts });
+    h.agent.start();
+    register(h);
+
+    clock.advance(60_000);
+    h.brokers[0]!.deliver({ type: "tunnel:ready", tunnelId: "tnl-abcdefgh" });
+    clock.advance(60_000);
+
+    expect(h.brokers[0]!.terminated).toBe(false);
+    expect(h.brokers).toHaveLength(1);
+  });
+
+  it("treats a pong as proof of life", () => {
+    const clock = keepaliveDriver();
+    const h = harness({ keepalive: clock.opts });
+    h.agent.start();
+    register(h);
+
+    clock.advance(60_000);
+    h.brokers[0]!.pong();
+    clock.advance(60_000);
+
+    expect(h.brokers[0]!.terminated).toBe(false);
+  });
+
+  it("watches the socket it reconnected onto, not the dead one", () => {
+    const clock = keepaliveDriver();
+    const h = harness({ keepalive: clock.opts });
+    h.agent.start();
+    register(h);
+
+    clock.advance(90_000);
+    expect(h.brokers).toHaveLength(2);
+    register(h, 1);
+
+    clock.advance(30_000);
+    expect(h.brokers[1]!.pings).toBe(1);
+    // One live timer, not one per socket the agent has ever opened.
+    expect(clock.timers).toBe(1);
+  });
+
+  it("leaves no timer running after stop()", () => {
+    const clock = keepaliveDriver();
+    const h = harness({ keepalive: clock.opts });
+    h.agent.start();
+    register(h);
+    expect(clock.timers).toBe(1);
+
+    h.agent.stop();
+    expect(clock.timers).toBe(0);
   });
 });

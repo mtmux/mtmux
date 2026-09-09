@@ -13,11 +13,11 @@
     "self-hosted",
     "websocket"
   ],
-  "homepage": "https://github.com/GagnDeep/tmuxremote#readme",
-  "bugs": "https://github.com/GagnDeep/tmuxremote/issues",
+  "homepage": "https://github.com/mtmux/mtmux#readme",
+  "bugs": "https://github.com/mtmux/mtmux/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GagnDeep/tmuxremote.git",
+    "url": "https://github.com/mtmux/mtmux.git",
     "directory": "apps/cli"
   },
   "license": "MIT",

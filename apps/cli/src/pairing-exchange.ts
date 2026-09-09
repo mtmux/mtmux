@@ -24,7 +24,7 @@ import {
  *
  * ## Fan-out
  *
- * A slot is two digits and shared on purpose, so a claim is offered to every
+ * A slot is three digits and shared on purpose, so a claim reaches every
  * live mailbox holding it and several peers may answer. Each gets its own CPace
  * run and its own key schedule; whichever produces a confirmation tag that
  * verifies is the real one, and the rest are closed — which destroys their
@@ -261,7 +261,7 @@ export function runExchange(opts: ExchangeOptions): Exchange {
      * Rule a peer out *and* tell the broker.
      *
      * The telling is the load-bearing part: `pair:close` destroys that peer's
-     * mailbox, so a wrong four-digit guess costs the whole code rather than
+     * mailbox, so a wrong six-digit guess costs the whole code rather than
      * one of ten thousand tries.
      */
     function giveUpOn(peer: string, reason: string) {
@@ -324,7 +324,7 @@ export function runExchange(opts: ExchangeOptions): Exchange {
       const attempt = attempts.get(peer);
       if (!attempt) return;
 
-      // The moment of truth. A wrong four-digit guess produces a different key,
+      // The moment of truth. A wrong six-digit guess produces a different key,
       // so this tag cannot verify.
       if (
         !verifyConfirmation(attempt.keys.confirm, "browser", hexToBytes(tag))

@@ -88,14 +88,20 @@ function scenario(opts: {
       cliShare = b.share;
       cliAd = b.ad;
       sid = b.sid;
-      return Promise.resolve({
-        claimId: "clm-abcdefgh",
-        // The broker reports only that something is there. How many peers
-        // exist, the CLI counts from the shares that actually arrive.
-        waiting: opts.browserSecrets.length + (opts.silent ?? 0) > 0,
-      });
+      // A claim id and a deadline, and nothing about the slot: since 0.7.0 the
+      // POST does not look at it. "Nothing was waiting" arrives on the socket,
+      // which is why `openClaimSocket` below has to say it.
+      return Promise.resolve({ claimId: "clm-abcdefgh" });
     },
     openClaimSocket() {
+      // The broker fans a claim out when its socket attaches, and answers
+      // `peer-gone` there when the slot held nothing. Scripted here because it
+      // is the only way a claimant learns that now.
+      if (opts.browserSecrets.length + (opts.silent ?? 0) === 0) {
+        void ready.then(() =>
+          deliver({ type: "pair:failed", reason: "peer-gone" }),
+        );
+      }
       return Promise.resolve(socket);
     },
   };
@@ -178,7 +184,7 @@ describe("code validation", () => {
   };
 
   it("refuses a code of any other length before contacting the broker", async () => {
-    for (const code of ["12345", "1234567", "123456789", "12 34 5"]) {
+    for (const code of ["12345", "12345678", "1234567890", "12 34 5"]) {
       await expect(
         pairWithCode({
           code,
@@ -188,12 +194,12 @@ describe("code validation", () => {
         }),
         // The wrong-length message names what we accept rather than asserting
         // one length, so the next change of length does not make it a lie.
-      ).rejects.toThrow(/pairing codes are 6 or 8/);
+      ).rejects.toThrow(/pairing codes are 9/);
     }
   });
 
   it("says something different when it is not digits at all", async () => {
-    for (const code of ["", "abcdef", "hello there", "49-27!6-38"]) {
+    for (const code of ["", "abcdef", "hello there", "492-71!6-384"]) {
       await expect(
         pairWithCode({
           code,
@@ -210,23 +216,23 @@ describe("code validation", () => {
     // Nothing waiting short-circuits, which is enough to prove the code parsed.
     await expect(
       pairWithCode({
-        code: "49 27-16",
+        code: "492 71-6384",
         transport: s.transport,
         buildDescriptor: () => DESCRIPTOR,
         seal: sealed,
       }),
-    ).rejects.toThrow(/No pairing is waiting/);
-    expect(s.slot).toBe("49");
+    ).rejects.toThrow(/stopped waiting for this code/);
+    expect(s.slot).toBe("492");
   });
 });
 
 describe("successful pairing", () => {
   it("derives the browser's key and hands over the sealed descriptor", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const s = scenario({ browserSecrets: [secret] });
 
     const promise = pairWithCode({
-      code: `49${secret}`,
+      code: `492${secret}`,
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -246,10 +252,10 @@ describe("successful pairing", () => {
   });
 
   it("never puts the secret on the wire", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const s = scenario({ browserSecrets: [secret] });
     const promise = pairWithCode({
-      code: `49${secret}`,
+      code: `492${secret}`,
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -263,12 +269,12 @@ describe("successful pairing", () => {
 
 describe("fan-out", () => {
   it("ignores mailboxes whose secret does not match and keeps the one that does", async () => {
-    const secret = "2716";
+    const secret = "716384";
     // A decoy sharing the slot, then the real one. Two is the broker's cap.
-    const s = scenario({ browserSecrets: ["0000", secret] });
+    const s = scenario({ browserSecrets: ["000000", secret] });
 
     const promise = pairWithCode({
-      code: `49${secret}`,
+      code: `492${secret}`,
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -290,12 +296,12 @@ describe("fan-out", () => {
     // exactly what the cap exists to prevent.
     const secrets = Array.from(
       { length: MAX_PEERS_PER_SLOT + 1 },
-      () => "0000",
+      () => "000000",
     );
     const s = scenario({ browserSecrets: secrets });
 
     const promise = pairWithCode({
-      code: "492716",
+      code: "492716384",
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -310,9 +316,9 @@ describe("fan-out", () => {
   });
 
   it("fails once every offered mailbox has been ruled out", async () => {
-    const s = scenario({ browserSecrets: ["0000", "9999"] });
+    const s = scenario({ browserSecrets: ["000000", "999999"] });
     const promise = pairWithCode({
-      code: "492716",
+      code: "492716384",
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -325,23 +331,23 @@ describe("fan-out", () => {
 });
 
 describe("failure handling", () => {
-  it("reports a code nobody is waiting for", async () => {
+  it("reports a code nobody is waiting for, once its socket attaches", async () => {
     const s = scenario({ browserSecrets: [] });
     await expect(
       pairWithCode({
-        code: "492716",
+        code: "492716384",
         transport: s.transport,
         buildDescriptor: () => DESCRIPTOR,
         seal: sealed,
       }),
-    ).rejects.toThrow(/No pairing is waiting/);
+    ).rejects.toThrow(/stopped waiting for this code/);
   });
 
   it("times out rather than hanging", async () => {
     const s = scenario({ browserSecrets: [], silent: 1 });
     await expect(
       pairWithCode({
-        code: "492716",
+        code: "492716384",
         transport: s.transport,
         buildDescriptor: () => DESCRIPTOR,
         seal: sealed,
@@ -353,7 +359,7 @@ describe("failure handling", () => {
   it("surfaces a lost broker connection", async () => {
     const s = scenario({ browserSecrets: [], silent: 1 });
     const promise = pairWithCode({
-      code: "492716",
+      code: "492716384",
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -366,7 +372,7 @@ describe("failure handling", () => {
   it("translates broker failure reasons into something actionable", async () => {
     const s = scenario({ browserSecrets: [], silent: 1 });
     const promise = pairWithCode({
-      code: "492716",
+      code: "492716384",
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -379,7 +385,7 @@ describe("failure handling", () => {
   it("rejects a share that is not a valid group element", async () => {
     const s = scenario({ browserSecrets: [], silent: 1 });
     const promise = pairWithCode({
-      code: "492716",
+      code: "492716384",
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
@@ -399,13 +405,13 @@ describe("failure handling", () => {
   it("carries a hint alongside the message", async () => {
     const s = scenario({ browserSecrets: [] });
     const err = await pairWithCode({
-      code: "492716",
+      code: "492716384",
       transport: s.transport,
       buildDescriptor: () => DESCRIPTOR,
       seal: sealed,
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PairingError);
-    expect((err as PairingError).hint).toMatch(/three minutes/);
+    expect((err as PairingError).hint).toMatch(/one attempt/);
   });
 });
 
@@ -416,7 +422,7 @@ describe("failure handling", () => {
  * rather than quietly deriving two different keys from one correct code.
  */
 function hostScenario(opts: { slot?: string; expiresInMs?: number } = {}) {
-  const slot = opts.slot ?? "49";
+  const slot = opts.slot ?? "492";
   const sent: Record<string, unknown>[] = [];
   const closedPeers: string[] = [];
   let inbound: ((raw: string) => void) | null = null;
@@ -535,20 +541,20 @@ const hostOpts = (transport: MailboxTransport) => ({
 });
 
 describe("hostPairing", () => {
-  it("shows eight digits: the broker's slot plus a locally generated secret", async () => {
-    const s = hostScenario({ slot: "07" });
+  it("shows nine digits: the broker's slot plus a locally generated secret", async () => {
+    const s = hostScenario({ slot: "007" });
     const hosted = await hostPairing(hostOpts(s.transport));
-    expect(hosted.code).toMatch(/^\d{8}$/);
-    expect(hosted.slot).toBe("07");
-    expect(hosted.code.slice(0, 2)).toBe("07");
+    expect(hosted.code).toMatch(/^\d{9}$/);
+    expect(hosted.slot).toBe("007");
+    expect(hosted.code.slice(0, 3)).toBe("007");
     expect(hosted.expiresAt).toBeGreaterThan(Date.now());
     hosted.cancel();
   });
 
   it("takes the slot the broker gave it, whatever its width", async () => {
-    // A new CLI against a broker that has never heard of the scan space gets a
-    // two-digit slot back and must simply use it — which is what makes the
-    // four-digit space a free upgrade rather than a compatibility break.
+    // The CLI takes the slot width from the broker rather than assuming one,
+    // which is what lets the scan space be four digits wide while the typed
+    // space is three — and what let the typed space widen at all.
     const s = hostScenario({ slot: "0731" });
     const hosted = await hostPairing({
       ...hostOpts(s.transport),
@@ -580,7 +586,7 @@ describe("hostPairing", () => {
     const hosted = await hostPairing(hostOpts(s.transport));
     await s.ready;
 
-    const browser = s.claim("peer-0", hosted.code.slice(2));
+    const browser = s.claim("peer-0", hosted.code.slice(3));
     expect(browser.cliTagVerifies).toBe(true);
     browser.confirm();
 
@@ -598,7 +604,7 @@ describe("hostPairing", () => {
     const s = hostScenario();
     const hosted = await hostPairing(hostOpts(s.transport));
     await s.ready;
-    const secret = hosted.code.slice(2);
+    const secret = hosted.code.slice(3);
     s.claim("peer-0", secret).confirm();
     await hosted.paired;
     expect(JSON.stringify(s.sent)).not.toContain(secret);
@@ -611,7 +617,7 @@ describe("hostPairing", () => {
 
     // Any secret but the real one. The CLI's tag cannot verify for the browser
     // and the browser's tag cannot verify for the CLI.
-    const real = hosted.code.slice(2);
+    const real = hosted.code.slice(3);
     const wrong = real === "0000" ? "0001" : "0000";
     const browser = s.claim("peer-0", wrong);
     expect(browser.cliTagVerifies).toBe(false);
@@ -628,7 +634,7 @@ describe("hostPairing", () => {
     const hosted = await hostPairing(hostOpts(s.transport));
     await s.ready;
 
-    const browser = s.claim("peer-0", hosted.code.slice(2));
+    const browser = s.claim("peer-0", hosted.code.slice(3));
     const good = bytesToHex(confirmationTag(browser.keys.confirm, "browser"));
     // One flipped nibble — the key is right, the tag is not.
     browser.confirmWith((good[0] === "0" ? "1" : "0") + good.slice(1));
@@ -657,7 +663,7 @@ describe("hostPairing", () => {
     const hosted = await hostPairing(hostOpts(s.transport));
     await s.ready;
 
-    const browser = s.claim("peer-0", hosted.code.slice(2));
+    const browser = s.claim("peer-0", hosted.code.slice(3));
     // A second share for the same peer must not restart the run or replace the
     // key the first one established.
     s.deliver({
@@ -711,7 +717,7 @@ describe("hostPairing", () => {
     const second = hostScenario();
     const fresh = await hostPairing({ ...opts, transport: second.transport });
     await second.ready;
-    const browser = second.claim("peer-0", fresh.code.slice(2));
+    const browser = second.claim("peer-0", fresh.code.slice(3));
     browser.confirm();
 
     const result = await fresh.paired;

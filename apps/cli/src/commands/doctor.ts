@@ -5,7 +5,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import kleur from "kleur";
-import { apiBase } from "../api.js";
+import { resolveApiBase } from "../api.js";
+import {
+  cliVersion,
+  describeUpdate,
+  fetchBrokerVersion,
+} from "../update-check.js";
 import * as serverState from "../server-state.js";
 
 const exec = promisify(execFile);
@@ -220,6 +225,31 @@ async function checkBroker(base: string): Promise<Check> {
   }
 }
 
+/**
+ * Is this CLI still one the broker will talk to?
+ *
+ * A warning, never a failure, and never blocking: `mtmux start --local` does
+ * not care what any broker thinks, so reporting "fail" here would tell an
+ * offline user their install is broken when it is not. A broker with nothing
+ * to say produces a plain ok line.
+ */
+async function checkVersion(base: string): Promise<Check> {
+  const current = await cliVersion().catch(() => "unknown");
+  const notice = describeUpdate(current, await fetchBrokerVersion(base));
+  const detail = notice.advisory
+    ? `${notice.detail} — ${notice.advisory}`
+    : notice.detail;
+  if (notice.kind === "current") {
+    return { name: "mtmux", level: notice.advisory ? "warn" : "ok", detail };
+  }
+  return {
+    name: "mtmux",
+    level: "warn",
+    detail,
+    fix: notice.fix ?? "npm i -g mtmux@latest",
+  };
+}
+
 const GLYPH: Record<Level, string> = {
   ok: kleur.green("✓"),
   warn: kleur.yellow("!"),
@@ -229,7 +259,7 @@ const GLYPH: Record<Level, string> = {
 export type DoctorOpts = { port: number; api?: string };
 
 export async function doctor(opts: DoctorOpts): Promise<void> {
-  const base = apiBase(opts.api);
+  const base = await resolveApiBase(opts.api);
 
   const checks: Check[] = [
     await checkNode(),
@@ -239,6 +269,7 @@ export async function doctor(opts: DoctorOpts): Promise<void> {
     await checkPort(opts.port),
     await checkConfigPermissions(),
     await checkBroker(base),
+    await checkVersion(base),
   ];
 
   const width = Math.max(...checks.map((c) => c.name.length));

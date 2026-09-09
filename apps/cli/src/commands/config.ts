@@ -1,18 +1,20 @@
 import kleur from "kleur";
 import * as configStore from "../config-store.js";
+import { DEFAULT_API_BASE, isBrokerUrl } from "../api.js";
 
 /**
  * `mtmux config` — the settings that are not flags.
  *
- * Deliberately one key, not a settings system. Everything else this CLI does is
- * either a per-run flag or a decision the product should make for you, and the
- * moment this becomes a generic key-value store it starts accumulating options
- * nobody chose. When there is a second genuine setting, this grows a table.
+ * Deliberately few keys, not a settings system. Everything else this CLI does
+ * is either a per-run flag or a decision the product should make for you, and
+ * the moment this becomes a generic key-value store it starts accumulating
+ * options nobody chose.
  */
 
 type Setting = {
   describe: () => Promise<string>;
   set: (value: string) => Promise<void>;
+  /** What a valid value looks like, named in the error when one is not. */
   values: string[];
   help: string;
 };
@@ -28,6 +30,23 @@ const SETTINGS: Record<string, Setting> = {
     },
     values: ["trust", "confirm"],
     help: "Whether a previously paired device may reconnect without being asked.",
+  },
+
+  api: {
+    describe: async () =>
+      (await configStore.getApiBase()) ?? `${DEFAULT_API_BASE} (default)`,
+    set: async (value) => {
+      // `default` rather than an empty string: `config set api ""` is awkward
+      // to type and easy to get wrong in a shell.
+      if (value === "default" || value === "") {
+        await configStore.setApiBase(null);
+        return;
+      }
+      if (!isBrokerUrl(value)) throw new Error("not a broker URL");
+      await configStore.setApiBase(value);
+    },
+    values: ["an http(s) URL", "default"],
+    help: "The pairing broker this machine uses. --api and MTMUX_API_URL still win.",
   },
 };
 

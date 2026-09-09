@@ -141,6 +141,52 @@ describe("restoreTrustedDevices", () => {
     expect(result.trusted).toEqual([]);
   });
 
+  it("gives the relay the peer record's remaining lifetime, not its own default", async () => {
+    // The one-day disconnect. The relay's own default is a 24 h window and the
+    // restore used to leave it there, so every paired device stopped being able
+    // to authenticate exactly a day after `mtmux start` — over LAN and over the
+    // tunnel — while the CLI went on listing it as trusted and the fix looked
+    // like restarting the CLI. What it must send is what the peer record has
+    // left, so the relay can never outlive, or fall short of, `mtmux devices`.
+    const keys = keysFor();
+    const now = Date.UTC(2026, 0, 1);
+    const age = 10 * 24 * 60 * 60 * 1000;
+    await store.addPeer({
+      deviceId: "browser-alice",
+      publicKey: "",
+      label: "iPhone · Safari",
+      pairedAt: 1,
+      lastSeenAt: now - age,
+      directToken: keys.directToken,
+      sessionKeys: encodeSessionKeys(keys),
+    });
+
+    const ttls: (number | undefined)[] = [];
+    const record = async (
+      _port: number,
+      _token: string,
+      _direct: string,
+      _grant: unknown,
+      _notice: unknown,
+      ttlMs?: number,
+    ) => {
+      ttls.push(ttlMs);
+      return true;
+    };
+
+    const result = await start.restoreTrustedDevices(
+      14100,
+      "tok",
+      record as unknown as Parameters<typeof start.restoreTrustedDevices>[2],
+      now,
+    );
+
+    expect(result.restored).toBe(1);
+    expect(ttls).toEqual([store.PEER_EXPIRY_MS - age]);
+    // Whatever else changes, it must never be the relay's silent default.
+    expect(ttls[0]).not.toBeUndefined();
+  });
+
   it("does not admit keys for a device the relay refused", async () => {
     // Admitting the schedule while the relay has never heard of the token
     // produces a browser that decrypts fine and then fails to authenticate —
@@ -322,5 +368,129 @@ describe("a device that paired before the restart", () => {
       brokers[0]!.sent.filter((s) => s.includes("stream:close")),
     ).toHaveLength(0);
     expect(returned).toEqual(["iPhone · Safari"]);
+  });
+});
+
+describe("restoring a scoped share", () => {
+  /**
+   * Re-registering a share without its grant is a privilege escalation.
+   *
+   * The relay reads an omitted grant as the full grant — which is right for an
+   * ordinary pairing and catastrophic for a `mtmux share`: a token issued for
+   * one read-only session came back after a restart with the run of the
+   * machine. The peer record now carries the grant id so the scope survives the
+   * process boundary.
+   */
+  async function addSharedPeer(grantId: string, keys: SessionKeys) {
+    await store.addPeer({
+      deviceId: "browser-guest",
+      publicKey: "",
+      label: "Guest",
+      pairedAt: 1,
+      lastSeenAt: Date.now(),
+      directToken: keys.directToken,
+      sessionKeys: encodeSessionKeys(keys),
+      grantId,
+    });
+  }
+
+  it("hands the relay the grant it was originally issued under", async () => {
+    const grants = await import("../grants-store.js");
+    const keys = keysFor();
+    const grant = {
+      id: "grant-1",
+      label: "work, read-only",
+      tokenHash: grants.hashToken(keys.directToken),
+      createdAt: Date.now(),
+      expiresAt: null,
+      revokedAt: null,
+      tmuxServerPid: null,
+      readOnly: true,
+      files: "none" as const,
+      scope: {
+        kind: "sessions" as const,
+        sessions: [{ id: "$0", name: "work" }],
+      },
+    };
+    await grants.add(grant);
+    await addSharedPeer(grant.id, keys);
+
+    const seen: unknown[] = [];
+    const record = async (
+      _port: number,
+      _token: string,
+      _direct: string,
+      passed: unknown,
+    ) => {
+      seen.push(passed);
+      return true;
+    };
+
+    const result = await start.restoreTrustedDevices(
+      14100,
+      "tok",
+      record as unknown as Parameters<typeof start.restoreTrustedDevices>[2],
+    );
+
+    expect(result.restored).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ id: "grant-1", readOnly: true });
+  });
+
+  it("refuses to restore a peer whose share is gone", async () => {
+    // Restoring it unscoped is the escalation; restoring it at all is wrong,
+    // because the share it belonged to has been revoked or has expired.
+    const keys = keysFor();
+    await addSharedPeer("grant-vanished", keys);
+
+    const seen: unknown[] = [];
+    const record = async (...args: unknown[]) => {
+      seen.push(args);
+      return true;
+    };
+
+    const result = await start.restoreTrustedDevices(
+      14100,
+      "tok",
+      record as unknown as Parameters<typeof start.restoreTrustedDevices>[2],
+    );
+
+    expect(result.restored).toBe(0);
+    expect(seen).toEqual([]);
+  });
+
+  it("still restores an ordinary pairing with no grant at all", async () => {
+    const keys = keysFor();
+    await store.addPeer({
+      deviceId: "browser-alice",
+      publicKey: "",
+      label: "iPhone",
+      pairedAt: 1,
+      lastSeenAt: Date.now(),
+      directToken: keys.directToken,
+      sessionKeys: encodeSessionKeys(keys),
+    });
+
+    const seen: unknown[] = [];
+    const record = async (
+      _port: number,
+      _token: string,
+      _direct: string,
+      passed: unknown,
+    ) => {
+      seen.push(passed);
+      return true;
+    };
+
+    const result = await start.restoreTrustedDevices(
+      14100,
+      "tok",
+      record as unknown as Parameters<typeof start.restoreTrustedDevices>[2],
+    );
+
+    expect(result.restored).toBe(1);
+    // Undefined, which the relay reads as the full grant — unchanged, and what
+    // every pairing before shares existed has always meant.
+    expect(seen).toEqual([undefined]);
   });
 });

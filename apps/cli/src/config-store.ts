@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod, rename } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import {
   generateDeviceKey,
@@ -68,6 +68,18 @@ export type PeerRecord = {
    * always for; until then this is the trade.
    */
   sessionKeys?: StoredSessionKeys;
+  /**
+   * The grant this peer's `directToken` was issued under, when it was scoped.
+   *
+   * Absent means the full grant, which is what an ordinary `mtmux start`
+   * pairing has always meant. It has to be persisted because
+   * `restoreTrustedDevices` re-registers every peer at boot and the relay
+   * defaults an omitted grant to full access — so a token issued for a
+   * read-only, single-session `mtmux share` came back after a restart with the
+   * run of the machine. The grant record itself is the authority on expiry and
+   * revocation; this is only where it is kept.
+   */
+  grantId?: string;
 };
 
 /**
@@ -89,6 +101,16 @@ export type Account = {
 
 export type Config = {
   token: string;
+  /**
+   * The pairing broker this machine uses, when it is not ours.
+   *
+   * Set with `mtmux config set api <url>`, and read by `resolveApiBase()`
+   * ahead of the account's own broker. Separate from `Account.apiBase` on
+   * purpose: pointing a machine at a self-hosted broker must not require
+   * signing in to it first, since the broker a self-hoster runs may well have
+   * no accounts at all (invariant #5).
+   */
+  apiBase?: string;
   /** This machine's device identity, created on first pair. */
   deviceKey?: StoredDeviceKey;
   peers?: PeerRecord[];
@@ -132,11 +154,35 @@ export async function setReconnectPolicy(
   return write({ ...(await load()), reconnectPolicy: policy });
 }
 
+/** The stored broker URL, or null when this machine uses the default. */
+export async function getApiBase(): Promise<string | null> {
+  return (await load()).apiBase ?? null;
+}
+
+/** Point this machine at a broker, or pass null to go back to the default. */
+export async function setApiBase(url: string | null): Promise<Config> {
+  const config = { ...(await load()) };
+  if (url === null) delete config.apiBase;
+  else config.apiBase = url.replace(/\/+$/, "");
+  return write(config);
+}
+
+/**
+ * Write the file atomically, 0600, into a 0700 directory.
+ *
+ * `writeFile` then `chmod` left a window — however short — in which the auth
+ * token, the Ed25519 secret and every peer's direct token sat on disk at the
+ * umask default, readable by anything else on the machine. Temp-then-rename
+ * closes it, and is the pattern `grants-store.ts` already uses for the same
+ * reason. The mode on the directory matters too: 0700 stops another user
+ * enumerating the file names even where they cannot read the contents.
+ */
 async function write(cfg: Config): Promise<Config> {
-  await mkdir(DIR, { recursive: true });
-  await writeFile(FILE, JSON.stringify(cfg, null, 2));
-  // The file holds the auth token and an Ed25519 secret key.
-  await chmod(FILE, 0o600);
+  await mkdir(DIR, { recursive: true, mode: 0o700 });
+  const tmp = `${FILE}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  await chmod(tmp, 0o600);
+  await rename(tmp, FILE);
   return cfg;
 }
 
@@ -268,6 +314,32 @@ export async function touchPeer(
 /** Device keys idle for this long are treated as stale by `mtmux devices`. */
 export const PEER_EXPIRY_MS = 90 * 24 * 60 * 60 * 1000;
 
+/**
+ * Defined in terms of the remaining lifetime rather than alongside it.
+ *
+ * Two expressions of one rule drift, and these two drifted at exactly the
+ * boundary: `>` here said a peer with zero remaining life was still valid, so
+ * `restoreTrustedDevices` handed the relay `ttlMs: 0` for it — which the relay
+ * read as "unspecified" and turned back into the 24 h default. One instant of
+ * the day, the bug this whole change exists to remove came back.
+ */
 export function isPeerExpired(peer: PeerRecord, now = Date.now()): boolean {
-  return now - peer.lastSeenAt > PEER_EXPIRY_MS;
+  return peerLifetimeRemainingMs(peer, now) <= 0;
+}
+
+/**
+ * How much of a peer's trust is left, in ms — never below zero.
+ *
+ * Handed to the relay as the session token's idle window when a trusted device
+ * is restored at boot, so the relay can never keep honouring a credential this
+ * store would already refuse. Derived from the same two values `isPeerExpired`
+ * compares, deliberately: two expressions of one rule drift, and the direction
+ * they drift in here is "the relay still lets in a device `mtmux devices` has
+ * forgotten".
+ */
+export function peerLifetimeRemainingMs(
+  peer: PeerRecord,
+  now = Date.now(),
+): number {
+  return Math.max(0, PEER_EXPIRY_MS - (now - peer.lastSeenAt));
 }

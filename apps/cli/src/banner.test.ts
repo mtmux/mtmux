@@ -4,8 +4,8 @@ import { renderBannerLines, qrLines, type PairingInvite } from "./banner.js";
 const TOKEN = "a".repeat(64);
 
 const INVITE: PairingInvite = {
-  code: "482913",
-  url: "https://app.mtmux.com/j#482913",
+  code: "482913756",
+  url: "https://app.mtmux.com/j#482913756",
   host: "app.mtmux.com",
 };
 
@@ -46,14 +46,14 @@ describe("renderBannerLines", () => {
   describe("with a hosted invite", () => {
     it("shows the code grouped, the host, and a QR", () => {
       const out = render({ invite: INVITE }).join("\n");
-      expect(out).toContain("48 29 13");
+      expect(out).toContain("482 913 756");
       expect(out).toContain("app.mtmux.com");
       expect(out).toMatch(QR_GLYPHS);
     });
 
     it("still shows the code when the QR is suppressed", () => {
       const out = render({ invite: INVITE, showQr: false });
-      expect(out.join("\n")).toContain("48 29 13");
+      expect(out.join("\n")).toContain("482 913 756");
       expect(out.join("\n")).not.toMatch(QR_GLYPHS);
     });
 

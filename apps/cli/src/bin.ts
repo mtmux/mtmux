@@ -13,7 +13,11 @@ import { configGet, configSet } from "./commands/config.js";
 import { doctor } from "./commands/doctor.js";
 import { status, stop } from "./commands/status.js";
 import { approve } from "./commands/approve.js";
-import { devicesList, devicesRevoke } from "./commands/devices.js";
+import {
+  devicesList,
+  devicesRevoke,
+  devicesHistory,
+} from "./commands/devices.js";
 import {
   recordList,
   recordRemove,
@@ -450,6 +454,13 @@ devices
   .command("list", { isDefault: true })
   .description("List paired devices")
   .action(devicesList);
+devices
+  .command("history")
+  .description("Every connection this machine has admitted")
+  .option("-n, --limit <count>", "how many entries to show", "50")
+  .action((opts: { limit: string }) =>
+    devicesHistory({ limit: Number(opts.limit) || 50 }),
+  );
 devices
   .command("revoke <deviceId>")
   .description("Forget a device so it cannot reconnect")

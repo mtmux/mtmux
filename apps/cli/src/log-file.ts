@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createReadStream, statSync, watch } from "node:fs";
-import { mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 /**
@@ -42,7 +42,7 @@ export async function rotateIfNeeded(
   path: string = LOG_PATH,
   maxBytes: number = MAX_LOG_BYTES,
 ): Promise<void> {
-  await mkdir(LOG_DIR, { recursive: true }).catch(() => {});
+  await mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).catch(() => {});
   let size: number;
   try {
     size = (await stat(path)).size;
@@ -57,6 +57,10 @@ export async function rotateIfNeeded(
     await rename(`${path}.${i}`, `${path}.${i + 1}`).catch(() => {});
   }
   await rename(path, `${path}.1`).catch(() => {});
+  // The rotated copy carries whatever the live log had; the *next* live file
+  // is created by pino at the umask default, so pin it here. Terminal logs
+  // name sessions, paths and device labels — not world-readable material.
+  await chmod(`${path}.1`, 0o600).catch(() => {});
 }
 
 /** Every log file, newest content first: the live one, then the rotated ones. */

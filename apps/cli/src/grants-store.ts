@@ -62,9 +62,9 @@ export async function load(): Promise<GrantFile> {
  * platform this runs on.
  */
 async function save(file: GrantFile): Promise<void> {
-  await mkdir(DIR, { recursive: true });
+  await mkdir(DIR, { recursive: true, mode: 0o700 });
   const tmp = `${FILE}.${process.pid}.tmp`;
-  await writeFile(tmp, JSON.stringify(file, null, 2));
+  await writeFile(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   await chmod(tmp, 0o600);
   await rename(tmp, FILE);
 }

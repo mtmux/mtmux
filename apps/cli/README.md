@@ -72,7 +72,7 @@ npm uninstall -g tmuxremote && npm install -g mtmux
 
 ## Source
 
-[github.com/GagnDeep/tmuxremote](https://github.com/GagnDeep/tmuxremote) — issues and PRs welcome.
+[github.com/mtmux/mtmux](https://github.com/mtmux/mtmux) — issues and PRs welcome.
 
 ## License
 

@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import {
   FrameOpener,
   FrameSealer,
+  StreamOpener,
   base64UrlToBytes,
   bytesToBase64Url,
   bytesToHex,
@@ -19,6 +20,7 @@ import {
   type SessionKeys,
 } from "@repo/crypto";
 import {
+  PROTOCOL_VERSION,
   tryDeserializeTunnelServerMessage,
   type PairDeniedMessage,
   type TunnelServerMessage,
@@ -68,7 +70,37 @@ export type LocalSocket = {
   onOpen(cb: () => void): void;
 };
 
-export type AgentSocket = LocalSocket;
+/**
+ * The broker socket, which needs liveness the loopback one does not.
+ *
+ * All three are optional so a plain `LocalSocket` still satisfies the type —
+ * the keepalive degrades to "no keepalive" for any transport that cannot do
+ * it, rather than forcing every fake in every test to grow three methods.
+ */
+export type AgentSocket = LocalSocket & {
+  /** Send a protocol-level ping frame. */
+  ping?(): void;
+  /** Any evidence the far end is alive — a pong, or a ping it sent us. */
+  onPong?(cb: () => void): void;
+  /**
+   * Kill the socket now, without waiting for a close handshake.
+   *
+   * The case this exists for is a half-open connection: the peer is gone but
+   * no FIN ever arrived, so `readyState` is still OPEN and a graceful
+   * `close()` waits for a reply that will never come.
+   */
+  terminate?(): void;
+  /**
+   * The server refused the handshake with an HTTP status.
+   *
+   * Exists for one status: 426. Without it the agent's `ws.on("error")`
+   * swallowed the response and turned "your mtmux is too old" into an
+   * indistinguishable connect failure, so the CLI retried forever against a
+   * broker that would never accept it, and the user saw a tunnel that simply
+   * never came up.
+   */
+  onUnsupported?(cb: (status: number) => void): void;
+};
 
 export type TunnelAgentOptions = {
   apiBase: string;
@@ -110,12 +142,28 @@ export type TunnelAgentOptions = {
   admitStream?: (peer?: PeerIdentity) => Promise<boolean>;
   /** Injected for tests; real runs use exponential backoff with jitter. */
   scheduleRetry?: (attempt: number, run: () => void) => void;
+  /**
+   * Liveness on the broker socket. Injected for tests; the defaults are wall
+   * clock and `setInterval`.
+   */
+  keepalive?: {
+    intervalMs?: number;
+    deadlineMs?: number;
+    now?: () => number;
+    /** Starts a repeating timer and returns its canceller. */
+    schedule?: (intervalMs: number, tick: () => void) => () => void;
+  };
 };
 
 export type AgentStatus =
   | "connecting"
   | "registered"
   | "disconnected"
+  /**
+   * The broker refuses this build's protocol. Terminal: retrying cannot fix
+   * it, and continuing to retry hides the one thing the user can act on.
+   */
+  | "outdated"
   | "stopped";
 
 /** What the human at this machine is being asked to approve. */
@@ -136,6 +184,33 @@ export type AccessDecision =
 
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
+
+/**
+ * How often to prove the broker socket is still there, and how long silence is
+ * allowed to last before we stop believing it.
+ *
+ * The broker runs the mirror image of this (`apps/api/src/server.ts`), and for
+ * a while that was the only liveness check on this connection — which is a
+ * one-way guarantee. It tells the broker to drop an agent that has gone away;
+ * it tells the agent nothing. On a half-open socket — a laptop suspended and
+ * resumed, a NAT that dropped the mapping, a Wi-Fi handover — no FIN arrives,
+ * `readyState` stays OPEN, `onClose` never fires, and the retry loop below
+ * never arms. The agent then sits there believing it is registered while the
+ * tunnel id it is advertising routes nowhere, and the only cure is restarting
+ * the CLI. That is the second half of the "I have to restart it every day"
+ * report, and this is what closes it.
+ *
+ * The deadline is two and a half intervals: one missed round is a hiccup, two
+ * is a dead link, and reconnecting costs a second of backoff.
+ */
+const KEEPALIVE_MS = 30_000;
+const KEEPALIVE_DEADLINE_MS = 75_000;
+
+function defaultSchedule(intervalMs: number, tick: () => void): () => void {
+  const timer = setInterval(tick, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 
 /**
  * How many pairings one agent will try a frame against.
@@ -234,6 +309,58 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
   let attempt = 0;
   let stopped = false;
 
+  const keepaliveIntervalMs = opts.keepalive?.intervalMs ?? KEEPALIVE_MS;
+  const keepaliveDeadlineMs =
+    opts.keepalive?.deadlineMs ?? KEEPALIVE_DEADLINE_MS;
+  const clock = opts.keepalive?.now ?? Date.now;
+  const schedule = opts.keepalive?.schedule ?? defaultSchedule;
+  let cancelKeepalive: (() => void) | null = null;
+  let lastInboundAt = 0;
+
+  function stopKeepalive(): void {
+    cancelKeepalive?.();
+    cancelKeepalive = null;
+  }
+
+  /**
+   * Watch one broker socket, and give up on it once it stops answering.
+   *
+   * Anything inbound counts as proof of life, not just pongs — a frame that
+   * arrived is a link that works, and the broker's own keepalive pings are
+   * evidence too. Terminating rather than closing is the point: the socket
+   * this fires on is one a graceful close would wait on forever.
+   */
+  function startKeepalive(socket: AgentSocket): void {
+    stopKeepalive();
+    lastInboundAt = clock();
+    socket.onPong?.(() => {
+      lastInboundAt = clock();
+    });
+    cancelKeepalive = schedule(keepaliveIntervalMs, () => {
+      // This runs on a bare interval. An exception escaping it is an unhandled
+      // throw in a timer callback, which takes the whole CLI down — and the
+      // rule for this file is that the tunnel is a best-effort fallback that
+      // must never do that.
+      try {
+        // A timer that outlived its socket must not kill the current one.
+        if (broker !== socket) {
+          stopKeepalive();
+          return;
+        }
+        if (clock() - lastInboundAt > keepaliveDeadlineMs) {
+          stopKeepalive();
+          if (socket.terminate) socket.terminate();
+          else socket.close();
+          return;
+        }
+        socket.ping?.();
+      } catch {
+        // A socket that throws on `ping` is one that is already going away;
+        // its close event is what recovers, and it is on its way.
+      }
+    });
+  }
+
   const streams = new Map<string, Stream>();
   /**
    * Requests waiting for the browser to reveal the key it committed to.
@@ -321,17 +448,23 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
 
     if (!stream.opener) {
       for (const entry of keyring) {
-        // A fresh opener per candidate: a failed trial must not advance the
-        // replay window of a schedule that turns out to be the right one.
-        const opener = new FrameOpener(entry.keys.c2s, "c2s");
-        let line: string;
+        // Trial decryption, one keyring entry at a time. `bind` reads the
+        // salt off the frame and derives that connection's subkey before it
+        // attempts anything, and reports every failure identically, so the
+        // loop cannot tell "not this pairing" from "malformed" — which is
+        // what lets it run against bytes a hostile broker chose.
+        let bound: { opener: FrameOpener; plaintext: Uint8Array };
         try {
-          line = new TextDecoder().decode(await opener.open(bytes));
+          bound = await StreamOpener.bind(entry.keys.c2s, "c2s", bytes);
         } catch {
           continue;
         }
+        const line = new TextDecoder().decode(bound.plaintext);
         if (stream.closed) return;
-        stream.opener = opener;
+        stream.opener = bound.opener;
+        // Our own salt is drawn here and rides our first reply. The browser
+        // always speaks first, and `sealToBroker` holds outbound lines until
+        // this exists, so no round trip is needed to agree on it.
         stream.sealer = new FrameSealer(entry.keys.s2c, "s2c");
         stream.peer = entry.peer;
 
@@ -556,11 +689,27 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
     if (stopped) return;
     setStatus("connecting");
     const socket = opts.connectBroker(
-      `${opts.apiBase.replace(/^http/, "ws")}/v1/agent`,
+      // The agent socket carries the version floor too, and this is the piece
+      // that is easiest to miss: the tunnel itself has no handshake, so a CLI
+      // left online here would keep serving a tunnel whose frames no current
+      // browser can open — an opaque "no matching pairing" for everyone.
+      `${opts.apiBase.replace(/^http/, "ws")}/v1/agent?v=${PROTOCOL_VERSION}`,
     );
     broker = socket;
+    startKeepalive(socket);
+
+    socket.onUnsupported?.((status) => {
+      if (status !== 426) return;
+      stopped = true;
+      stopKeepalive();
+      setStatus(
+        "outdated",
+        "This version of mtmux is too old for the pairing service. Run: npm i -g mtmux@latest",
+      );
+    });
 
     socket.onMessage((raw) => {
+      lastInboundAt = clock();
       const parsed = tryDeserializeTunnelServerMessage(raw);
       // A frame the broker should never have sent is dropped, not fatal: the
       // tunnel is a best-effort fallback and must not take the CLI down.
@@ -568,11 +717,21 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
     });
 
     socket.onClose(() => {
+      // A close event from a socket we have already replaced must not touch the
+      // live one — the same guard the keepalive tick makes, and for the same
+      // reason. A `stop()` followed by `start()` delivers the old socket's
+      // close after the new one is up, and without this it cancelled the new
+      // socket's keepalive and nulled `broker` underneath it, leaving the
+      // connection alive with no half-open detection at all.
+      if (broker !== socket) return;
+      stopKeepalive();
       broker = null;
       tunnelId = null;
       teardownStreams();
       if (stopped) {
-        setStatus("stopped");
+        // `outdated` is terminal and already reported; do not overwrite it
+        // with a status that reads as "retrying".
+        if (status !== "outdated") setStatus("stopped");
         return;
       }
       setStatus("disconnected");
@@ -588,6 +747,7 @@ export function createTunnelAgent(opts: TunnelAgentOptions): TunnelAgent {
     },
     stop() {
       stopped = true;
+      stopKeepalive();
       teardownStreams();
       broker?.close();
       broker = null;
@@ -670,6 +830,14 @@ export function brokerConnector(): (url: string) => AgentSocket {
     });
     // A failed connect surfaces as a close, which drives the retry loop.
     ws.on("error", () => ws.close());
+    const unsupported: ((status: number) => void)[] = [];
+    // Registered before any consumer asks, because `unexpected-response` fires
+    // during the handshake and `ws.on("error")` above would otherwise close the
+    // socket and lose the status with it.
+    ws.on("unexpected-response", (_req, res) => {
+      for (const cb of unsupported) cb(res.statusCode ?? 0);
+      ws.close();
+    });
     return {
       send: (data) => {
         if (ws.readyState === WebSocket.OPEN) ws.send(data);
@@ -681,6 +849,18 @@ export function brokerConnector(): (url: string) => AgentSocket {
         if (ws.readyState === WebSocket.OPEN) cb();
         else openHandlers.push(cb);
       },
+      ping: () => {
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+      },
+      // The broker pings us too, and `ws` answers those itself — but the ping
+      // arriving is just as good a proof of life as the pong we send back, so
+      // both count.
+      onPong: (cb) => {
+        ws.on("pong", cb);
+        ws.on("ping", cb);
+      },
+      terminate: () => ws.terminate(),
+      onUnsupported: (cb) => unsupported.push(cb),
     };
   };
 }

@@ -10,7 +10,14 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  unlink,
+  chmod,
+  rename,
+} from "node:fs/promises";
 
 const DIR = process.env.MTMUX_CONFIG_DIR ?? join(homedir(), ".mtmux");
 const FILE = join(DIR, "server.json");
@@ -30,9 +37,18 @@ export type ServerState = {
   version: string;
 };
 
+/**
+ * 0600, because `inviteUrl` is a live join code.
+ *
+ * This file was 0644 while holding a URL that grants a session to whoever
+ * loads it — world-readable on a shared machine is the same as published.
+ */
 export async function write(state: ServerState): Promise<void> {
-  await mkdir(DIR, { recursive: true });
-  await writeFile(FILE, JSON.stringify(state, null, 2));
+  await mkdir(DIR, { recursive: true, mode: 0o700 });
+  const tmp = `${FILE}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+  await chmod(tmp, 0o600);
+  await rename(tmp, FILE);
 }
 
 export async function clear(): Promise<void> {
