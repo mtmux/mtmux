@@ -34,6 +34,34 @@ export const LAST_SESSION_KEY = "mtmux-last-session";
  */
 export const OPEN_NEW_SESSION_KEY = "mtmux-open-new-session";
 
+/**
+ * The first-run checklist, and the second-credential banner, once dismissed.
+ *
+ * `localStorage`, per browser, and that is semantically right rather than a
+ * shortcut: step 3 of the checklist is "pair *this* browser", which is a fact
+ * about this browser and nothing else. Putting it on the account would hide the
+ * checklist on a new phone that has never paired — the exact device that needs
+ * it most.
+ *
+ * Not in `LEGACY`: they never had an old spelling, and a missing key already
+ * means "not dismissed", which is the safe default.
+ */
+export const ONBOARDING_DISMISSED_KEY = "mtmux-onboarding-dismissed";
+export const SECOND_CREDENTIAL_DISMISSED_KEY = "mtmux-second-credential-dismissed";
+
+/**
+ * Set by sign-up, read by the dashboard.
+ *
+ * Someone who signs up in the middle of the CLI device flow is redirected
+ * straight back into it and may not see the dashboard for days. This survives
+ * that detour so the checklist still greets them on their first visit rather
+ * than being computed away by state that has moved on.
+ */
+export const ONBOARDING_STARTED_KEY = "mtmux-onboarding-started";
+
+/** The signed-out account pitch in the terminal settings panel, once hidden. */
+export const ACCOUNT_NUDGE_DISMISSED_KEY = "mtmux-account-nudge-dismissed";
+
 const LEGACY = {
   [TOKEN_KEY]: "ccremote-token",
   [LAST_SESSION_KEY]: "ccremote-last-session",

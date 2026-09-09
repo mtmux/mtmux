@@ -22,7 +22,7 @@ import {
  * The self-hosted path: paste the relay token `mtmux start` printed.
  *
  * This is **not** the front door, and it used to be — `/` sent every visitor
- * with no session here, including the majority who have a six-digit code and no
+ * with no session here, including the majority who have a pairing code and no
  * token at all. Typing a pairing code into this form opened a socket to
  * `/_relay` on whatever origin served the page, which on app.mtmux.com is
  * nothing, and hung until it timed out. `/start` is the front door now; this

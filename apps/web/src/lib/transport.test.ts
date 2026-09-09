@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   FrameSealer,
   FrameOpener,
+  StreamOpener,
+  SALT_BYTES,
   deriveSessionKeys,
   randomBytes,
   utf8ToBytes,
@@ -143,11 +145,24 @@ describe("SealedTransport", () => {
   const keys = deriveSessionKeys(randomBytes(64), utf8ToBytes("transcript"));
   const url = "wss://api.test/v1/tunnel/tnl-abcdefgh";
 
-  /** The CLI's side of the same stream. */
+  /**
+   * The CLI's side of the same stream.
+   *
+   * Its opener does not exist until the browser's first frame arrives with a
+   * salt — which is the wire format, not a test artefact.
+   */
   function peer() {
+    let opener: FrameOpener | null = null;
     return {
-      opener: new FrameOpener(keys.c2s, "c2s"),
       sealer: new FrameSealer(keys.s2c, "s2c"),
+      async open(frame: Uint8Array): Promise<Uint8Array> {
+        if (!opener) {
+          const bound = await StreamOpener.bind(keys.c2s, "c2s", frame);
+          opener = bound.opener;
+          return bound.plaintext;
+        }
+        return opener.open(frame);
+      },
     };
   }
 
@@ -183,7 +198,7 @@ describe("SealedTransport", () => {
     expect(frame.type).toBe("stream:frame");
     expect(JSON.stringify(frame)).not.toContain("SECRET");
 
-    const opened = await p.opener.open(base64UrlToBytes(frame.data as string));
+    const opened = await p.open(base64UrlToBytes(frame.data as string));
     expect(new TextDecoder().decode(opened)).toBe(
       '{"type":"terminal:input","data":"SECRET"}',
     );
@@ -213,7 +228,7 @@ describe("SealedTransport", () => {
 
     latest().deliver({ type: "stream:open", streamId: "str-1" });
     await vi.waitFor(() => expect(latest().sent.length).toBe(1));
-    const opened = await peer().opener.open(
+    const opened = await peer().open(
       base64UrlToBytes(latest().parsed()[0]!.data as string),
     );
     expect(new TextDecoder().decode(opened)).toBe("early");
@@ -237,15 +252,19 @@ describe("SealedTransport", () => {
   it("kills the connection on a replayed frame", async () => {
     const { h, ws } = connected();
     const p = peer();
-    const sealed = await p.sealer.seal(utf8ToBytes("once"));
-    const data = bytesToBase64Url(sealed);
+    // The first frame carries the salt and binds the transport's opener; the
+    // replay has to be of a later one, which is the only kind an attacker
+    // could capture off a bound stream anyway.
+    const first = bytesToBase64Url(await p.sealer.seal(utf8ToBytes("once")));
+    const second = bytesToBase64Url(await p.sealer.seal(utf8ToBytes("twice")));
 
-    ws.deliver({ type: "stream:frame", streamId: "str-1", data });
-    await vi.waitFor(() => expect(h.messages).toEqual(["once"]));
+    ws.deliver({ type: "stream:frame", streamId: "str-1", data: first });
+    ws.deliver({ type: "stream:frame", streamId: "str-1", data: second });
+    await vi.waitFor(() => expect(h.messages).toEqual(["once", "twice"]));
 
-    ws.deliver({ type: "stream:frame", streamId: "str-1", data });
+    ws.deliver({ type: "stream:frame", streamId: "str-1", data: second });
     await vi.waitFor(() => expect(h.closes).toHaveLength(1));
-    expect(h.messages).toEqual(["once"]);
+    expect(h.messages).toEqual(["once", "twice"]);
   });
 
   it("closes when the broker reports the tunnel is gone", () => {
@@ -262,7 +281,7 @@ describe("SealedTransport", () => {
     expect(h.messages).toEqual([]);
   });
 
-  it("restarts its nonce counters on reconnect", async () => {
+  it("draws a fresh salt on reconnect, so a repeated counter is not a repeated nonce", async () => {
     const t = new SealedTransport({ url, keys });
     const h1 = handlers();
     t.connect(h1);
@@ -281,17 +300,42 @@ describe("SealedTransport", () => {
     await vi.waitFor(() => expect(latest().sent.length).toBe(1));
     const secondFrame = latest().parsed()[0]!.data as string;
 
-    // Same plaintext, same key, counter back to zero — so a fresh opener on
-    // the peer side can read it. (The ciphertexts differ only because GCM is
-    // deterministic given key+nonce; here they must match, which is exactly
-    // why both ends must reset together.)
-    expect(base64UrlToBytes(firstFrame).slice(0, 8)).toEqual(
-      base64UrlToBytes(secondFrame).slice(0, 8),
+    // The counter does restart at zero. That was safe only by accident
+    // before, and is safe by construction now: the salt differs, so the two
+    // connections seal the identical plaintext under different keys and
+    // produce unrelated ciphertext.
+    const a = base64UrlToBytes(firstFrame);
+    const b = base64UrlToBytes(secondFrame);
+    expect(Array.from(a.slice(0, SALT_BYTES))).not.toEqual(
+      Array.from(b.slice(0, SALT_BYTES)),
     );
-    const opened = await new FrameOpener(keys.c2s, "c2s").open(
-      base64UrlToBytes(secondFrame),
+    expect(Array.from(a.slice(SALT_BYTES))).not.toEqual(
+      Array.from(b.slice(SALT_BYTES)),
     );
+
+    const opened = await peer().open(b);
     expect(new TextDecoder().decode(opened)).toBe("first");
+
+    // And the previous connection's frame no longer opens on the new one.
+    await expect(StreamOpener.bind(keys.c2s, "c2s", a)).resolves.toBeTruthy();
+  });
+
+  /**
+   * `seal` is async, so firing several without chaining let frame 5 reach the
+   * wire ahead of frame 4 — which the receiver rejects as a replay. Ordering
+   * is load-bearing now that the first frame carries the salt.
+   */
+  it("puts ten sends issued in one tick on the wire in counter order", async () => {
+    const { t } = connected();
+    const p = peer();
+    for (let i = 0; i < 10; i++) t.send(`line-${i}`);
+    await vi.waitFor(() => expect(latest().sent.length).toBe(10));
+
+    const frames = latest().parsed();
+    for (let i = 0; i < 10; i++) {
+      const opened = await p.open(base64UrlToBytes(frames[i]!.data as string));
+      expect(new TextDecoder().decode(opened)).toBe(`line-${i}`);
+    }
   });
 
   it("detaches on close", async () => {

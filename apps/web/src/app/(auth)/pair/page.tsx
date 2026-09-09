@@ -21,7 +21,7 @@ import {
 } from "@/lib/pairing-client";
 import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
 import { CopyCommand } from "@/components/account/copy-command";
-import { MIN_PAIR_CLI_VERSION } from "@/lib/semver-gte";
+import { MIN_PAIR_CLI_VERSION } from "@repo/protocol";
 import { codeGroups } from "@repo/crypto";
 
 type State =
@@ -204,10 +204,11 @@ export default function PairPage() {
                 <code className="block rounded bg-background px-3 py-2 font-mono text-sm">
                   mtmux pair {code}
                 </code>
-                {/* The one hard break in the length change. A CLI at 0.5 parses
-                    six digits and will tell the reader this eight-digit code is
-                    not a pairing code — a message we cannot fix retroactively,
-                    so the fix has to live here, before they try it. */}
+                {/* The one hard break in the length change. A CLI before
+                    0.7.0 parses six or eight digits and will tell the reader
+                    this nine-digit code is not a pairing code — a message we
+                    cannot fix retroactively, so the fix has to live here,
+                    before they try it. */}
                 <p className="text-xs text-muted-foreground">
                   Needs mtmux {MIN_PAIR_CLI_VERSION} or newer.
                 </p>
@@ -215,8 +216,8 @@ export default function PairPage() {
               </div>
 
               <p className="text-center text-xs text-muted-foreground">
-                Expires in {remaining}s. Only the first two digits reach our
-                servers.
+                Expires in {remaining}s. Only the first three digits reach
+                our servers.
               </p>
             </>
           )}

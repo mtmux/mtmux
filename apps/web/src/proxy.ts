@@ -53,6 +53,9 @@ export function proxy(_request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|icon-|manifest.json|sw.js).*)",
+    // The PWA's static assets are excluded alongside the rest: they carry no
+    // app content, and `offline.html` in particular is served by the service
+    // worker from cache, where none of these headers apply anyway.
+    "/((?!_next/static|_next/image|favicon.ico|icon-|apple-icon.png|manifest.json|offline.html|sw.js).*)",
   ],
 };

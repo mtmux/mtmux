@@ -6,6 +6,7 @@ import { ChevronDown } from "lucide-react";
 import { Button } from "@repo/ui/components/ui/button";
 import { ConnectPanel } from "@/components/entry/connect-panel";
 import { InstallMachine } from "@/components/entry/install-machine";
+import { AccountValue, METERED_NOTE } from "@/components/account/account-value";
 import { takeBounce } from "@/lib/bounce-guard";
 import { servesRelay } from "@/lib/origin-mode";
 import { env } from "@/env";
@@ -39,12 +40,13 @@ export default function StartPage() {
    * Whether a pairing broker exists for this build at all.
    *
    * Distinct from `servesRelay()` below, which asks a different question — see
-   * `origin-mode.ts`. This one is build-time and decides whether the six-digit
+   * `origin-mode.ts`. This one is build-time and decides whether the code-entry
    * path exists; that one is a runtime probe and only reorders emphasis.
    */
   const hasBroker = Boolean(env.NEXT_PUBLIC_API_URL);
   const [localOrigin, setLocalOrigin] = useState(false);
   const [showInstall, setShowInstall] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
 
   // Read-and-clear, so a visitor who pairs and comes back is not still being
   // warned about a bounce that has since been resolved.
@@ -124,6 +126,49 @@ export default function StartPage() {
             </div>
           )}
         </div>
+
+        {/*
+         * Collapsed, and second.
+         *
+         * The code field is the page — nine visitors in ten arrive holding a
+         * code — so this answers "why would I sign in?" for the tenth without
+         * taxing the rest. `hasBroker` gates it because a build with no broker
+         * has no account to offer, which is invariant #4 rather than a detail.
+         */}
+        {hasBroker && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAccount((v) => !v)}
+              aria-expanded={showAccount}
+              className="flex w-full items-center gap-1 rounded-md py-1 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown
+                className={`h-4 w-4 shrink-0 transition-transform ${showAccount ? "" : "-rotate-90"}`}
+                aria-hidden
+              />
+              What does an account add?
+            </button>
+            {showAccount && (
+              <div className="mt-3 space-y-3">
+                <p className="text-muted-foreground">
+                  Nothing you are doing right now needs one. Pairing, the tunnel
+                  and every session work exactly the same signed out.
+                </p>
+                <AccountValue />
+                {/* Stays in. This is the page where the trade is actually
+                    being made, and hiding a meter we are about to apply is
+                    the one thing that would make everything above it suspect. */}
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {METERED_NOTE}
+                </p>
+                <Button asChild variant="outline" className="h-11 w-full">
+                  <Link href="/signup">Create an account</Link>
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Both of these stay visible whichever way the probe resolves; the
             origin only decides which one reads as the likelier answer. */}

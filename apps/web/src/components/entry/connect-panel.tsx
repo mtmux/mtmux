@@ -25,15 +25,15 @@ import { pairedMessage, persistPairing } from "@/lib/persist-pairing";
  *
  * ## The fragment
  *
- * The code arrives in the URL *fragment* (`/j#49271638`), never the query
- * string. A fragment is not sent to any server, so the four-digit half that is
+ * The code arrives in the URL *fragment* (`/j#492716384`), never the query
+ * string. A fragment is not sent to any server, so the six-digit half that is
  * the PAKE password never reaches the web host's access log, a referrer header,
  * or a CDN — which is the entire reason the code can be short enough to read off
  * a screen. It is stripped from the address bar before anything else happens, so
  * it does not survive into history either.
  *
  * With a fragment this pairs with zero taps. Without one it falls back to the
- * six-digit field, which is what someone typing the code by hand needs.
+ * nine-digit field, which is what someone typing the code by hand needs.
  */
 
 type State =
@@ -231,7 +231,7 @@ export function ConnectPanel({ variant = "full" }: ConnectPanelProps) {
             {state.phase === "failed" ? "Try again" : "Connect"}
           </Button>
           <p className="text-center text-xs text-muted-foreground">
-            Only the first two digits reach our servers.
+            Only the first three digits reach our servers.
           </p>
         </form>
       )}

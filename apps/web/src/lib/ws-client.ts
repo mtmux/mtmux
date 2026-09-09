@@ -61,6 +61,12 @@ const DROP_WHEN_DISCONNECTED: ReadonlySet<ClientMessage["type"]> = new Set([
   "terminal:resize",
   "command:send",
   "tmux:prefix",
+  // A scroll is a movement of a live view. Replayed after a reconnect it drags
+  // a pane the user is now looking at somewhere they asked for minutes ago —
+  // the same argument as keystrokes, and the reason this set exists.
+  "tmux:scroll",
+  "tmux:scroll-to",
+  "tmux:exit-copy-mode",
   "session:attach",
   "session:detach",
 ]);
@@ -256,6 +262,22 @@ export class RelayClient {
       // post-trim queue length, so the toast always said "50".
       this.onMessageDroppedHandler?.(dropped);
     }
+  }
+
+  /**
+   * Try again right now, on a fresh ladder.
+   *
+   * For the moments when something outside the client knows more than the
+   * backoff does — the network came back, or the user returned to the tab.
+   * Plain `connect()` is not enough on its own: it cancels the pending timer
+   * but leaves `reconnectDelay` wherever the ladder had climbed to, so the
+   * *next* failure resumes at thirty seconds and the user is back to waiting
+   * out a timer that no longer describes the situation.
+   */
+  reconnectNow(): void {
+    if (this.intentionalClose) return;
+    this.reconnectDelay = MIN_RECONNECT_DELAY;
+    this.connect();
   }
 
   onMessage(handler: MessageHandler): () => void {

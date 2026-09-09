@@ -9,7 +9,7 @@ import {
   hexToBytes,
   utf8ToBytes,
   bytesToBase64Url,
-  FrameSealer,
+  sealOnce,
   newEphemeralKey,
   sasSharedSecret,
   sasTranscript,
@@ -43,7 +43,7 @@ const DESCRIPTOR: SealedDescriptor = {
 };
 
 const API = "http://broker.test";
-const SLOT = "49";
+const SLOT = "492";
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -114,12 +114,13 @@ function claimHarness(opts: { answering: number; status?: number }) {
     return Promise.resolve({
       ok: status < 400,
       status,
+      // A claim id and a deadline. The POST does not look at the slot since
+      // 0.7.0, so "nothing was waiting" arrives on the socket instead — see
+      // the `peer-gone` the harness delivers below.
       json: () =>
-        // The broker reports only whether anything is there; how many peers
-        // exist the claimant learns by counting the shares that arrive.
         Promise.resolve({
           claimId: "clm-abcdefgh",
-          waiting: opts.answering > 0,
+          expiresAt: Date.now() + 15_000,
         }),
     } as unknown as Response);
   }) as unknown as typeof fetch;
@@ -172,8 +173,9 @@ function claimHarness(opts: { answering: number; status?: number }) {
       confirm,
       /** Seal the descriptor and end the exchange, as the CLI does. */
       async establish() {
-        const sealer = new FrameSealer(keys.s2c, "s2c");
-        const sealed = await sealer.seal(
+        const sealed = await sealOnce(
+          keys.s2c,
+          "s2c",
           utf8ToBytes(JSON.stringify(DESCRIPTOR)),
         );
         io.deliver({
@@ -191,6 +193,15 @@ function claimHarness(opts: { answering: number; status?: number }) {
         );
       },
     };
+  }
+
+  // The broker fans a claim out when its socket attaches, and answers there if
+  // the slot held nothing. Scripted because it is the only way a claimant
+  // learns that now.
+  if (opts.answering === 0) {
+    void flush().then(() =>
+      io.deliver({ type: "pair:failed", reason: "peer-gone" }),
+    );
   }
 
   return {
@@ -219,7 +230,7 @@ function join(
 
 describe("joinPairing", () => {
   it("rejects a code of the wrong length before contacting the broker", async () => {
-    for (const code of ["12345", "1234567", "123456789"]) {
+    for (const code of ["12345", "12345678", "1234567890"]) {
       const h = claimHarness({ answering: 1 });
       const rec = recorder<PairingUpdate>();
       join(h, rec, code);
@@ -229,22 +240,25 @@ describe("joinPairing", () => {
     }
   });
 
-  it("still reads a code minted by an older mtmux", async () => {
-    // Both lengths parse; only one is emitted. A CLI at 0.5 shows six digits
-    // and this page has to be able to claim them.
-    const h = claimHarness({ answering: 0 });
-    const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
-    await rec.waitFor("failed");
-    expect(h.claim?.slot).toBe(SLOT);
+  it("refuses a code minted by an mtmux from before the break", async () => {
+    // 0.6.x showed eight digits on a two-digit slot. Under a three-digit slot
+    // those digits would route somewhere real and derive a different key, so
+    // the parse refuses them outright — clean break, not a silent misroute.
+    for (const legacy of ["49271638", "492716"]) {
+      const h = claimHarness({ answering: 1 });
+      const rec = recorder<PairingUpdate>();
+      join(h, rec, legacy);
+      await rec.waitFor("failed");
+      expect(h.claim).toBeNull();
+    }
   });
 
   it("accepts spaced and dashed codes", async () => {
     const h = claimHarness({ answering: 0 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, "49 271-638");
+    join(h, rec, "492 716-384");
     await rec.waitFor("failed");
-    expect(h.claim?.slot).toBe("49");
+    expect(h.claim?.slot).toBe("492");
   });
 
   it("never puts the secret in the claim", async () => {
@@ -252,9 +266,9 @@ describe("joinPairing", () => {
     // slot and nothing else that could reconstruct the PAKE password.
     const h = claimHarness({ answering: 0 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}271638`);
+    join(h, rec, `${SLOT}716384`);
     await rec.waitFor("failed");
-    expect(JSON.stringify(h.claim)).not.toContain("271638");
+    expect(JSON.stringify(h.claim)).not.toContain("716384");
     // The associated data is a coarse device label — what the machine prints as
     // "✓ Chrome on iOS connected." It is transmitted by design, so it must stay
     // coarse: no version, no platform string, nothing near a fingerprint.
@@ -263,7 +277,7 @@ describe("joinPairing", () => {
   });
 
   it("pairs with the terminal and opens the sealed descriptor", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const h = claimHarness({ answering: 1 });
     const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
@@ -283,13 +297,13 @@ describe("joinPairing", () => {
   });
 
   it("keeps the terminal whose tag verifies and closes every decoy", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const h = claimHarness({ answering: 2 });
     const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
     await flush();
 
-    h.cliAnswers("peer-0", "0000");
+    h.cliAnswers("peer-0", "000000");
     const real = h.cliAnswers("peer-1", secret);
     await real.establish();
 
@@ -311,13 +325,13 @@ describe("joinPairing", () => {
     // on its own — and the only safe response is to stop.
     const h = claimHarness({ answering: MAX_PEERS_PER_SLOT + 1 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}716384`);
     await flush();
 
     // Shares only: the refusal must rest on the count alone, before any of
     // them is ruled out on its tag.
     for (let i = 0; i <= MAX_PEERS_PER_SLOT; i += 1) {
-      h.cliAnswers(`peer-${i}`, "0000", false);
+      h.cliAnswers(`peer-${i}`, "000000", false);
     }
 
     const failed = (await rec.waitFor("failed")) as Extract<
@@ -330,10 +344,10 @@ describe("joinPairing", () => {
   it("fails once every offered mailbox has been ruled out", async () => {
     const h = claimHarness({ answering: 2 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}716384`);
     await flush();
-    h.cliAnswers("peer-0", "0000");
-    h.cliAnswers("peer-1", "9999");
+    h.cliAnswers("peer-0", "000000");
+    h.cliAnswers("peer-1", "999999");
 
     const failed = (await rec.waitFor("failed")) as Extract<
       PairingUpdate,
@@ -343,7 +357,7 @@ describe("joinPairing", () => {
   });
 
   it("refuses a tampered confirmation tag", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const h = claimHarness({ answering: 1 });
     const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
@@ -376,7 +390,7 @@ describe("joinPairing", () => {
   it("refuses a share that is not a valid group element", async () => {
     const h = claimHarness({ answering: 1 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}716384`);
     await flush();
     h.io.deliver({
       type: "pair:peer-share",
@@ -390,7 +404,7 @@ describe("joinPairing", () => {
   });
 
   it("ignores a second share for a conversation already under way", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const h = claimHarness({ answering: 1 });
     const rec = recorder<PairingUpdate>();
     join(h, rec, `${SLOT}${secret}`);
@@ -417,7 +431,7 @@ describe("joinPairing", () => {
   it("reports a code nobody is waiting for", async () => {
     const h = claimHarness({ answering: 0 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}716384`);
     const failed = (await rec.waitFor("failed")) as Extract<
       PairingUpdate,
       { phase: "failed" }
@@ -428,7 +442,7 @@ describe("joinPairing", () => {
   it("reports being rate limited", async () => {
     const h = claimHarness({ answering: 1, status: 429 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}716384`);
     const failed = (await rec.waitFor("failed")) as Extract<
       PairingUpdate,
       { phase: "failed" }
@@ -439,7 +453,7 @@ describe("joinPairing", () => {
   it("surfaces a lost broker connection", async () => {
     const h = claimHarness({ answering: 1 });
     const rec = recorder<PairingUpdate>();
-    join(h, rec, `${SLOT}2716`);
+    join(h, rec, `${SLOT}716384`);
     await flush();
     h.io.drop();
     const failed = (await rec.waitFor("failed")) as Extract<
@@ -450,7 +464,7 @@ describe("joinPairing", () => {
   });
 
   it("stops reacting once cancelled", async () => {
-    const secret = "2716";
+    const secret = "716384";
     const h = claimHarness({ answering: 1 });
     const rec = recorder<PairingUpdate>();
     const handle = join(h, rec, `${SLOT}${secret}`);
@@ -480,7 +494,7 @@ describe("startPairing", () => {
     return { io, fetchImpl };
   }
 
-  it("shows an eight-digit code whose first two digits are the broker's slot", async () => {
+  it("shows a nine-digit code whose first three digits are the broker's slot", async () => {
     const h = newHarness(Date.now() + 180_000);
     const rec = recorder<PairingUpdate>();
     startPairing({
@@ -493,8 +507,8 @@ describe("startPairing", () => {
       PairingUpdate,
       { phase: "waiting" }
     >;
-    expect(waiting.code).toMatch(/^\d{8}$/);
-    expect(waiting.code.slice(0, 2)).toBe(SLOT);
+    expect(waiting.code).toMatch(/^\d{9}$/);
+    expect(waiting.code.slice(0, 3)).toBe(SLOT);
   });
 
   it("takes the mailbox's own deadline from pair:ready", async () => {
@@ -543,7 +557,7 @@ describe("startPairing", () => {
       PairingUpdate,
       { phase: "waiting" }
     >;
-    const secret = waiting.code.slice(2);
+    const secret = waiting.code.slice(3);
 
     // The CLI claims it: initiator, and it picks the sid.
     const sid = "b".repeat(32);
@@ -586,7 +600,9 @@ describe("startPairing", () => {
       peer: "peer-0",
       tag: bytesToHex(confirmationTag(keys.confirm, "cli")),
     });
-    const sealed = await new FrameSealer(keys.s2c, "s2c").seal(
+    const sealed = await sealOnce(
+      keys.s2c,
+      "s2c",
       utf8ToBytes(JSON.stringify(DESCRIPTOR)),
     );
     h.io.deliver({
@@ -601,6 +617,85 @@ describe("startPairing", () => {
     >;
     expect(paired.descriptor).toEqual(DESCRIPTOR);
     expect(paired.keys.directToken).toBe(keys.directToken);
+  });
+
+  /**
+   * A mailbox is claimed exactly once, so a second peer-share is the broker
+   * misbehaving — and the holder must not simply follow it. It used to: the
+   * handler assigned `peerHandle = msg.peer` unconditionally, so a second share
+   * silently started a fresh CPace run against the same six digits and the
+   * page's own state moved to whoever spoke last.
+   */
+  function hosting() {
+    const h = newHarness(Date.now() + 180_000);
+    const rec = recorder<PairingUpdate>();
+    startPairing({
+      apiBase: API,
+      onUpdate: rec.onUpdate,
+      fetchImpl: h.fetchImpl,
+      socketImpl: () => h.io.ws,
+    });
+    return { h, rec };
+  }
+
+  function shareFrom(
+    h: { io: ReturnType<typeof fakeSocket> },
+    peer: string,
+    secret: string,
+  ) {
+    const sid = "b".repeat(32);
+    const cpace = cpaceStart(
+      utf8ToBytes(secret),
+      utf8ToBytes(SLOT),
+      hexToBytes(sid),
+    );
+    h.io.deliver({
+      type: "pair:peer-share",
+      peer,
+      share: bytesToHex(cpace.share),
+      ad: "cli",
+      sid,
+    });
+  }
+
+  it("binds to the first peer and refuses a share from a second", async () => {
+    const { h, rec } = hosting();
+    const waiting = (await rec.waitFor("waiting")) as Extract<
+      PairingUpdate,
+      { phase: "waiting" }
+    >;
+    const secret = waiting.code.slice(3);
+
+    shareFrom(h, "peer-0", secret);
+    expect(h.io.find("pair:share", "peer-0")).toBeDefined();
+
+    shareFrom(h, "peer-1", secret);
+    expect(h.io.find("pair:share", "peer-1")).toBeUndefined();
+    const failed = (await rec.waitFor("failed")) as Extract<
+      PairingUpdate,
+      { phase: "failed" }
+    >;
+    expect(failed.message).toMatch(/behaved unexpectedly/);
+  });
+
+  it("ignores a repeat of the peer it is already talking to", async () => {
+    // A duplicate is not an attack — the run for it is already in flight — so
+    // it must not fail the pairing either. Answering it twice would be the
+    // second CPace run this rule exists to prevent.
+    const { h, rec } = hosting();
+    const waiting = (await rec.waitFor("waiting")) as Extract<
+      PairingUpdate,
+      { phase: "waiting" }
+    >;
+    const secret = waiting.code.slice(3);
+
+    shareFrom(h, "peer-0", secret);
+    shareFrom(h, "peer-0", secret);
+
+    expect(
+      h.io.sent.filter((m) => m.type === "pair:share" && m.peer === "peer-0"),
+    ).toHaveLength(1);
+    expect(rec.updates.some((u) => u.phase === "failed")).toBe(false);
   });
 });
 
@@ -672,8 +767,11 @@ function requestHarness() {
         cli.publicKey,
       );
       const keys = deriveSessionKeys(ikm, transcript);
-      const sealer = new FrameSealer(keys.s2c, "s2c");
-      const sealed = await sealer.seal(utf8ToBytes(JSON.stringify(DESCRIPTOR)));
+      const sealed = await sealOnce(
+        keys.s2c,
+        "s2c",
+        utf8ToBytes(JSON.stringify(DESCRIPTOR)),
+      );
       io.deliver({
         type: "pair:approved",
         requestId,

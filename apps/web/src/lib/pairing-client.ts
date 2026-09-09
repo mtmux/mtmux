@@ -12,7 +12,7 @@ import {
   randomBytes,
   utf8ToBytes,
   base64UrlToBytes,
-  FrameOpener,
+  openOnce,
   deriveSas,
   newEphemeralKey,
   sasCommitment,
@@ -22,6 +22,7 @@ import {
 } from "@repo/crypto";
 import {
   MAX_PEERS_PER_SLOT,
+  PROTOCOL_VERSION,
   SealedDescriptor,
   codeDeadline,
   tryDeserializePairingServerMessage,
@@ -106,9 +107,23 @@ export type JoinPairingOptions = CommonOptions & {
   code: string;
 };
 
+/**
+ * Socket base, carrying the protocol version.
+ *
+ * The broker answers a raw 426 from its upgrade handler for anything below its
+ * floor, so `?v=` has to be on every socket this file opens — a browser that
+ * omitted it would be refused exactly like a 0.6.x CLI.
+ */
 function wsBase(apiBase: string): string {
   return apiBase.replace(/^http/, "ws");
 }
+
+/** Appended to every socket URL. See `wsBase`. */
+const V = `?v=${PROTOCOL_VERSION}`;
+
+/** The one message a client that predates the broker's floor can act on. */
+const TOO_OLD =
+  "This page is out of date. Reload it — and if that does not help, update mtmux.";
 
 // ---------------------------------------------------------------------------
 // Showing a code: /pair
@@ -141,7 +156,13 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
     try {
       const res = await doFetch(`${opts.apiBase}/v1/pair/new`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ v: PROTOCOL_VERSION }),
       });
+      if (res.status === 426) {
+        fail(TOO_OLD);
+        return;
+      }
       if (res.status === 429) {
         fail("Too many codes requested. Wait a minute and reload.");
         return;
@@ -169,7 +190,7 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
       expiresAt: codeDeadline(expiresAt, ttlMs),
     });
 
-    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/pair/${mailboxId}`);
+    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/pair/${mailboxId}${V}`);
 
     let keys: SessionKeys | null = null;
     let peerHandle: string | null = null;
@@ -198,6 +219,19 @@ export function startPairing(opts: BrowserPairingOptions): PairingHandle {
       }
 
       if (msg.type === "pair:peer-share") {
+        // Bind to the first peer and stay bound. A mailbox is claimed exactly
+        // once, so a share for a *different* peer means the broker offered this
+        // code to two claimants — abandon it rather than run a second CPace on
+        // the same secret. A repeat of the peer we already have is a duplicate
+        // and is simply ignored; the run for it is already in flight.
+        if (peerHandle !== null) {
+          if (msg.peer !== peerHandle) {
+            fail(
+              "The pairing service behaved unexpectedly. Get a new code from your terminal.",
+            );
+          }
+          return;
+        }
         peerHandle = msg.peer;
         opts.onUpdate({ phase: "verifying" });
 
@@ -370,18 +404,22 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
     const cpace = cpaceStart(utf8ToBytes(secret), utf8ToBytes(slot), sid);
 
     let claimId: string;
-    let waiting: boolean;
     try {
       const res = await doFetch(`${opts.apiBase}/v1/pair/claim`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          v: PROTOCOL_VERSION,
           slot,
           share: bytesToHex(cpace.share),
           ad: ownAd,
           sid: bytesToHex(sid),
         }),
       });
+      if (res.status === 426) {
+        fail(TOO_OLD);
+        return;
+      }
       if (res.status === 429) {
         fail("Too many attempts from this network. Wait a minute.");
         return;
@@ -390,24 +428,19 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
         fail("The pairing service is unavailable. Try again shortly.");
         return;
       }
-      ({ claimId, waiting } = (await res.json()) as {
-        claimId: string;
-        waiting: boolean;
-      });
+      ({ claimId } = (await res.json()) as { claimId: string });
     } catch {
       fail("Could not reach the pairing service.");
       return;
     }
     if (cancelled) return;
 
-    if (!waiting) {
-      fail(
-        "Nothing is waiting for that code. Check the digits, or get a new code from your terminal.",
-      );
-      return;
-    }
+    // Whether anything is live on that slot is not knowable from the POST: the
+    // broker fans out when this socket attaches, and says `peer-gone` there if
+    // nothing was. That is deliberate — a POST that answered it was a free
+    // liveness oracle over the whole code space.
 
-    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/claim/${claimId}`);
+    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/claim/${claimId}${V}`);
 
     const attempts = new Map<string, Attempt>();
     /**
@@ -526,7 +559,7 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
         const attempt = attempts.get(msg.peer);
         if (!attempt) return;
 
-        // The moment of truth: a wrong four-digit guess produces a different
+        // The moment of truth: a wrong six-digit guess produces a different
         // key, so this tag cannot verify.
         if (
           !verifyConfirmation(attempt.keys.confirm, AD_CLI, hexToBytes(msg.tag))
@@ -580,9 +613,10 @@ export function joinPairing(opts: JoinPairingOptions): PairingHandle {
 /**
  * Open the CLI's sealed connection descriptor.
  *
- * A fresh `FrameOpener` every time, deliberately. Several candidate mailboxes
- * can be in flight at once, and a failed trial decryption must not advance the
- * replay window of a schedule that turns out to be the real one.
+ * `openOnce` reads the salt off the blob and derives the descriptor subkey
+ * from it, so several candidate mailboxes can be tried in flight without a
+ * failed attempt disturbing the schedule that turns out to be the real one —
+ * each attempt derives its own key and keeps no state.
  *
  * This is the first thing sealed under the pairing key, so a failure here means
  * the key is wrong — which the confirmation step should already have caught.
@@ -591,8 +625,7 @@ export async function unsealDescriptor(
   keys: SessionKeys,
   sealed: string,
 ): Promise<SealedDescriptor> {
-  const opener = new FrameOpener(keys.s2c, "s2c");
-  const opened = await opener.open(base64UrlToBytes(sealed));
+  const opened = await openOnce(keys.s2c, "s2c", base64UrlToBytes(sealed));
   return SealedDescriptor.parse(
     JSON.parse(new TextDecoder().decode(opened)) as unknown,
   );
@@ -608,6 +641,11 @@ function describeFailure(reason: string): string {
       return "The code did not match. Get a new one.";
     case "rate-limited":
       return "Too many attempts. Wait a minute and try again.";
+    case "peer-gone":
+      // Reached on a claim socket when the slot held nothing. Since 0.7.0 that
+      // is where "nothing is waiting" is answered — the POST is deliberately
+      // silent about it — so this wording carries what the POST used to say.
+      return "Nothing is waiting for that code. Check the digits, or get a new code from your terminal.";
     default:
       return "Pairing failed. Get a new code.";
   }
@@ -680,10 +718,15 @@ export function requestAccess(opts: RequestAccessOptions): PairingHandle {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          v: PROTOCOL_VERSION,
           serverId: opts.serverId,
           deviceLabel: opts.deviceLabel,
         }),
       });
+      if (res.status === 426) {
+        fail(TOO_OLD);
+        return;
+      }
       if (res.status === 401) {
         fail("Sign in again, then try once more.");
         return;
@@ -710,7 +753,7 @@ export function requestAccess(opts: RequestAccessOptions): PairingHandle {
     // having seen a commitment and no key.
     const commitment = sasCommitment(ephemeral.publicKey, requestId);
 
-    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/request/${requestId}`);
+    socket = makeSocket(`${wsBase(opts.apiBase)}/v1/request/${requestId}${V}`);
     socket.onopen = () => {
       socket?.send(
         JSON.stringify({

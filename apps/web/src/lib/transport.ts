@@ -1,6 +1,7 @@
 import {
   FrameOpener,
   FrameSealer,
+  StreamOpener,
   bytesToBase64Url,
   base64UrlToBytes,
   type SessionKeys,
@@ -119,15 +120,37 @@ export class SealedTransport implements Transport {
   private detached = false;
   private streamId: string | null = null;
   private sealer: FrameSealer;
-  private opener: FrameOpener;
+  /**
+   * Null until the CLI's first frame arrives carrying its salt.
+   *
+   * The two directions are independent. The browser speaks first, the CLI
+   * binds to our salt and replies, and its own salt rides that reply — so no
+   * round trip is needed to agree on either.
+   */
+  private opener: FrameOpener | null = null;
   /** Lines written before the broker assigned a stream id. */
   private queued: string[] = [];
   private handlers: TransportHandlers | null = null;
+  /**
+   * Serialises sealing, so frames reach the wire in counter order.
+   *
+   * `seal` is async — WebCrypto is promise-based — and this used to fire it
+   * and write on resolution, so two sends in one tick could arrive reversed
+   * and trip the receiver's replay window. The CLI already chains its own
+   * seals for exactly this reason.
+   */
+  private outbound: Promise<void> = Promise.resolve();
+  /**
+   * The same discipline inbound, and for a sharper reason: two frames
+   * decrypted concurrently would both find `opener` unset, both try to bind,
+   * and the second — whose counter is 1, not 0 — would fail and kill a
+   * healthy connection.
+   */
+  private inbound: Promise<void> = Promise.resolve();
 
   constructor(private readonly opts: SealedTransportOptions) {
     // The browser seals on c2s and opens s2c; the CLI is the mirror image.
     this.sealer = new FrameSealer(opts.keys.c2s, "c2s");
-    this.opener = new FrameOpener(opts.keys.s2c, "s2c");
   }
 
   connect(handlers: TransportHandlers): void {
@@ -135,10 +158,16 @@ export class SealedTransport implements Transport {
     this.handlers = handlers;
     this.streamId = null;
     this.queued = [];
-    // Fresh counters per connection: the key schedule is per pairing, but nonce
-    // reuse across reconnects would be catastrophic, so both ends restart at 0.
+    // A fresh sealer per connection, and therefore a fresh salt. The counters
+    // still restart at 0; that was safe only by accident before and is safe by
+    // construction now, because the key differs. It also closes the replay
+    // window reset: frames captured from an earlier connection no longer
+    // authenticate at all, rather than merely facing a counter check that had
+    // just been cleared.
     this.sealer = new FrameSealer(this.opts.keys.c2s, "c2s");
-    this.opener = new FrameOpener(this.opts.keys.s2c, "s2c");
+    this.opener = null;
+    this.outbound = Promise.resolve();
+    this.inbound = Promise.resolve();
 
     try {
       this.ws = new WebSocket(this.opts.url);
@@ -154,7 +183,25 @@ export class SealedTransport implements Transport {
 
     this.ws.onmessage = (event) => {
       if (this.detached) return;
-      void this.handleFrame(event.data as string);
+      const parsed = tryDeserializeTunnelServerMessage(event.data as string);
+      if (!parsed.ok) return;
+      const msg = parsed.message;
+
+      // Control messages are handled here and now; only frames go through the
+      // chain, because only they await WebCrypto. `stream:open` in particular
+      // must not queue behind a decryption — it is what tells the client it
+      // may start sending.
+      if (msg.type !== "stream:frame") {
+        this.handleControl(msg);
+        return;
+      }
+      const data = msg.data;
+      this.inbound = this.inbound
+        .then(() => this.handleFrame(data))
+        .catch(() => {
+          // `handleFrame` deals with its own failures. This only stops one bad
+          // frame breaking the chain for everything after it.
+        });
     };
 
     this.ws.onclose = () => {
@@ -166,13 +213,10 @@ export class SealedTransport implements Transport {
     };
   }
 
-  private async handleFrame(raw: string): Promise<void> {
-    const parsed = tryDeserializeTunnelServerMessage(raw);
-    if (!parsed.ok) return;
-    const msg = parsed.message;
-
+  /** Everything that is not a sealed frame. Synchronous by design. */
+  private handleControl(msg: { type: string; streamId?: string }): void {
     if (msg.type === "stream:open") {
-      this.streamId = msg.streamId;
+      this.streamId = msg.streamId ?? null;
       for (const text of this.queued.splice(0)) this.send(text);
       this.handlers?.onOpen();
       return;
@@ -181,13 +225,23 @@ export class SealedTransport implements Transport {
     if (msg.type === "stream:close" || msg.type === "tunnel:closed") {
       this.close();
       this.handlers?.onClose();
-      return;
     }
+  }
 
-    if (msg.type !== "stream:frame") return;
-
+  private async handleFrame(data: string): Promise<void> {
+    if (this.detached) return;
     try {
-      const opened = await this.opener.open(base64UrlToBytes(msg.data));
+      const bytes = base64UrlToBytes(data);
+      let opened: Uint8Array;
+      if (!this.opener) {
+        // The CLI's first frame carries its salt. Bind and open in one step,
+        // so the salt can never be consumed twice.
+        const bound = await StreamOpener.bind(this.opts.keys.s2c, "s2c", bytes);
+        this.opener = bound.opener;
+        opened = bound.plaintext;
+      } else {
+        opened = await this.opener.open(bytes);
+      }
       if (!this.detached) {
         this.handlers?.onMessage(new TextDecoder().decode(opened));
       }
@@ -207,9 +261,12 @@ export class SealedTransport implements Transport {
       return;
     }
     const streamId = this.streamId;
-    void this.sealer
-      .seal(new TextEncoder().encode(text))
-      .then((sealed) => {
+    // Chained, not fired concurrently: the counter is allocated inside `seal`,
+    // so two overlapping seals can resolve out of order and put frame 5 on the
+    // wire ahead of frame 4 — which the receiver rejects as a replay.
+    this.outbound = this.outbound
+      .then(async () => {
+        const sealed = await this.sealer.seal(new TextEncoder().encode(text));
         if (this.detached || this.ws?.readyState !== WebSocket.OPEN) return;
         this.ws.send(
           JSON.stringify({
@@ -221,7 +278,8 @@ export class SealedTransport implements Transport {
       })
       .catch(() => {
         // Sealing cannot fail in practice; if WebCrypto is unavailable the
-        // constructor already threw.
+        // constructor already threw. Swallowed so one failure cannot break the
+        // chain for every send that follows.
       });
   }
 
