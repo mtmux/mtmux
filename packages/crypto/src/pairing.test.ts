@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { cpaceStart, transcriptIr } from "./cpace";
 import { deriveSessionKeys, confirmationTag, verifyConfirmation } from "./kdf";
-import { FrameOpener, FrameSealer, createFramePair } from "./frames";
+import { FrameSealer, StreamOpener, sealOnce, openOnce } from "./frames";
 import { bytesToHex, randomBytes, utf8ToBytes } from "./bytes";
 
 /**
@@ -145,34 +145,51 @@ describe.each(["cli", "browser"] as const)(
         cliSecret: secret,
         browserSecret: secret,
       });
-      const b = createFramePair(browser.keys, "browser");
-      const c = createFramePair(cli.keys, "cli");
-
-      const up = await b.sealer.seal(utf8ToBytes("browser says hello"));
-      expect(new TextDecoder().decode(await c.opener.open(up))).toBe(
+      // Each direction is bound from its own first frame, which is what the
+      // salt-carrying wire format means in practice: the browser sends first,
+      // the CLI binds and replies, and the CLI's own salt rides that reply.
+      const browserSealer = new FrameSealer(browser.keys.c2s, "c2s");
+      const up = await browserSealer.seal(utf8ToBytes("browser says hello"));
+      const cliSide = await StreamOpener.bind(cli.keys.c2s, "c2s", up);
+      expect(new TextDecoder().decode(cliSide.plaintext)).toBe(
         "browser says hello",
       );
-      const down = await c.sealer.seal(utf8ToBytes("cli says hello"));
-      expect(new TextDecoder().decode(await b.opener.open(down))).toBe(
+
+      const cliSealer = new FrameSealer(cli.keys.s2c, "s2c");
+      const down = await cliSealer.seal(utf8ToBytes("cli says hello"));
+      const browserSide = await StreamOpener.bind(
+        browser.keys.s2c,
+        "s2c",
+        down,
+      );
+      expect(new TextDecoder().decode(browserSide.plaintext)).toBe(
         "cli says hello",
       );
     });
 
-    it("opens the descriptor a fresh sealer produced at counter 0", async () => {
+    it("opens the descriptor, which is sealed under its own subkey", async () => {
       const { cli, browser } = pair({
         initiator,
         cliSecret: secret,
         browserSecret: secret,
       });
-      // The descriptor is sealed by a sealer that exists only for it, so the
-      // browser can open it with a fresh opener and no shared counter state.
-      const sealed = await new FrameSealer(cli.keys.s2c, "s2c").seal(
+      // The descriptor carries its own salt and its own purpose label, so it
+      // shares neither a key nor a nonce with the tunnel frames that follow.
+      const sealed = await sealOnce(
+        cli.keys.s2c,
+        "s2c",
         utf8ToBytes('{"tunnelId":"tnl-abcdefgh"}'),
       );
-      const opened = await new FrameOpener(browser.keys.s2c, "s2c").open(
-        sealed,
-      );
+      const opened = await openOnce(browser.keys.s2c, "s2c", sealed);
       expect(new TextDecoder().decode(opened)).toContain("tnl-abcdefgh");
+
+      // And a tunnel frame's opener cannot read it, which is the collision
+      // that used to hand the broker two plaintexts under one nonce.
+      await expect(
+        StreamOpener.bind(browser.keys.s2c, "s2c", sealed, {
+          purpose: "frame",
+        }),
+      ).rejects.toThrow(/failed authentication/);
     });
 
     it("derives nothing in common when the four digits differ", () => {

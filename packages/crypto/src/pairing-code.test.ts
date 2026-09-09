@@ -28,9 +28,9 @@ describe("code generation", () => {
     }
   });
 
-  it("always produces exactly two slot digits", () => {
+  it("always produces exactly three slot digits", () => {
     for (let i = 0; i < 500; i++) {
-      expect(generateSlot()).toMatch(/^\d{2}$/);
+      expect(generateSlot()).toMatch(/^\d{3}$/);
     }
   });
 
@@ -69,6 +69,9 @@ describe("code generation", () => {
 
   it("is not obviously biased across the slot range", () => {
     const counts = new Map<string, number>();
+    // Ten draws per slot on average. Fewer and the per-slot band below is
+    // noise; the point is that no slot is systematically favoured, which is
+    // what a `% SLOT_COUNT` fold would break.
     const draws = 20_000;
     for (let i = 0; i < draws; i++) {
       const slot = generateSlot();
@@ -76,29 +79,30 @@ describe("code generation", () => {
     }
     expect(counts.size).toBe(SLOT_COUNT);
     for (const count of counts.values()) {
-      expect(count).toBeGreaterThan(draws / SLOT_COUNT / 2);
-      expect(count).toBeLessThan((draws / SLOT_COUNT) * 2);
+      expect(count).toBeGreaterThan(draws / SLOT_COUNT / 4);
+      expect(count).toBeLessThan((draws / SLOT_COUNT) * 4);
     }
   });
 });
 
 describe("validation", () => {
   it("accepts well-formed halves", () => {
-    expect(isValidSlot("49")).toBe(true);
-    expect(isValidSlot("00")).toBe(true);
+    expect(isValidSlot("492")).toBe(true);
+    expect(isValidSlot("000")).toBe(true);
     // The scan space is four digits wide and shares the same predicate.
-    expect(isValidSlot("0049")).toBe(true);
-    expect(isValidSecret("271638")).toBe(true);
+    expect(isValidSlot("0492")).toBe(true);
+    expect(isValidSecret("716384")).toBe(true);
     expect(isValidSecret("000000")).toBe(true);
-    // Still valid: the legacy four-digit secret is parsed, just never emitted.
-    expect(isValidSecret("2716")).toBe(true);
   });
 
   it("rejects the wrong number of digits or non-digits", () => {
-    for (const bad of ["4", "490", "", "4a", " 9", "-9", "00490"]) {
+    // "49" and "2716" are the 0.6.x slot and secret. Both must now be refused
+    // outright: a legacy code that half-parsed would derive a different key
+    // from a code the user typed correctly, which reads as a wrong code.
+    for (const bad of ["4", "49", "", "4a", " 92", "-92", "00492"]) {
       expect(isValidSlot(bad)).toBe(false);
     }
-    for (const bad of ["271", "27163", "2716380", "", "27a638", "２７１６"]) {
+    for (const bad of ["2716", "716", "71638", "7163840", "", "71a384"]) {
       expect(isValidSecret(bad)).toBe(false);
     }
   });
@@ -106,58 +110,58 @@ describe("validation", () => {
 
 describe("formatting", () => {
   it("joins the two halves in slot-then-secret order", () => {
-    expect(formatCode("49", "271638")).toBe("49271638");
+    expect(formatCode("492", "716384")).toBe("492716384");
   });
 
   it("refuses to format malformed halves", () => {
-    expect(() => formatCode("4", "271638")).toThrow(/slot/);
-    expect(() => formatCode("49", "27163")).toThrow(/secret/);
+    expect(() => formatCode("49", "716384")).toThrow(/slot/);
+    expect(() => formatCode("492", "71638")).toThrow(/secret/);
   });
 
-  it("groups an eight-digit code as slot, then thirds", () => {
-    // The leading pair stays visually separate because it is the only part
+  it("groups a nine-digit code in even thirds", () => {
+    // The leading group stays visually separate because it is the only part
     // that reaches our servers, and the copy everywhere leans on that.
-    expect(formatCodeForDisplay("49271638")).toBe("49 271 638");
-    expect(formatCodeForDisplay("49 271 638")).toBe("49 271 638");
-    expect(codeGroups("49271638")).toEqual(["49", "271", "638"]);
+    expect(formatCodeForDisplay("492716384")).toBe("492 716 384");
+    expect(formatCodeForDisplay("492 716 384")).toBe("492 716 384");
+    expect(codeGroups("492716384")).toEqual(["492", "716", "384"]);
   });
 
-  it("still groups a legacy six-digit code in pairs", () => {
-    // Kept as regression coverage for the legacy parse path: a code minted by
-    // a CLI at 0.5 must still render on a client at 0.6.
-    expect(formatCodeForDisplay("492716")).toBe("49 27 16");
-  });
-
-  it("refuses to display a malformed code", () => {
-    expect(() => formatCodeForDisplay("49271")).toThrow(/Invalid pairing code/);
+  it("refuses to display a code in a form we no longer mint", () => {
+    // 0.6.x's eight-digit code, and its six-digit predecessor. Both are gone
+    // as of 0.7.0 — the three-digit slot makes them unparseable rather than
+    // merely old, which is the point of a clean break.
+    expect(() => formatCodeForDisplay("49271638")).toThrow(
+      /Invalid pairing code/,
+    );
+    expect(() => formatCodeForDisplay("492716")).toThrow(/Invalid pairing code/);
   });
 });
 
 describe("parsing what a human actually types", () => {
   it("accepts spaces and dashes", () => {
     for (const input of [
-      "49271638",
-      "49 271 638",
-      "49-271638",
-      " 4 9 2 7 1 6 3 8 ",
+      "492716384",
+      "492 716 384",
+      "492-716384",
+      " 4 9 2 7 1 6 3 8 4 ",
     ]) {
-      expect(parseCode(input)).toEqual({ slot: "49", secret: "271638" });
+      expect(parseCode(input)).toEqual({ slot: "492", secret: "716384" });
     }
   });
 
-  it("accepts six and eight digits, and rejects seven", () => {
-    // Both lengths parse, because a big-bang length change still has to read
-    // codes minted by whatever is already installed. Only one is *emitted*.
-    expect(parseCode("492716")).toEqual({ slot: "49", secret: "2716" });
-    expect(parseCode("49271638")).toEqual({ slot: "49", secret: "271638" });
+  it("accepts nine digits and nothing else", () => {
+    expect(parseCode("492716384")).toEqual({ slot: "492", secret: "716384" });
     for (const bad of [
       "",
-      "49271",
+      // The 0.6.x eight-digit code and the 0.5 six-digit one. A clean break
+      // means these are refused, not silently reinterpreted under a wider slot.
+      "49271638",
+      "492716",
       "4927163",
-      "492716389",
-      "abcdefgh",
-      "492716.8",
-      "49_271638",
+      "4927163845",
+      "abcdefghi",
+      "49271638.",
+      "49_2716384",
     ]) {
       expect(parseCode(bad)).toBeNull();
       expect(normalizeCode(bad)).toBeNull();
@@ -165,8 +169,8 @@ describe("parsing what a human actually types", () => {
   });
 
   it("keeps leading zeros in both halves", () => {
-    expect(parseCode("00000000")).toEqual({ slot: "00", secret: "000000" });
-    expect(parseCode("01000023")).toEqual({ slot: "01", secret: "000023" });
+    expect(parseCode("000000000")).toEqual({ slot: "000", secret: "000000" });
+    expect(parseCode("010000023")).toEqual({ slot: "010", secret: "000023" });
   });
 
   it("round-trips generated codes", () => {
@@ -180,43 +184,37 @@ describe("parsing what a human actually types", () => {
 
 describe("the form table", () => {
   it("gives every wire form a unique length", () => {
-    // Length is the *only* thing telling the four forms apart — there is no
-    // prefix and no version byte. Two forms sharing a length would make a code
+    // Length is the *only* thing telling the forms apart — there is no prefix
+    // and no version byte. Two forms sharing a length would make a code
     // ambiguous, and the failure mode is a pairing that derives two different
     // keys from one correct code: indistinguishable from a wrong code.
+    //
+    // This is the assertion that forced the legacy forms out: a three-digit
+    // typed slot gives 9 digits, which is unique, but only once the 24-char
+    // legacy scan form and the 6-digit legacy typed form are gone.
     const codes = [
-      formatCode("49", "2716"), // legacy typed
-      formatCode("49", "271638"), // typed
-      formatLongCode("49", generateLongSecret()), // legacy scan
-      formatLongCode("0049", generateLongSecret()), // scan
+      formatCode("492", "716384"), // typed
+      formatLongCode("0492", generateLongSecret()), // scan
     ];
     const lengths = codes.map((c) => c.length);
-    expect(lengths).toEqual([6, 8, 24, 26]);
+    expect(lengths).toEqual([9, 26]);
     expect(new Set(lengths).size).toBe(lengths.length);
   });
 
   it("parses each form back to the halves it was built from", () => {
-    expect(parseCode(formatCode("49", "2716"))).toEqual({
-      slot: "49",
-      secret: "2716",
-    });
-    expect(parseCode(formatCode("49", "271638"))).toEqual({
-      slot: "49",
-      secret: "271638",
+    expect(parseCode(formatCode("492", "716384"))).toEqual({
+      slot: "492",
+      secret: "716384",
     });
     const long = generateLongSecret();
-    expect(parseCode(formatLongCode("49", long))).toEqual({
-      slot: "49",
-      secret: long,
-    });
-    expect(parseCode(formatLongCode("0049", long))).toEqual({
-      slot: "0049",
+    expect(parseCode(formatLongCode("0492", long))).toEqual({
+      slot: "0492",
       secret: long,
     });
   });
 
   it("reports the lengths it accepts, for error copy", () => {
-    expect(typedCodeLengths()).toEqual([6, 8]);
+    expect(typedCodeLengths()).toEqual([9]);
   });
 });
 
@@ -266,8 +264,8 @@ describe("the long secret the QR carries", () => {
   });
 
   it("draws its slot from the whole four-digit space", () => {
-    // The scan space is 100× the typed one, which is what stops a sweep of the
-    // two-digit space from touching a scanned pairing at all.
+    // The scan space is 5× the typed one, and drawn separately, which is what
+    // stops a sweep of the typed space from touching a scanned pairing at all.
     //
     // Not coupon-collector — that would need ~92k draws. 40k over 10k values
     // covers 1-e⁻⁴ ≈ 98% of the space, and a generator that had quietly
@@ -285,17 +283,17 @@ describe("the long secret the QR carries", () => {
     // secret in eight while looking like a wrong code.
     const secret = `-${"A".repeat(LONG_SECRET_CHARS - 2)}-`;
     expect(isValidLongSecret(secret)).toBe(true);
-    expect(parseCode(`49${secret}`)).toEqual({ slot: "49", secret });
+    expect(parseCode(`0492${secret}`)).toEqual({ slot: "0492", secret });
   });
 
   it("still rejects the shapes that are neither form", () => {
-    for (const bad of ["49", "4".repeat(23), `49${"A".repeat(21)}`]) {
+    for (const bad of ["492", "4".repeat(23), `0492${"A".repeat(21)}`]) {
       expect(parseCode(bad)).toBeNull();
     }
   });
 
   it("refuses to format a malformed long code", () => {
     expect(() => formatLongCode("4", generateLongSecret())).toThrow();
-    expect(() => formatLongCode("49", "too-short")).toThrow();
+    expect(() => formatLongCode("0492", "too-short")).toThrow();
   });
 });

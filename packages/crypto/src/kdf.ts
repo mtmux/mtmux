@@ -40,12 +40,77 @@ export type SessionKeys = {
   directToken: string;
 };
 
+/**
+ * Length of the per-connection salt that separates one stream's frame key
+ * from another's. 128 bits, so two independently chosen salts collide with
+ * negligible probability across every pairing this service will ever carry.
+ */
+export const SUBKEY_SALT_BYTES = 16;
+
+/**
+ * Labels for the keys actually used to seal bytes.
+ *
+ * `LABEL` above derives the *session* keys from the CPace ISK, and stays at
+ * `mtmux/v1` — those are what `~/.mtmux/config.json` and IndexedDB hold, so
+ * changing them would invalidate every persisted pairing. What changes at v2
+ * is how those keys are consumed: never directly, always through a subkey
+ * bound to a fresh salt and to what the bytes are for.
+ *
+ * The separate `descriptor` arm is not redundant with the salt. It is what
+ * makes "seal exactly once per key schedule" a property of the key material
+ * rather than an unwritten rule someone eventually breaks — the sealed
+ * descriptor and the first tunnel frame were both sealed under `s2c` at
+ * counter 0, which handed the broker two ciphertexts under one nonce on every
+ * hosted pairing, one of them a schema-known JSON object.
+ */
+export const SUBKEY_LABEL = {
+  frame: {
+    c2s: "mtmux/v2 frame browser→cli",
+    s2c: "mtmux/v2 frame cli→browser",
+  },
+  descriptor: {
+    c2s: "mtmux/v2 descriptor browser→cli",
+    s2c: "mtmux/v2 descriptor cli→browser",
+  },
+} as const;
+
+export type SubkeyPurpose = keyof typeof SUBKEY_LABEL;
+
+/**
+ * One HKDF invocation, shared by both derivations in this package.
+ *
+ * Not exported: callers derive session keys or subkeys, never raw HKDF, so
+ * there is exactly one place where a label can be got wrong.
+ */
 function derive(
   isk: Uint8Array,
   transcript: Uint8Array,
   label: string,
 ): Uint8Array {
   return hkdf(sha256, isk, transcript, utf8ToBytes(label), KEY_BYTES);
+}
+
+/**
+ * The key a single connection actually seals with.
+ *
+ * Throws on a wrong-sized key or salt rather than deriving something. A short
+ * salt is not a weaker version of this fix — it is a silent downgrade back to
+ * the bug, and the one place it could enter is a peer that chose it.
+ */
+export function deriveSubkey(
+  key: Uint8Array,
+  salt: Uint8Array,
+  label: string,
+): Uint8Array {
+  if (key.length !== KEY_BYTES) {
+    throw new Error("A frame subkey needs a 32-byte session key");
+  }
+  if (salt.length !== SUBKEY_SALT_BYTES) {
+    throw new Error(
+      `A frame subkey needs a ${SUBKEY_SALT_BYTES}-byte salt, got ${salt.length}`,
+    );
+  }
+  return derive(key, salt, label);
 }
 
 export function deriveSessionKeys(

@@ -3,36 +3,45 @@ import { bytesToBase64Url, randomBytes } from "./bytes";
 /**
  * The digits the user reads off their phone and types into the CLI.
  *
- *     4 9   2 7 1 6 3 8
- *     └┬┘   └────┬────┘
- *   slot       secret
+ *     4 9 2   7 1 6 3 8 4
+ *     └─┬─┘   └────┬────┘
+ *      slot      secret
  *
  * The split is the load-bearing design decision. The broker assigns the public
- * two-digit slot so it can route a claim to the right pending mailbox; the
+ * three-digit slot so it can route a claim to the right pending mailbox; the
  * other end generates the secret locally and it is *never* sent to the broker,
  * not even hashed — any of these secrets is an instant offline search. A broker
  * that knew the whole code would know the PAKE password, and could run the
  * protocol against both sides at once to pair a victim's CLI to an attacker's
  * browser.
  *
- * Slots are not a scarce resource: many pairings can share slot 49 at once, and
- * a claim is offered to every live mailbox under it. Only the one whose secret
- * matches produces a valid key confirmation.
+ * Slots are not a scarce resource: many pairings can share slot 492 at once, and
+ * a claim is fanned out to every live mailbox under it. Only the one whose
+ * secret matches produces a valid key confirmation.
  *
- * ## Four wire forms, told apart by length alone
+ * ## Two wire forms, told apart by length alone
  *
- * | form         | slot | secret        | total |
- * |--------------|------|---------------|-------|
- * | legacy typed | 2    | 4 digits      | 6     |
- * | typed        | 2    | 6 digits      | 8     |
- * | legacy scan  | 2    | 22 base64url  | 24    |
- * | scan         | 4    | 22 base64url  | 26    |
+ * | form  | slot | secret        | total |
+ * |-------|------|---------------|-------|
+ * | typed | 3    | 6 digits      | 9     |
+ * | scan  | 4    | 22 base64url  | 26    |
  *
  * No prefix and no version byte: the totals are distinct, and the assertion
- * below is what keeps them that way. That assertion is not decoration — a
- * future three-digit typed slot would silently alias a legacy scan code, and
- * the failure would be a pairing that derives two different keys from one
- * correct code, which is indistinguishable from a wrong code.
+ * below is what keeps them that way. That assertion is not decoration — it is
+ * what caught the collision this change had to resolve: a three-digit typed
+ * slot makes a typed code 9 digits, which is fine, but the *legacy* 2-digit
+ * scan form was 24 characters and the legacy 2-digit typed form 6, and neither
+ * can survive a three-digit slot without the parse becoming a guess. Both are
+ * deleted here rather than carried, which is the clean break 0.7.0 exists for.
+ *
+ * ## Why three digits, not two
+ *
+ * The secret is not the binding constraint — a code buys exactly one verified
+ * guess, so it is worth 10⁻⁶. The *slot space* was: at two digits there are 100
+ * slots and two mailboxes each, so the entire service supported 200 concurrent
+ * typed pairings, and 100 attached claims killed every one of them. Three
+ * digits takes the ceiling to 2000 and makes a full sweep slower than the
+ * three-minute mailbox TTL, so the space can never be held dead.
  *
  * ## Why a scan code is not a typed code
  *
@@ -49,8 +58,8 @@ import { bytesToBase64Url, randomBytes } from "./bytes";
  * parks a mailbox for each and races them.
  */
 
-/** The typed code's routing half. Two digits, and the only part the broker sees. */
-export const SLOT_DIGITS = 2;
+/** The typed code's routing half. The only part the broker ever sees. */
+export const SLOT_DIGITS = 3;
 /**
  * The typed secret.
  *
@@ -91,28 +100,24 @@ export type LongForm = {
 };
 
 /**
- * Newest first, because `parseCode` reports the first match and the tables are
- * also read by anything asking "what would we emit today".
+ * One entry each, now that the legacy forms are gone. Kept as tables rather than
+ * constants because the shape is what `parseCode`, `codeGroups` and the
+ * ambiguity assertion all read, and because the next length change should be a
+ * row, not a rewrite.
  *
- * The grouping puts the slot on its own — `49 271 638`, not `4927 1638` —
- * because the leading pair is the only part that reaches our servers, and every
- * piece of copy in the product leans on that being visible at a glance.
+ * The grouping puts the slot on its own — `492 716 384` — because the leading
+ * group is the only part that reaches our servers, and every piece of copy in
+ * the product leans on that being visible at a glance.
  */
 const TYPED_FORMS: TypedForm[] = [
-  { slotDigits: 2, secretDigits: 6, total: 8, groups: [2, 3, 3] },
-  { slotDigits: 2, secretDigits: 4, total: 6, groups: [2, 2, 2] },
+  { slotDigits: 3, secretDigits: 6, total: 9, groups: [3, 3, 3] },
 ];
 
 const LONG_FORMS: LongForm[] = [
   {
-    slotDigits: 4,
+    slotDigits: QR_SLOT_DIGITS,
     secretChars: LONG_SECRET_CHARS,
-    total: 4 + LONG_SECRET_CHARS,
-  },
-  {
-    slotDigits: 2,
-    secretChars: LONG_SECRET_CHARS,
-    total: 2 + LONG_SECRET_CHARS,
+    total: QR_SLOT_DIGITS + LONG_SECRET_CHARS,
   },
 ];
 
@@ -211,7 +216,7 @@ export function formatCode(slot: string, secret: string): string {
 }
 
 /**
- * How to break a code up on screen: `["49", "271", "638"]`.
+ * How to break a code up on screen: `["492", "716", "384"]`.
  *
  * Exported so the CLI banner and the web's `/pair` page cannot drift apart —
  * they used to each slice the string themselves, which is exactly the kind of
@@ -230,7 +235,7 @@ export function codeGroups(code: string): string[] {
   return out;
 }
 
-/** Grouped for reading aloud: "49 271 638". */
+/** Grouped for reading aloud: "492 716 384". */
 export function formatCodeForDisplay(code: string): string {
   return codeGroups(code).join(" ");
 }
@@ -275,9 +280,16 @@ export function describeBadCode(input: string): string {
   const digits = input.replace(/[\s-]/g, "");
   if (digits.length > 0 && /^\d+$/.test(digits)) {
     const lengths = typedCodeLengths();
+    // One accepted length is the normal case now, and `[a, b].slice(0, -1)`
+    // renders "codes are  or 9" for it. Both wordings live here rather than in
+    // either client, which is how the last length change managed to ship a
+    // message that lied about the code the page was showing.
+    const expected =
+      lengths.length === 1
+        ? `${lengths[0]}`
+        : `${lengths.slice(0, -1).join(", ")} or ${lengths[lengths.length - 1]}`;
     return (
-      `That code is ${digits.length} digits — pairing codes are ` +
-      `${lengths.slice(0, -1).join(", ")} or ${lengths[lengths.length - 1]}. ` +
+      `That code is ${digits.length} digits — pairing codes are ${expected}. ` +
       `Check for a missing digit.`
     );
   }
@@ -294,11 +306,11 @@ export function formatLongCode(slot: string, secret: string): string {
 }
 
 /**
- * Parse any of the four forms.
+ * Parse either form.
  *
- * Order matters only for clarity — no two forms can collide, because they are
- * different lengths and the module-load assertion above enforces it. The long
- * forms are deliberately *not* run through `normalizeCode`: `-` is a base64url
+ * No two forms can collide, because they are different lengths and the
+ * module-load assertion above enforces it. The long form is deliberately *not*
+ * run through `normalizeCode`: `-` is a base64url
  * character, and stripping it as punctuation would silently corrupt one secret
  * in eight.
  */

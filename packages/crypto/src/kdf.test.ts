@@ -5,6 +5,9 @@ import {
   verifyConfirmation,
   encodeSessionKeys,
   decodeSessionKeys,
+  deriveSubkey,
+  SUBKEY_LABEL,
+  SUBKEY_SALT_BYTES,
 } from "./kdf";
 import { bytesToHex, randomBytes, utf8ToBytes } from "./bytes";
 
@@ -173,5 +176,66 @@ describe("session key serialisation", () => {
     expect(() =>
       decodeSessionKeys({ ...stored, c2s: "zz".repeat(32) }),
     ).toThrow();
+  });
+});
+
+/**
+ * The per-connection subkey. `LABEL` above still derives the session keys from
+ * the ISK and is deliberately unchanged at `mtmux/v1` — persisted pairings hold
+ * those. What is new is that nothing seals with them directly.
+ */
+describe("deriveSubkey", () => {
+  const KEY = new Uint8Array(32).fill(3);
+  const SALT = new Uint8Array(SUBKEY_SALT_BYTES).fill(5);
+
+  it("is deterministic for the same key, salt and label", () => {
+    expect(bytesToHex(deriveSubkey(KEY, SALT, SUBKEY_LABEL.frame.c2s))).toBe(
+      bytesToHex(deriveSubkey(KEY, SALT, SUBKEY_LABEL.frame.c2s)),
+    );
+  });
+
+  it("differs per salt", () => {
+    const other = new Uint8Array(SUBKEY_SALT_BYTES).fill(6);
+    expect(
+      bytesToHex(deriveSubkey(KEY, SALT, SUBKEY_LABEL.frame.c2s)),
+    ).not.toBe(bytesToHex(deriveSubkey(KEY, other, SUBKEY_LABEL.frame.c2s)));
+  });
+
+  it("differs per label — direction and purpose both separate keys", () => {
+    const labels = [
+      SUBKEY_LABEL.frame.c2s,
+      SUBKEY_LABEL.frame.s2c,
+      SUBKEY_LABEL.descriptor.c2s,
+      SUBKEY_LABEL.descriptor.s2c,
+    ];
+    const derived = labels.map((l) => bytesToHex(deriveSubkey(KEY, SALT, l)));
+    expect(new Set(derived).size).toBe(labels.length);
+  });
+
+  it("differs per key", () => {
+    const other = new Uint8Array(32).fill(4);
+    expect(
+      bytesToHex(deriveSubkey(KEY, SALT, SUBKEY_LABEL.frame.c2s)),
+    ).not.toBe(bytesToHex(deriveSubkey(other, SALT, SUBKEY_LABEL.frame.c2s)));
+  });
+
+  it("returns a 32-byte key", () => {
+    expect(deriveSubkey(KEY, SALT, SUBKEY_LABEL.frame.c2s)).toHaveLength(32);
+  });
+
+  /** A short salt is not a weaker fix — it is a silent return to the bug. */
+  it("refuses a salt that is not 16 bytes", () => {
+    expect(() =>
+      deriveSubkey(KEY, new Uint8Array(15), SUBKEY_LABEL.frame.c2s),
+    ).toThrow(/16-byte salt/);
+    expect(() =>
+      deriveSubkey(KEY, new Uint8Array(17), SUBKEY_LABEL.frame.c2s),
+    ).toThrow(/16-byte salt/);
+  });
+
+  it("refuses a key that is not 32 bytes", () => {
+    expect(() =>
+      deriveSubkey(new Uint8Array(16), SALT, SUBKEY_LABEL.frame.c2s),
+    ).toThrow(/32-byte session key/);
   });
 });

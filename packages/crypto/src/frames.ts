@@ -6,21 +6,49 @@
  * two implementations that have to be kept in agreement.
  *
  * Nonce construction is a 4-byte direction tag followed by a big-endian 8-byte
- * counter. The direction tag means the two directions can never collide even
- * though they are separate keys anyway; the counter must strictly increase, so
- * a replayed or reordered frame is rejected rather than decrypted.
+ * counter, and it is unchanged. What changed is the *key*: every sealer draws a
+ * random 16-byte salt and derives a per-connection subkey from the session key,
+ * so a counter that restarts at 0 — on a reconnect, on a second stream, or on
+ * the sealed descriptor — no longer repeats a (key, nonce) pair.
  *
- * Wire format:  [8-byte BE counter][ciphertext || 16-byte GCM tag]
+ * That repeat was not a corner case. `pair.ts` sealed the descriptor under
+ * `s2c` at counter 0 and `tunnel-agent.ts` sealed the first tunnel frame under
+ * `s2c` at counter 0, so every hosted pairing handed the broker two
+ * ciphertexts encrypted under one nonce — one of them a JSON object whose
+ * schema is public. XOR recovers the other plaintext, and the forbidden attack
+ * recovers the GHASH subkey, which is forgery.
+ *
+ * Wire format:
+ *
+ *     first frame of a direction (counter MUST be 0):
+ *         salt(16) || counter(8, BE) || ciphertext || tag(16)
+ *     every frame after it:
+ *         counter(8, BE) || ciphertext || tag(16)
+ *
+ * The salt travels in the clear, inside the sealed blob rather than beside it.
+ * Inside, because `stream:frame.data` is the only field the broker forwards
+ * verbatim — a new protocol field would be reconstructed away, and a
+ * broker-minted salt would put the broker back in the key schedule. In the
+ * clear, because the receiver must derive the subkey before it can decrypt
+ * anything, and because trial decryption — the CLI trying each keyring entry
+ * against an unlabelled stream — is what lets the broker stay blind.
  *
  * The counter is on the wire so a receiver can name the failure ("replayed
  * frame 41, expected > 57") instead of reporting an opaque decrypt error.
  * Tampering with it is still caught: it feeds the nonce, so any change makes
  * authentication fail.
  */
+import {
+  deriveSubkey,
+  SUBKEY_LABEL,
+  SUBKEY_SALT_BYTES,
+  type SubkeyPurpose,
+} from "./kdf";
 
 export type Direction = "c2s" | "s2c";
 
 const COUNTER_BYTES = 8;
+export const SALT_BYTES = SUBKEY_SALT_BYTES;
 const NONCE_BYTES = 12;
 const TAG_BITS = 128;
 /** GCM's safety limit; we are nowhere near it, but the check is free. */
@@ -85,6 +113,21 @@ async function importKey(raw: Uint8Array): Promise<OpaqueKey> {
   ]);
 }
 
+function randomSalt(): Uint8Array {
+  const c = (
+    globalThis as {
+      crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array };
+    }
+  ).crypto;
+  if (!c?.getRandomValues) {
+    throw new Error(
+      "Sealed frames need globalThis.crypto.getRandomValues " +
+        "(browsers, or Node 22+).",
+    );
+  }
+  return c.getRandomValues(new Uint8Array(SALT_BYTES));
+}
+
 function nonceFor(direction: Direction, counter: bigint): Uint8Array {
   const nonce = new Uint8Array(NONCE_BYTES);
   nonce.set(DIRECTION_TAG[direction], 0);
@@ -98,16 +141,39 @@ function readCounter(frame: Uint8Array): bigint {
   return view.getBigUint64(0, false);
 }
 
-/** Encrypts outbound frames on one direction of a connection. */
+/** How a sealer or opener is bound to a key schedule. */
+export type FrameOptions = {
+  /**
+   * What these bytes are for. Separates a sealed descriptor from a tunnel
+   * frame at the key, not merely at the counter.
+   */
+  purpose?: SubkeyPurpose;
+};
+
+/**
+ * Encrypts outbound frames on one direction of a connection.
+ *
+ * The salt is chosen here, not passed in: a sealer that could be handed a
+ * repeated salt is a sealer that can be handed the bug back. It is public —
+ * `salt` — because the first frame has to carry it.
+ */
 export class FrameSealer {
   #key: Promise<OpaqueKey>;
   #counter = 0n;
 
+  /** The per-connection salt this sealer derived its subkey from. */
+  readonly salt: Uint8Array;
+
   constructor(
     key: Uint8Array,
     private readonly direction: Direction,
+    options: FrameOptions = {},
   ) {
-    this.#key = importKey(key);
+    const purpose = options.purpose ?? "frame";
+    this.salt = randomSalt();
+    this.#key = importKey(
+      deriveSubkey(key, this.salt, SUBKEY_LABEL[purpose][direction]),
+    );
   }
 
   /** Number of frames sealed so far — exposed for tests and diagnostics. */
@@ -132,14 +198,26 @@ export class FrameSealer {
       ),
     );
 
-    const frame = new Uint8Array(COUNTER_BYTES + sealed.length);
-    new DataView(frame.buffer).setBigUint64(0, counter, false);
-    frame.set(sealed, COUNTER_BYTES);
+    // The salt rides the frame numbered 0 and nothing else — it is the same
+    // sixteen bytes every time, so repeating it would only cost bandwidth.
+    const prefix = counter === 0n ? SALT_BYTES : 0;
+    const frame = new Uint8Array(prefix + COUNTER_BYTES + sealed.length);
+    if (prefix) frame.set(this.salt, 0);
+    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    view.setBigUint64(prefix, counter, false);
+    frame.set(sealed, prefix + COUNTER_BYTES);
     return frame;
   }
 }
 
-/** Decrypts inbound frames on one direction, enforcing replay protection. */
+/**
+ * Decrypts inbound frames on one direction, enforcing replay protection.
+ *
+ * `salt` is a required positional argument, deliberately. Making it optional
+ * would let every existing call site keep compiling while silently deriving a
+ * key from a default — the exact class of mistake this change exists to
+ * remove. A compile error at each of them is the point.
+ */
 export class FrameOpener {
   #key: Promise<OpaqueKey>;
   #highest: bigint | null = null;
@@ -147,8 +225,13 @@ export class FrameOpener {
   constructor(
     key: Uint8Array,
     private readonly direction: Direction,
+    salt: Uint8Array,
+    options: FrameOptions = {},
   ) {
-    this.#key = importKey(key);
+    const purpose = options.purpose ?? "frame";
+    this.#key = importKey(
+      deriveSubkey(key, salt, SUBKEY_LABEL[purpose][direction]),
+    );
   }
 
   /** Highest counter accepted so far, or null before the first frame. */
@@ -181,7 +264,8 @@ export class FrameOpener {
     } catch {
       // Deliberately opaque: a tampered frame and a wrong key are the same
       // event as far as the peer is concerned, and the connection dies either
-      // way.
+      // way. Trial decryption depends on this too — a loop that could tell
+      // "wrong key" from "malformed" would leak which keyring entry matched.
       throw new Error("Sealed frame failed authentication");
     }
 
@@ -192,19 +276,74 @@ export class FrameOpener {
   }
 }
 
-/** Both directions of one connection, from the derived session keys. */
-export function createFramePair(
-  keys: { c2s: Uint8Array; s2c: Uint8Array },
-  role: "cli" | "browser",
-): { sealer: FrameSealer; opener: FrameOpener } {
-  // The browser seals on c2s and opens s2c; the CLI is the mirror image.
-  return role === "browser"
-    ? {
-        sealer: new FrameSealer(keys.c2s, "c2s"),
-        opener: new FrameOpener(keys.s2c, "s2c"),
-      }
-    : {
-        sealer: new FrameSealer(keys.s2c, "s2c"),
-        opener: new FrameOpener(keys.c2s, "c2s"),
-      };
+/**
+ * The salt-on-first-frame rule, in one place.
+ *
+ * `FrameSealer` and `FrameOpener` know about keys and counters; these know
+ * that the first frame of a direction carries sixteen extra bytes. Keeping
+ * that in one type is what stops the rule being re-derived — slightly
+ * differently — at each of the four call sites.
+ */
+export class StreamOpener {
+  private constructor(readonly opener: FrameOpener) {}
+
+  /**
+   * Bind to a stream from its first frame, and open that frame.
+   *
+   * Throws the same opaque error as `open` on every failure, so a caller
+   * trying keyring entries in turn cannot distinguish "not this pairing" from
+   * "malformed frame" — which is what makes trial decryption safe to run
+   * against untrusted bytes.
+   */
+  static async bind(
+    key: Uint8Array,
+    direction: Direction,
+    first: Uint8Array,
+    options: FrameOptions = {},
+  ): Promise<{ opener: FrameOpener; plaintext: Uint8Array }> {
+    if (first.length <= SALT_BYTES + COUNTER_BYTES) {
+      throw new Error("Sealed frame failed authentication");
+    }
+    const salt = first.subarray(0, SALT_BYTES);
+    const body = first.subarray(SALT_BYTES);
+    // A stream's first frame is frame 0 by construction. Refusing anything
+    // else stops a later frame being replayed as an opener, which would
+    // otherwise reset the receiver's replay window to that counter.
+    if (readCounter(body) !== 0n) {
+      throw new Error("Sealed frame failed authentication");
+    }
+    const opener = new FrameOpener(key, direction, salt, options);
+    const plaintext = await opener.open(body);
+    return { opener, plaintext };
+  }
+}
+
+/**
+ * Seal a single message under its own subkey.
+ *
+ * For anything sealed exactly once per key schedule — the pairing descriptor
+ * is the only such thing today. It shares the envelope with streams so there
+ * is one format on the wire, and takes its own purpose label so that "once"
+ * is enforced by the key rather than by everybody remembering.
+ */
+export async function sealOnce(
+  key: Uint8Array,
+  direction: Direction,
+  plaintext: Uint8Array,
+  purpose: SubkeyPurpose = "descriptor",
+): Promise<Uint8Array> {
+  return new FrameSealer(key, direction, { purpose }).seal(plaintext);
+}
+
+/** Open what `sealOnce` produced. */
+export async function openOnce(
+  key: Uint8Array,
+  direction: Direction,
+  frame: Uint8Array,
+  purpose: SubkeyPurpose = "descriptor",
+): Promise<Uint8Array> {
+  const { plaintext } = await StreamOpener.bind(key, direction, frame, {
+    purpose,
+  });
+  return plaintext;
 }

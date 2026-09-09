@@ -16,7 +16,7 @@ import { lvCat, prependLen, randomBytes } from "./bytes";
  * the transcript) is right. Review the callers alongside this file.
  *
  * Why it exists at all: the pairing broker must route a claim without learning
- * the password. A PAKE is what lets both sides turn a four-digit secret into a
+ * the password. A PAKE is what lets both sides turn a six-digit secret into a
  * strong shared key while the server sees only opaque group elements. Existing
  * npm CPace implementations are all pre-1.0 with no audit, so depending on one
  * would move the trust rather than reduce it.
