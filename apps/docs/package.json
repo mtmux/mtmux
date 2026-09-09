@@ -13,11 +13,11 @@
   },
   "dependencies": {
     "@repo/ui": "workspace:*",
-    "fumadocs-core": "^16.12.1",
-    "fumadocs-mdx": "^15.2.0",
-    "fumadocs-ui": "^16.12.1",
-    "lucide-react": "^0.469",
-    "next": "^16.2.12",
+    "fumadocs-core": "^16.15.7",
+    "fumadocs-mdx": "^15.4.0",
+    "fumadocs-ui": "^16.15.7",
+    "lucide-react": "^0.577",
+    "next": "^16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
