@@ -3,7 +3,11 @@ import type { ClientMessage, GrantRecord } from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import { config } from "./config.js";
 import { FULL_GRANT } from "./grant.js";
-import { grantForToken, labelForToken } from "./pairing-local.js";
+import {
+  grantForToken,
+  labelForToken,
+  sessionTokenId,
+} from "./pairing-local.js";
 import {
   checkAuthThrottle,
   recordAuthFailure,
@@ -35,6 +39,12 @@ export interface AuthResult {
    * only ever shown on the machine's own screen.
    */
   label?: string;
+  /**
+   * Which registered token this was, so a later revocation can find the socket.
+   *
+   * Absent for the machine's own `AUTH_TOKEN` — see `ConnectionState.tokenId`.
+   */
+  tokenId?: string;
 }
 
 /**
@@ -84,9 +94,8 @@ export function authenticateMessage(
     };
   }
 
-  const grant = timingSafeEqualToken(msg.token, config.authToken)
-    ? FULL_GRANT
-    : grantForToken(msg.token);
+  const isMachineToken = timingSafeEqualToken(msg.token, config.authToken);
+  const grant = isMachineToken ? FULL_GRANT : grantForToken(msg.token);
 
   if (!grant) {
     const next = recordAuthFailure(remoteAddress);
@@ -104,7 +113,12 @@ export function authenticateMessage(
   // cover" is in the file they already have.
   logger.info({ grant: grant.id }, "Client authenticated successfully");
   const label = labelForToken(msg.token);
-  return { authenticated: true, grant, ...(label ? { label } : {}) };
+  return {
+    authenticated: true,
+    grant,
+    ...(label ? { label } : {}),
+    ...(isMachineToken ? {} : { tokenId: sessionTokenId(msg.token) }),
+  };
 }
 
 export function createAuthTimeout(onTimeout: () => void): NodeJS.Timeout {

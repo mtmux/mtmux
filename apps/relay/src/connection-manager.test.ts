@@ -11,6 +11,7 @@ import {
   connectionSummary,
   onConnectionsChanged,
   notifyConnectionsChanged,
+  closeRevokedConnections,
 } from "./connection-manager.js";
 import { FULL_GRANT, allowsSessionName } from "./grant.js";
 import type { RateLimiter } from "./rate-limiter.js";
@@ -25,6 +26,17 @@ function fakeWs(inbox: ServerMessage[]): WebSocket {
     readyState: 1,
     bufferedAmount: 0,
     send: (raw: string) => inbox.push(JSON.parse(raw) as ServerMessage),
+    close: () => {},
+  } as unknown as WebSocket;
+}
+
+/** A socket that records how it was closed, for the revocation sweep. */
+function closableWs(closes: { code: number; reason: string }[]): WebSocket {
+  return {
+    readyState: 1,
+    bufferedAmount: 0,
+    send: () => {},
+    close: (code: number, reason: string) => closes.push({ code, reason }),
   } as unknown as WebSocket;
 }
 
@@ -228,5 +240,54 @@ describe("onConnectionsChanged", () => {
     expect(reached).toBe(true);
     off1();
     off2();
+  });
+});
+
+/**
+ * `mtmux devices revoke` used to report success while the revoked device kept
+ * working: dropping the token from the map only stops the *next*
+ * authentication, and a socket already up holds its grant in memory.
+ */
+describe("closeRevokedConnections", () => {
+  beforeEach(async () => {
+    for (const conn of getAllConnections()) await removeConnection(conn);
+  });
+
+  it("closes exactly the socket whose token was revoked", () => {
+    const closesA: { code: number; reason: string }[] = [];
+    const closesB: { code: number; reason: string }[] = [];
+    const a = createConnection(closableWs(closesA), limiter, "10.0.0.20");
+    a.authenticated = true;
+    a.tokenId = "tok-a";
+    const b = createConnection(closableWs(closesB), limiter, "10.0.0.21");
+    b.authenticated = true;
+    b.tokenId = "tok-b";
+
+    expect(closeRevokedConnections(["tok-a"])).toBe(1);
+    expect(closesA).toEqual([{ code: 1008, reason: "Access revoked" }]);
+    expect(closesB).toEqual([]);
+  });
+
+  /**
+   * The regression that matters. `FULL_GRANT` is one shared record, so a sweep
+   * keyed on `grant.id` would have disconnected every device on the machine —
+   * including the machine's own token, which has no `tokenId` at all.
+   */
+  it("leaves the machine's own connection alone", () => {
+    const closes: { code: number; reason: string }[] = [];
+    const conn = createConnection(closableWs(closes), limiter, "127.0.0.1");
+    conn.authenticated = true;
+    conn.tokenId = null;
+
+    expect(closeRevokedConnections(["tok-a", "tok-b"])).toBe(0);
+    expect(closes).toEqual([]);
+  });
+
+  it("does nothing for an empty revocation", () => {
+    const closes: { code: number; reason: string }[] = [];
+    const conn = createConnection(closableWs(closes), limiter, "10.0.0.22");
+    conn.tokenId = "tok-c";
+    expect(closeRevokedConnections([])).toBe(0);
+    expect(closes).toEqual([]);
   });
 });

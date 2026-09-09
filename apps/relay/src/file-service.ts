@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { watch } from "chokidar";
 import { createLogger } from "@repo/logger";
@@ -51,14 +52,73 @@ function realpathResolve(targetPath: string): string {
   }
 }
 
+/**
+ * Directories no grant may ever read, list, write or traverse.
+ *
+ * `config.allowedPaths` is `$HOME` for every `mtmux start`, and
+ * `~/.mtmux/config.json` holds `AUTH_TOKEN` — which `auth.ts` trades for
+ * `FULL_GRANT`. Without this, one `file:read` on a deliberately read-only
+ * share returns a full shell. The neighbouring dotfile directories are the
+ * same escalation by a different route (an SSH key, a cloud credential, a
+ * `gh` token).
+ *
+ * Deliberately NOT configurable. A deny-list you can switch off is a
+ * deny-list an attacker asks you to switch off, and nothing legitimate about
+ * a remote terminal needs the browser to read these through the file API — a
+ * full-grant shell can still `cat` them, which is the point: the escalation
+ * this closes is the *scoped* grant, not the interactive one.
+ */
+function deniedRoots(): string[] {
+  const home = os.homedir();
+  const configDir = process.env.MTMUX_CONFIG_DIR ?? path.join(home, ".mtmux");
+  return [
+    configDir,
+    path.join(home, ".tmuxremote"),
+    path.join(home, ".ssh"),
+    path.join(home, ".aws"),
+    path.join(home, ".gnupg"),
+    path.join(home, ".config", "gh"),
+    path.join(home, ".kube"),
+  ];
+}
+
+/**
+ * Resolved once, alongside `config`, for the same reason: these are process
+ * identity, not per-request state, and re-resolving them on every path check
+ * would put a `realpath` syscall in the hot loop of a directory listing.
+ */
+const DENIED_ROOTS = deniedRoots().map(realpathResolve);
+
+function isWithin(resolved: string, root: string): boolean {
+  return resolved === root || resolved.startsWith(root + path.sep);
+}
+
+/**
+ * True when `targetPath` sits inside a denied root.
+ *
+ * Compared after `realpathResolve`, so a symlink planted inside an allowed
+ * directory that points at `~/.ssh` is caught, and a sibling like
+ * `~/.mtmuxfoo` — which merely shares a string prefix — is not.
+ */
+export function isPathDenied(targetPath: string): boolean {
+  const resolved = realpathResolve(targetPath);
+  return DENIED_ROOTS.some((root) => isWithin(resolved, root));
+}
+
+/**
+ * The single gate.
+ *
+ * The deny check lives here rather than in `assertPathAllowed` because this
+ * is the function everything actually calls: `server.ts`'s HTTP download path
+ * and ten sites in `message-router.ts` call it directly, so a deny placed in
+ * the wrapper would be bypassed by every one of them.
+ */
 export function isPathAllowed(targetPath: string): boolean {
   const resolved = realpathResolve(targetPath);
+  if (DENIED_ROOTS.some((root) => isWithin(resolved, root))) return false;
   return config.allowedPaths.some((allowed) => {
     const resolvedAllowed = realpathResolve(allowed);
-    return (
-      resolved === resolvedAllowed ||
-      resolved.startsWith(resolvedAllowed + path.sep)
-    );
+    return isWithin(resolved, resolvedAllowed);
   });
 }
 

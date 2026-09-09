@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -158,5 +158,245 @@ describeTmux("capturePaneById", () => {
     const out = await tmux.capturePaneById(paneId);
     expect(out.length).toBeLessThan(1024 * 1024);
     expect(out).not.toContain(ESC);
+  });
+});
+
+/**
+ * Scrolling has to be a tmux operation, not a client one.
+ *
+ * `attachSession` runs a real `tmux attach-session`, so tmux holds the
+ * alternate screen and the browser's own scrollback buffer is always empty —
+ * a swipe on a phone had nothing to move, in xterm or in the UA. The history
+ * exists only inside tmux, and copy mode is the only door to it, so these run
+ * against a real tmux rather than a mock: what is being checked is that the
+ * argv actually does what it claims on the tmux that ships.
+ */
+describeTmux("scrollHistory", () => {
+  /** Where copy mode is looking, in lines above the live output. */
+  function scrollPosition(): number {
+    const raw = tmuxExec([
+      "display-message",
+      "-p",
+      "-t",
+      SESSION,
+      "#{scroll_position}",
+    ]).trim();
+    return raw === "" ? 0 : parseInt(raw, 10);
+  }
+
+  afterEach(async () => {
+    await tmux.exitCopyMode(SESSION);
+  });
+
+  it("enters copy mode by itself and moves back through history", async () => {
+    expect(await tmux.isInCopyMode(SESSION)).toBe(false);
+    await tmux.scrollHistory(SESSION, 5);
+    expect(await tmux.isInCopyMode(SESSION)).toBe(true);
+    expect(scrollPosition()).toBe(5);
+  });
+
+  it("accumulates across the several messages one drag produces", async () => {
+    await tmux.scrollHistory(SESSION, 5);
+    await tmux.scrollHistory(SESSION, 7);
+    // Re-entering copy mode on the second call would have reset this to 7.
+    expect(scrollPosition()).toBe(12);
+  });
+
+  it("scrolls forward again on a negative count", async () => {
+    await tmux.scrollHistory(SESSION, 20);
+    await tmux.scrollHistory(SESSION, -8);
+    expect(scrollPosition()).toBe(12);
+  });
+
+  it("clamps at the top of the history rather than failing", async () => {
+    await tmux.scrollHistory(SESSION, 500);
+    await tmux.scrollHistory(SESSION, 500);
+    // Whatever it lands on, it is a number and copy mode is still healthy.
+    expect(scrollPosition()).toBeGreaterThan(0);
+    expect(await tmux.isInCopyMode(SESSION)).toBe(true);
+  });
+
+  it("does nothing at all for a zero count", async () => {
+    await tmux.scrollHistory(SESSION, 0);
+    expect(await tmux.isInCopyMode(SESSION)).toBe(false);
+  });
+
+  it("leaves copy mode on request, so typing works again", async () => {
+    await tmux.scrollHistory(SESSION, 10);
+    await tmux.exitCopyMode(SESSION);
+    expect(await tmux.isInCopyMode(SESSION)).toBe(false);
+  });
+
+  it("is a no-op when asked to leave copy mode it is not in", async () => {
+    await expect(tmux.exitCopyMode(SESSION)).resolves.toBeUndefined();
+  });
+
+  it("returns the position it reached, which is what the scrollbar draws", async () => {
+    const state = await tmux.scrollHistory(SESSION, 9);
+    expect(state).toMatchObject({ position: 9, inMode: true });
+    expect(state.historySize).toBeGreaterThan(0);
+    expect(state.paneHeight).toBeGreaterThan(0);
+  });
+
+  it("reports a pane outside copy mode as being at the bottom", async () => {
+    const state = await tmux.readScrollState(SESSION);
+    expect(state.inMode).toBe(false);
+    expect(state.position).toBe(0);
+    // The history is still there — the view is simply at the live end of it.
+    expect(state.historySize).toBeGreaterThan(0);
+  });
+
+  it("jumps to an absolute position from anywhere, in either direction", async () => {
+    await tmux.scrollToPosition(SESSION, 30);
+    expect(scrollPosition()).toBe(30);
+    // Down as well as up: a thumb drag names a destination, not a delta.
+    await tmux.scrollToPosition(SESSION, 4);
+    expect(scrollPosition()).toBe(4);
+  });
+
+  it("takes a jump to 0 back to the live output", async () => {
+    await tmux.scrollToPosition(SESSION, 25);
+    const state = await tmux.scrollToPosition(SESSION, 0);
+    // `copy-mode -e` leaves by itself at the bottom, which is the behaviour a
+    // scrollbar dragged to the end should have.
+    expect(state.position).toBe(0);
+    expect(await tmux.isInCopyMode(SESSION)).toBe(false);
+  });
+
+  it("clamps a jump past the oldest line to the top of the history", async () => {
+    const { historySize } = await tmux.readScrollState(SESSION);
+    const state = await tmux.scrollToPosition(SESSION, historySize + 5_000);
+    expect(state.position).toBeGreaterThan(0);
+    expect(state.position).toBeLessThanOrEqual(historySize);
+  });
+});
+
+/**
+ * The window/pane scoping the mobile switcher depends on.
+ *
+ * Both `#{pane_active}` and `#{window_zoomed_flag}` are properties of a
+ * WINDOW. Read out of an unscoped `list-panes -s` they produce one "active"
+ * pane per window and mark every pane of a zoomed window as zoomed — which is
+ * exactly what made the browser highlight one window while showing another.
+ * These run against a real tmux because the whole claim is about what tmux's
+ * format strings actually mean.
+ */
+describeTmux("windows and panes", () => {
+  const MULTI = "relay-window-fixture";
+
+  beforeAll(() => {
+    tmuxExec(["new-session", "-d", "-s", MULTI, "-x", "200", "-y", "50"]);
+    tmuxExec(["new-window", "-t", MULTI]);
+    tmuxExec(["new-window", "-t", MULTI]);
+    // Split the last window three ways.
+    tmuxExec(["split-window", "-t", MULTI]);
+    tmuxExec(["split-window", "-t", MULTI]);
+  });
+
+  afterAll(() => {
+    try {
+      tmuxExec(["kill-session", "-t", MULTI]);
+    } catch {
+      // already gone
+    }
+  });
+
+  it("reports the window tmux is actually showing", async () => {
+    const windows = await tmux.listWindows(MULTI);
+    expect(windows).toHaveLength(3);
+    const current = await tmux.currentWindowId(MULTI);
+    expect(current).toBe(windows.find((w) => w.active)?.id);
+  });
+
+  it("returns exactly one active pane when scoped to a window", async () => {
+    const current = await tmux.currentWindowId(MULTI);
+    const panes = await tmux.listPanes(MULTI, current);
+    expect(panes).toHaveLength(3);
+    expect(panes.filter((p) => p.active)).toHaveLength(1);
+    expect(panes.every((p) => p.windowId === current)).toBe(true);
+  });
+
+  it("returns one active pane PER WINDOW when unscoped — the trap", async () => {
+    const all = await tmux.listPanes(MULTI);
+    expect(all.length).toBeGreaterThan(3);
+    // Three windows, three "active" panes. Anything that does
+    // `panes.find(p => p.active)` over this is answering a question about
+    // window 1, whatever window is on screen.
+    expect(all.filter((p) => p.active)).toHaveLength(3);
+  });
+
+  it("marks only the zoomed AND active pane as zoomed", async () => {
+    const current = await tmux.currentWindowId(MULTI);
+    await tmux.zoomPane(MULTI);
+    try {
+      const panes = await tmux.listPanes(MULTI, current);
+      const zoomed = panes.filter((p) => p.zoomed);
+      expect(zoomed).toHaveLength(1);
+      expect(zoomed[0]!.active).toBe(true);
+    } finally {
+      await tmux.zoomPane(MULTI);
+    }
+  });
+
+  it("steps windows forwards and wraps", async () => {
+    const windows = await tmux.listWindows(MULTI);
+    const order = windows.map((w) => w.id);
+    const start = await tmux.currentWindowId(MULTI);
+    const startAt = order.indexOf(start);
+
+    for (let i = 1; i <= order.length; i++) {
+      await tmux.stepWindow(MULTI, 1);
+      expect(await tmux.currentWindowId(MULTI)).toBe(
+        order[(startAt + i) % order.length],
+      );
+    }
+    // A full lap is back where it started.
+    expect(await tmux.currentWindowId(MULTI)).toBe(start);
+  });
+
+  it("steps windows backwards", async () => {
+    const order = (await tmux.listWindows(MULTI)).map((w) => w.id);
+    const start = await tmux.currentWindowId(MULTI);
+    await tmux.stepWindow(MULTI, -1);
+    const back = await tmux.currentWindowId(MULTI);
+    expect(back).toBe(
+      order[(order.indexOf(start) - 1 + order.length) % order.length],
+    );
+    await tmux.stepWindow(MULTI, 1);
+  });
+
+  it("steps panes inside the current window without leaving it", async () => {
+    const current = await tmux.currentWindowId(MULTI);
+    const panes = await tmux.listPanes(MULTI, current);
+    if (panes.length < 2) return;
+    const before = panes.find((p) => p.active)!.id;
+    await tmux.stepPane(MULTI, 1);
+    const after = await tmux.listPanes(MULTI, current);
+    expect(after.find((p) => p.active)!.id).not.toBe(before);
+    expect(await tmux.currentWindowId(MULTI)).toBe(current);
+  });
+
+  it("keeps the window zoomed across a pane step", async () => {
+    const current = await tmux.currentWindowId(MULTI);
+    const panes = await tmux.listPanes(MULTI, current);
+    if (panes.length < 2) return;
+    await tmux.zoomPane(MULTI);
+    try {
+      const before = (await tmux.listPanes(MULTI, current)).find(
+        (p) => p.zoomed,
+      )!.id;
+      await tmux.stepPane(MULTI, 1);
+      const after = await tmux.listPanes(MULTI, current);
+      const zoomed = after.filter((p) => p.zoomed);
+      // Still zoomed, and zoomed on a DIFFERENT pane — the property the old
+      // unzoom/select/rezoom triple kept getting wrong.
+      expect(zoomed).toHaveLength(1);
+      expect(zoomed[0]!.id).not.toBe(before);
+    } finally {
+      const stillZoomed = (await tmux.listPanes(MULTI, current)).some(
+        (p) => p.zoomed,
+      );
+      if (stillZoomed) await tmux.zoomPane(MULTI);
+    }
   });
 });

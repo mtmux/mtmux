@@ -15,8 +15,20 @@ import { FULL_GRANT } from "./grant.js";
  *
  *  - The nonce is single-use. A photo of the terminal taken after the first
  *    scan is worthless, and a redeemed nonce cannot be replayed.
- *  - Session tokens expire (24 h by default) and are held only in memory, so
- *    restarting the server revokes every device it ever paired.
+ *  - Session tokens are held only in memory, so restarting the server revokes
+ *    every device it ever paired. The CLI re-registers the ones it still
+ *    trusts on the way back up; nothing else survives.
+ *
+ * A token's window is an *idle* one, not a countdown from issue: every
+ * successful lookup re-stamps it. That distinction is the whole difference
+ * between "a device you stopped using goes cold" and "a device you are using
+ * right now stops working mid-afternoon". The 24 h default belongs to the
+ * LAN-QR path, where a short window is the point; a device paired by code
+ * carries the CLI's own peer lifetime instead, passed in as `ttlMs`.
+ *
+ * Both stores then mean the same thing — trusted unless idle for 90 days — but
+ * only this one sees the traffic that proves a device is in use, which is what
+ * `onSessionTokenUsed` exists to carry back.
  *
  * Nothing here is registered in split mode (apps/relay standalone), where no
  * nonce is ever issued — `redeemPairingNonce` then rejects unconditionally and
@@ -47,6 +59,14 @@ type Expiring = { expiresAt: number };
 type Session = Expiring & {
   grant: GrantRecord;
   /**
+   * The idle window to re-stamp `expiresAt` with on every successful lookup.
+   *
+   * Held per entry rather than read from a constant because the two flows want
+   * different windows: a LAN-QR token gets the short default, a device paired
+   * by code gets whatever lifetime the CLI's peer record has left.
+   */
+  renewMs: number;
+  /**
    * What to call the device holding this token, when the CLI told us.
    *
    * Display only, and self-reported by the browser at that — nothing is
@@ -55,10 +75,90 @@ type Session = Expiring & {
    * difference between a number and an answer to "is that me or someone else?"
    */
   label?: string;
+  /**
+   * Which peer record in the CLI's config this token belongs to.
+   *
+   * Present only for tokens the CLI registered — the LAN-QR path has no peer
+   * record to point at. It exists so `onSessionTokenUsed` can name the device
+   * whose `lastSeenAt` should move forward; see that listener for why the two
+   * stores have to agree.
+   */
+  deviceId?: string;
 };
 
 const nonces = new Map<string, Expiring>();
 const sessions = new Map<string, Session>();
+
+/**
+ * Notified whenever a registered device's token is successfully used.
+ *
+ * This is what keeps the relay's idle window and the CLI's peer store telling
+ * the same story. Both mean "trusted unless idle for 90 days", but only the
+ * relay sees the traffic — a device can authenticate over the LAN a thousand
+ * times without the CLI process learning anything about it. Without this the
+ * CLI's `lastSeenAt` stayed pinned to the moment of pairing, so `mtmux devices`
+ * called a phone in daily use stale on day 90 while the relay, whose window had
+ * been sliding all along, kept letting it in.
+ *
+ * Fired after the renewal, so a listener that throws cannot deny access.
+ */
+const useListeners = new Set<(deviceId: string) => void>();
+
+export function onSessionTokenUsed(
+  listener: (deviceId: string) => void,
+): () => void {
+  useListeners.add(listener);
+  return () => useListeners.delete(listener);
+}
+
+/**
+ * Fired when a token stops being valid, so live sockets can be closed.
+ *
+ * Deleting the map entry only stops the *next* authentication; a socket that
+ * authenticated a minute ago holds its grant in memory and keeps working, so
+ * `mtmux devices revoke` reported success while the revoked device carried on.
+ * Revocation that does not disconnect is not revocation.
+ *
+ * The payload is token ids, not the grant id: `FULL_GRANT` is one shared
+ * record, so sweeping by grant id would close every connection on the machine
+ * whenever any single device was revoked.
+ */
+export type RevocationEvent = {
+  /** `digest()` of every token that just stopped being valid. */
+  tokenIds: string[];
+  /** The grant those tokens belonged to, when they shared one. */
+  grantId: string | null;
+};
+
+const revokeListeners = new Set<(event: RevocationEvent) => void>();
+
+export function onSessionTokenRevoked(
+  listener: (event: RevocationEvent) => void,
+): () => void {
+  revokeListeners.add(listener);
+  return () => revokeListeners.delete(listener);
+}
+
+function emitRevocation(event: RevocationEvent): void {
+  if (event.tokenIds.length === 0) return;
+  for (const listener of revokeListeners) {
+    try {
+      listener(event);
+    } catch {
+      // A listener that throws must never leave the token still registered.
+    }
+  }
+}
+
+/**
+ * The id a connection records so it can be matched by a later revocation.
+ *
+ * Exported rather than re-implemented at the call site so there is exactly one
+ * definition of "same token" in the relay.
+ */
+export function sessionTokenId(token: string): string {
+  return digest(token);
+}
 
 function prune(map: Map<string, Expiring>, now: number): void {
   for (const [key, entry] of map) {
@@ -128,7 +228,7 @@ export function issueSessionToken(
   prune(sessions, now);
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = now + ttlMs;
-  sessions.set(digest(token), { expiresAt, grant });
+  sessions.set(digest(token), { expiresAt, renewMs: ttlMs, grant });
   return { token, expiresAt };
 }
 
@@ -147,13 +247,16 @@ export function registerSessionToken(
   now: number = Date.now(),
   grant: GrantRecord = FULL_GRANT,
   label?: string,
+  deviceId?: string,
 ): SessionToken {
   prune(sessions, now);
   const expiresAt = now + ttlMs;
   sessions.set(digest(token), {
     expiresAt,
+    renewMs: ttlMs,
     grant,
     ...(label ? { label } : {}),
+    ...(deviceId ? { deviceId } : {}),
   });
   return { token, expiresAt };
 }
@@ -194,10 +297,25 @@ export function grantForToken(
   }
   // Revocation and expiry live on the grant as well as on the map entry: a
   // grant revoked through `mtmux share revoke` must die immediately, without
-  // waiting for the session token's own 24-hour TTL.
+  // waiting for the session token's own idle window — and it must not be kept
+  // alive by the renewal below, which is why this check stays ahead of it.
   if (!isGrantActive(entry.grant, now)) {
     sessions.delete(key);
     return null;
+  }
+  // Sliding renewal. Without it the window is a countdown from pairing, so a
+  // device in continuous use is cut off mid-session at exactly the age of its
+  // token — the "I have to restart the CLI every day" failure. A token nobody
+  // uses still ages out on the same schedule.
+  entry.expiresAt = now + entry.renewMs;
+  if (entry.deviceId) {
+    for (const listener of useListeners) {
+      try {
+        listener(entry.deviceId);
+      } catch {
+        // Bookkeeping. A listener that throws must never cost a device access.
+      }
+    }
   }
   return entry.grant;
 }
@@ -211,18 +329,23 @@ export function isValidSessionToken(
 
 /** Drop every token bound to a grant id. Used by `mtmux share revoke`. */
 export function revokeGrant(grantId: string): number {
-  let removed = 0;
+  const tokenIds: string[] = [];
   for (const [key, entry] of sessions) {
     if (entry.grant.id === grantId) {
       sessions.delete(key);
-      removed++;
+      tokenIds.push(key);
     }
   }
-  return removed;
+  emitRevocation({ tokenIds, grantId });
+  return tokenIds.length;
 }
 
 export function revokeSessionToken(token: string): void {
-  sessions.delete(digest(token));
+  const key = digest(token);
+  const entry = sessions.get(key);
+  if (!entry) return;
+  sessions.delete(key);
+  emitRevocation({ tokenIds: [key], grantId: entry.grant.id });
 }
 
 /** True when a nonce is currently outstanding — i.e. local pairing is armed. */
@@ -236,4 +359,6 @@ export function resetPairingState(): void {
   nonces.clear();
   sessions.clear();
   redeemListeners.clear();
+  useListeners.clear();
+  revokeListeners.clear();
 }

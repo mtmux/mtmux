@@ -1,8 +1,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Readable } from "node:stream";
 import type http from "node:http";
-import { handleRelayRequest, PAIR_LOCAL_PATH } from "./server.js";
-import { issuePairingNonce, resetPairingState } from "./pairing-local.js";
+import {
+  handleRelayRequest,
+  PAIR_LOCAL_PATH,
+  PAIR_SESSION_PATH,
+} from "./server.js";
+import {
+  issuePairingNonce,
+  resetPairingState,
+  isValidSessionToken,
+  grantForToken,
+  onSessionTokenUsed,
+} from "./pairing-local.js";
 import { authenticateMessage } from "./auth.js";
 import { resetAuthThrottle } from "./auth-throttle.js";
 import { config } from "./config.js";
@@ -195,5 +205,75 @@ describe("session tokens and the auth throttle together", () => {
     expect(authenticateMessage({ type: "auth", token }, IP).authenticated).toBe(
       false,
     );
+  });
+});
+
+describe("POST /_pair/session — the lifetime it was asked for", () => {
+  beforeEach(() => {
+    resetPairingState();
+    resetAuthThrottle();
+  });
+
+  async function register(body: unknown): Promise<Captured> {
+    const { res, captured, done } = mockResponse();
+    const req = mockRequest("POST", PAIR_SESSION_PATH, JSON.stringify(body));
+    req.headers.authorization = `Bearer ${config.authToken}`;
+    req.headers["content-type"] = "application/json";
+    // This endpoint mints a credential, so it refuses anything that did not
+    // arrive over loopback.
+    (req as { socket: unknown }).socket = { remoteAddress: "127.0.0.1" };
+    expect(await handleRelayRequest(req, res)).toBe(true);
+    await done;
+    return captured;
+  }
+
+  const token = "9".repeat(64);
+
+  it("honours a lifetime it was given", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const captured = await register({ token, ttlMs: 90 * day });
+    expect(captured.status).toBe(200);
+    // Still valid well past the 24 h default this used to fall back to.
+    expect(isValidSessionToken(token, Date.now() + 30 * day)).toBe(true);
+  });
+
+  it("uses its own default when no lifetime is named", async () => {
+    // One token per assertion: a lookup both renews a live token and evicts a
+    // dead one, so asking twice about the same one measures the first answer.
+    const hour = 60 * 60 * 1000;
+    expect((await register({ token })).status).toBe(200);
+    expect(isValidSessionToken(token, Date.now() + 23 * hour)).toBe(true);
+
+    const other = "8".repeat(64);
+    expect((await register({ token: other })).status).toBe(200);
+    expect(isValidSessionToken(other, Date.now() + 25 * hour)).toBe(false);
+  });
+
+  /*
+   * A peer record on the last instant of its life produces exactly `0`, and
+   * this endpoint used to read any non-positive number as "unspecified" and
+   * substitute the 24 h default. That fails open — the caller believes it asked
+   * for ninety days and got one — and it is the very bug the callers were
+   * changed to avoid. Refusing is the honest answer.
+   */
+  it("refuses a zero lifetime rather than quietly substituting a day", async () => {
+    const captured = await register({ token, ttlMs: 0 });
+    expect(captured.status).toBe(400);
+    expect(isValidSessionToken(token)).toBe(false);
+  });
+
+  it("refuses a negative or non-numeric lifetime", async () => {
+    expect((await register({ token, ttlMs: -1 })).status).toBe(400);
+    expect((await register({ token, ttlMs: "90d" })).status).toBe(400);
+    expect((await register({ token, ttlMs: Number.NaN })).status).toBe(400);
+    expect(isValidSessionToken(token)).toBe(false);
+  });
+
+  it("carries the device id through, so use can be reported", async () => {
+    const seen: string[] = [];
+    onSessionTokenUsed((id) => seen.push(id));
+    await register({ token, ttlMs: 60_000, deviceId: "browser-abc" });
+    expect(grantForToken(token)).not.toBeNull();
+    expect(seen).toEqual(["browser-abc"]);
   });
 });

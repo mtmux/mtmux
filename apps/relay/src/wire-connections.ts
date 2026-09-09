@@ -12,6 +12,7 @@ import {
   getAllConnections,
   getConnectionCount,
   getIpCount,
+  closeRevokedConnections,
   broadcastWhere,
   notifyConnectionsChanged,
 } from "./connection-manager.js";
@@ -23,6 +24,8 @@ import { createRateLimiter } from "./rate-limiter.js";
 import { createSessionMonitor } from "./session-monitor.js";
 import { routeMessage } from "./message-router.js";
 import { defaultBrowsePath } from "./file-service.js";
+import { onSessionTokenRevoked } from "./pairing-local.js";
+import * as accessLog from "./access-log.js";
 import { config } from "./config.js";
 
 // The `ws` liveness protocol tags each socket with an `isAlive` flag toggled by
@@ -104,6 +107,10 @@ export function wireConnections(
   wss.on("connection", (ws, req?: http.IncomingMessage) => {
     // Behind a proxy on a self-host box the direct peer address is acceptable.
     const remoteAddress = req?.socket?.remoteAddress ?? "unknown";
+    const transport = accessLog.transportFor(
+      remoteAddress,
+      req?.headers?.["user-agent"] ?? null,
+    );
 
     // Enforce global and per-IP concurrent-connection caps before doing any
     // per-connection setup. 1013 = "Try Again Later".
@@ -178,9 +185,20 @@ export function wireConnections(
         // produce a connection with no policy attached.
         if (authResult.grant) conn.grant = authResult.grant;
         conn.label = authResult.label ?? null;
+        conn.tokenId = authResult.tokenId ?? null;
         // Authenticating is the moment a socket becomes a *device*, which is
         // what the CLI's connected line counts.
         notifyConnectionsChanged();
+
+        // Not awaited: a log the machine cannot write must never be able to
+        // refuse someone access to their own shell.
+        void accessLog.record({
+          at: new Date().toISOString(),
+          event: "connected",
+          ...accessLog.describeGrant(conn.grant),
+          label: conn.label,
+          transport,
+        });
 
         sendJson(ws, {
           type: "auth:success",
@@ -237,6 +255,16 @@ export function wireConnections(
       conn.closing = true;
       await conn.drain();
       const wasAuthenticated = conn.authenticated;
+      if (wasAuthenticated) {
+        void accessLog.record({
+          at: new Date().toISOString(),
+          event: "disconnected",
+          ...accessLog.describeGrant(conn.grant),
+          label: conn.label,
+          transport,
+          seconds: Math.round((Date.now() - conn.connectedAt) / 1000),
+        });
+      }
       await removeConnection(conn);
       if (wasAuthenticated) notifyConnectionsChanged();
     });
@@ -297,6 +325,13 @@ export function wireConnections(
   // reboot is worse than one that admits it was cut off.
   void sweepRecordings().catch(() => {});
 
+  // Revocation reaper. Dropping the token from the map only stops the next
+  // authentication, so without this `mtmux devices revoke` reported success
+  // while the revoked socket kept working until it happened to disconnect.
+  const stopRevokeSweep = onSessionTokenRevoked(({ tokenIds }) => {
+    closeRevokedConnections(tokenIds);
+  });
+
   // Idle reaper: close connections with no inbound traffic for longer than the
   // configured idle timeout. Uses close code 1000 so it reads as a normal close.
   const idleTimeoutMs = config.idleTimeoutMinutes * 60 * 1000;
@@ -328,6 +363,7 @@ export function wireConnections(
      */
     shutdown: () => {
       clearInterval(idleSweep);
+      stopRevokeSweep();
       monitor.stop();
       // Close the casts before the process goes. Not awaited — shutdown is
       // deliberately not graceful here — but a `stream.end()` in flight is

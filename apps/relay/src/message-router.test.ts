@@ -171,6 +171,7 @@ function makeConn(): ConnectionState {
     ws,
     authenticated: true,
     grant: FULL_GRANT,
+    tokenId: null,
     pty: null,
     watchers: new Map(),
     uploads: new Map(),

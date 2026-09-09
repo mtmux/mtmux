@@ -211,7 +211,7 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
       "-t",
       session,
       "-F",
-      "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{window_layout}\t#{window_width}\t#{window_height}",
+      "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{window_layout}\t#{window_width}\t#{window_height}\t#{window_activity_flag}",
     ]);
 
     return stdout
@@ -219,8 +219,17 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [id, index, name, active, paneCount, layout, width, height] =
-          line.split("\t");
+        const [
+          id,
+          index,
+          name,
+          active,
+          paneCount,
+          layout,
+          width,
+          height,
+          activity,
+        ] = line.split("\t");
         return {
           id: id!,
           index: parseInt(index!, 10),
@@ -228,6 +237,7 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
           active: active === "1",
           paneCount: parseInt(paneCount!, 10),
           layout: layout!,
+          activity: activity === "1",
           dimensions:
             width && height
               ? { cols: parseInt(width, 10), rows: parseInt(height, 10) }
@@ -238,6 +248,82 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
     logger.error({ err: e }, "Failed to list windows");
     throw e;
   }
+}
+
+/**
+ * The id of the window the session is currently showing.
+ *
+ * This is asked of tmux directly rather than inferred from `#{pane_active}` in
+ * a pane listing: `pane_active` is scoped to its own window, so a session with
+ * N windows has N panes flagged active and picking "the first one" silently
+ * means "window 1", whatever the user is actually looking at.
+ */
+export async function currentWindowId(session: string): Promise<string> {
+  const { stdout } = await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "display-message",
+    "-p",
+    "-t",
+    session,
+    "#{window_id}",
+  ]);
+  return stdout.trim();
+}
+
+/** Step to the next (`delta >= 0`) or previous window, wrapping. */
+export async function stepWindow(
+  session: string,
+  delta: number,
+): Promise<void> {
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    delta >= 0 ? "next-window" : "previous-window",
+    "-t",
+    session,
+  ]);
+  logger.info({ session, delta }, "Stepped window");
+}
+
+// `select-pane -Z` (tmux >= 3.1) keeps the window zoomed across the selection.
+// Without it the only way to move between panes of a zoomed window is
+// unzoom -> select -> rezoom, which flickers and, if the selection lands
+// somewhere unexpected, rezooms the wrong pane. Probed once and cached.
+let selectPaneSupportsZ: boolean | undefined;
+
+async function supportsSelectPaneZ(): Promise<boolean> {
+  if (selectPaneSupportsZ !== undefined) return selectPaneSupportsZ;
+  try {
+    const { stdout } = await execFileAsync("tmux", [
+      ...tmuxArgs(),
+      "list-commands",
+      "select-pane",
+    ]);
+    selectPaneSupportsZ = /-[A-Za-z]*Z/.test(stdout);
+  } catch {
+    selectPaneSupportsZ = false;
+  }
+  return selectPaneSupportsZ;
+}
+
+/** Test seam: reset the cached `select-pane -Z` probe. */
+export function resetSelectPaneZProbe(): void {
+  selectPaneSupportsZ = undefined;
+}
+
+/**
+ * Step to the next/previous pane within the session's current window.
+ *
+ * `:.+` / `:.-` are tmux's own relative pane targets, so this never races a
+ * pane list the client fetched a moment ago. On a tmux without `-Z` the caller
+ * loses zoom across the step, which is the pre-existing behaviour.
+ */
+export async function stepPane(session: string, delta: number): Promise<void> {
+  const target = `${session}:.${delta >= 0 ? "+" : "-"}`;
+  const args = [...tmuxArgs(), "select-pane"];
+  if (await supportsSelectPaneZ()) args.push("-Z");
+  args.push("-t", target);
+  await execFileAsync("tmux", args);
+  logger.info({ session, delta }, "Stepped pane");
 }
 
 export async function listPanes(
@@ -281,7 +367,10 @@ export async function listPanes(
           index: parseInt(index!, 10),
           windowId: winId!,
           active: active === "1",
-          zoomed: zoomed === "1",
+          // `window_zoomed_flag` is a property of the WINDOW, not the pane —
+          // every pane in a zoomed window reports it. The pane that is actually
+          // filling the window is the active one, so both must hold.
+          zoomed: zoomed === "1" && active === "1",
           dimensions: {
             cols: parseInt(width!, 10),
             rows: parseInt(height!, 10),
@@ -335,7 +424,13 @@ export async function splitPane(
 }
 
 export async function selectPane(paneId: string): Promise<void> {
-  await execFileAsync("tmux", [...tmuxArgs(), "select-pane", "-t", paneId]);
+  // `-Z` "keeps the window zoomed if it was zoomed" — it never zooms a window
+  // that was not. That is exactly the semantics every caller wanted, and it
+  // replaces the unzoom/select/rezoom triple the clients used to send.
+  const args = [...tmuxArgs(), "select-pane"];
+  if (await supportsSelectPaneZ()) args.push("-Z");
+  args.push("-t", paneId);
+  await execFileAsync("tmux", args);
   logger.info({ paneId }, "Selected pane");
 }
 
@@ -447,4 +542,135 @@ export async function sendPrefix(session: string): Promise<void> {
 export async function enterCopyMode(session: string): Promise<void> {
   await execFileAsync("tmux", [...tmuxArgs(), "copy-mode", "-t", session]);
   logger.info({ session }, "Entered copy mode");
+}
+
+/** Whether the session's active pane is currently in copy mode. */
+export async function isInCopyMode(session: string): Promise<boolean> {
+  return (await readScrollState(session)).inMode;
+}
+
+/** Where the session's active pane sits in its history. */
+export interface ScrollState {
+  /** Lines scrolled back from the live output; 0 is the bottom. */
+  position: number;
+  /** Lines of history above the visible rows. */
+  historySize: number;
+  paneHeight: number;
+  inMode: boolean;
+}
+
+/**
+ * Read the pane's scroll position, history size and copy-mode flag at once.
+ *
+ * One `display-message` rather than one per field, because every one of these
+ * costs a process spawn and this is read on a drag. `scroll_position` is empty
+ * outside copy mode — tmux only tracks it there — which is not missing data:
+ * a pane that is not in copy mode is showing live output, i.e. position 0.
+ */
+export async function readScrollState(session: string): Promise<ScrollState> {
+  const { stdout } = await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "display-message",
+    "-p",
+    "-t",
+    session,
+    "#{pane_in_mode}\t#{scroll_position}\t#{history_size}\t#{pane_height}",
+  ]);
+  const [inMode, position, historySize, paneHeight] = stdout
+    .trim()
+    .split("\t");
+  const num = (value: string | undefined): number => {
+    const parsed = Number.parseInt(value ?? "", 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
+  return {
+    inMode: inMode === "1",
+    position: num(position),
+    historySize: num(historySize),
+    paneHeight: num(paneHeight),
+  };
+}
+
+/**
+ * Scroll the session's active pane through its history.
+ *
+ * Positive `lines` goes back into the past. This has to happen here rather
+ * than in the browser: `attachSession` runs a real `tmux attach-session`, so
+ * tmux owns the alternate screen and the client's own scrollback is always
+ * empty — the history only exists inside tmux, reachable only from copy mode.
+ *
+ * Entering copy mode is conditional so a drag that emits several of these does
+ * not restart the view at the bottom on every one; `-e` means tmux leaves copy
+ * mode by itself once the user scrolls back to the live output, which is the
+ * behaviour a scroll gesture should have.
+ *
+ * Returns where the pane ended up, so the caller can tell the client without
+ * paying for a second round of `tmux` spawns.
+ */
+export async function scrollHistory(
+  session: string,
+  lines: number,
+): Promise<ScrollState> {
+  const count = Math.trunc(lines);
+  if (count === 0) return readScrollState(session);
+  const before = await readScrollState(session);
+  if (!before.inMode) {
+    await execFileAsync("tmux", [
+      ...tmuxArgs(),
+      "copy-mode",
+      "-e",
+      "-t",
+      session,
+    ]);
+  }
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "send-keys",
+    "-t",
+    session,
+    "-X",
+    "-N",
+    String(Math.abs(count)),
+    count > 0 ? "scroll-up" : "scroll-down",
+  ]);
+  return readScrollState(session);
+}
+
+/**
+ * Put the view at an absolute point in the history, `position` lines back from
+ * the live output.
+ *
+ * The delta is computed here, against the position tmux reports right now,
+ * rather than on the client: a scrollbar drag names a destination, and output
+ * arriving mid-drag moves everything underneath a client-computed delta.
+ */
+export async function scrollToPosition(
+  session: string,
+  position: number,
+): Promise<ScrollState> {
+  const target = Math.max(0, Math.trunc(position));
+  const state = await readScrollState(session);
+  const clamped = Math.min(target, state.historySize);
+  const delta = clamped - (state.inMode ? state.position : 0);
+  if (delta === 0) return state;
+  return scrollHistory(session, delta);
+}
+
+/**
+ * Leave copy mode, whether or not we are in it.
+ *
+ * `cancel` outside copy mode is not an error in tmux, but the check is cheap
+ * and keeps a stray call from being logged as one.
+ */
+export async function exitCopyMode(session: string): Promise<void> {
+  if (!(await isInCopyMode(session))) return;
+  await execFileAsync("tmux", [
+    ...tmuxArgs(),
+    "send-keys",
+    "-t",
+    session,
+    "-X",
+    "cancel",
+  ]);
+  logger.info({ session }, "Left copy mode");
 }

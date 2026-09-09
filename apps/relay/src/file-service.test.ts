@@ -15,6 +15,11 @@ let siblingDir: string; // base/userdata — shares a string prefix with the roo
 let subDir: string; // base/user/sub — a legitimate subpath
 let outsideDir: string; // base/outside — symlink escape target
 let escapeLink: string; // base/user/escape -> base/outside
+let deniedDir: string; // base/user/.mtmux — holds AUTH_TOKEN, never readable
+let sshDir: string; // base/user/.ssh
+let denySiblingDir: string; // base/user/.mtmuxfoo — prefix-only, still allowed
+let denyLink: string; // base/user/shortcut -> base/user/.ssh
+let realHome: string | undefined;
 
 beforeAll(async () => {
   base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "relay-fs-")));
@@ -32,12 +37,65 @@ beforeAll(async () => {
   escapeLink = path.join(allowedDir, "escape");
   fs.symlinkSync(outsideDir, escapeLink, "dir");
 
+  // The escalation this guards is that the allowed root IS $HOME, so point
+  // $HOME at the fixture and let the deny-list resolve exactly as it does in
+  // production rather than hand-feeding it paths.
+  realHome = process.env.HOME;
+  process.env.HOME = allowedDir;
+  delete process.env.MTMUX_CONFIG_DIR;
+
+  deniedDir = path.join(allowedDir, ".mtmux");
+  sshDir = path.join(allowedDir, ".ssh");
+  denySiblingDir = path.join(allowedDir, ".mtmuxfoo");
+  fs.mkdirSync(deniedDir);
+  fs.mkdirSync(sshDir);
+  fs.mkdirSync(denySiblingDir);
+  fs.writeFileSync(path.join(deniedDir, "config.json"), "{}");
+  fs.writeFileSync(path.join(sshDir, "id_rsa"), "-----BEGIN-----");
+  fs.writeFileSync(path.join(denySiblingDir, "notes.txt"), "harmless");
+
+  denyLink = path.join(allowedDir, "shortcut");
+  fs.symlinkSync(sshDir, denyLink, "dir");
+
   process.env.ALLOWED_PATHS = allowedDir;
   files = await import("./file-service.js");
 });
 
 afterAll(() => {
+  if (realHome === undefined) delete process.env.HOME;
+  else process.env.HOME = realHome;
   fs.rmSync(base, { recursive: true, force: true });
+});
+
+describe("the credential deny-list", () => {
+  it("refuses the config directory that holds AUTH_TOKEN", () => {
+    expect(files.isPathAllowed(deniedDir)).toBe(false);
+    expect(files.isPathAllowed(path.join(deniedDir, "config.json"))).toBe(
+      false,
+    );
+  });
+
+  it("refuses the neighbouring credential directories", () => {
+    expect(files.isPathAllowed(sshDir)).toBe(false);
+    expect(files.isPathAllowed(path.join(sshDir, "id_rsa"))).toBe(false);
+  });
+
+  it("refuses a symlink inside the allowed root pointing at a denied one", () => {
+    expect(files.isPathAllowed(denyLink)).toBe(false);
+    expect(files.isPathAllowed(path.join(denyLink, "id_rsa"))).toBe(false);
+  });
+
+  it("still allows a sibling that merely shares the prefix", () => {
+    expect(files.isPathAllowed(denySiblingDir)).toBe(true);
+    expect(files.isPathAllowed(path.join(denySiblingDir, "notes.txt"))).toBe(
+      true,
+    );
+  });
+
+  it("reports the denial directly too", () => {
+    expect(files.isPathDenied(path.join(deniedDir, "config.json"))).toBe(true);
+    expect(files.isPathDenied(denySiblingDir)).toBe(false);
+  });
 });
 
 describe("isPathAllowed", () => {

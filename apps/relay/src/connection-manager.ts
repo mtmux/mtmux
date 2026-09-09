@@ -49,6 +49,15 @@ export interface ConnectionState {
   remoteAddress: string | null;
   /** Display name from the pairing record, once authenticated. */
   label: string | null;
+  /**
+   * `sessionTokenId()` of the credential this socket authenticated with.
+   *
+   * Null for the machine's own `AUTH_TOKEN`, which is not revocable — it is
+   * the thing revocation is performed *with*. Recorded so a revocation can
+   * close exactly this socket and no other; matching on `grant.id` would
+   * close every connection sharing `FULL_GRANT`.
+   */
+  tokenId: string | null;
   /** When the socket was accepted, for "connected 4m ago". */
   connectedAt: number;
   lastActivityAt: number;
@@ -124,6 +133,7 @@ export function createConnection(
     activeWindowId: null,
     remoteAddress,
     label: null,
+    tokenId: null,
     connectedAt: Date.now(),
     lastActivityAt: Date.now(),
     closing: false,
@@ -196,6 +206,30 @@ export function getConnectionCount(): number {
 
 export function getAllConnections(): ConnectionState[] {
   return Array.from(connections.values());
+}
+
+/**
+ * Close every live socket whose credential was just revoked.
+ *
+ * 1008 (policy violation) rather than 1000, so the client does not read it as
+ * an ordinary close and reconnect. Matched on `tokenId` and never on
+ * `grant.id`: `FULL_GRANT` is a single shared record, so a grant-id sweep
+ * would disconnect every device on the machine.
+ *
+ * Returns how many were closed, which is what makes it testable.
+ */
+export function closeRevokedConnections(tokenIds: Iterable<string>): number {
+  const revoked = new Set(tokenIds);
+  if (revoked.size === 0) return 0;
+  let closed = 0;
+  for (const conn of connections.values()) {
+    if (conn.tokenId && revoked.has(conn.tokenId)) {
+      logger.info({ connId: conn.id }, "Closing revoked connection");
+      conn.ws.close(1008, "Access revoked");
+      closed++;
+    }
+  }
+  return closed;
 }
 
 /** One connected device, as `mtmux start` and `mtmux status` display it. */
