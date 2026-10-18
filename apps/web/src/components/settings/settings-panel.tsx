@@ -61,6 +61,14 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
   const setAutoZoom = useSettingsStore((s) => s.setAutoZoom);
   const hapticEnabled = useSettingsStore((s) => s.hapticEnabled);
   const setHapticEnabled = useSettingsStore((s) => s.setHapticEnabled);
+  const screenKeyboardOpen = useSettingsStore((s) => s.screenKeyboardOpen);
+  const setScreenKeyboardOpen = useSettingsStore(
+    (s) => s.setScreenKeyboardOpen,
+  );
+  const cursorPadOpen = useSettingsStore((s) => s.cursorPadOpen);
+  const setCursorPadOpen = useSettingsStore((s) => s.setCursorPadOpen);
+  const cursorPadSide = useSettingsStore((s) => s.cursorPadSide);
+  const setCursorPadSide = useSettingsStore((s) => s.setCursorPadSide);
 
   return (
     <ScrollArea className={cn("h-full", className)}>
@@ -246,6 +254,86 @@ export function SettingsPanel({ className }: SettingsPanelProps) {
                 <span className="text-xs">{theme.name}</span>
               </button>
             ))}
+          </div>
+        </section>
+
+        <Separator />
+
+        {/*
+          The app's own keyboard.
+
+          Both switches here are the same state the buttons above the terminal
+          toggle — this is not a second setting, it is the same one, discoverable
+          from the place people look when they are hunting for a feature rather
+          than reaching for it. Which matters for this one in particular: the
+          board is the only way to send Ctrl with a typed character, and until
+          now the honest answer to "how do I press Ctrl+C from my phone" was a
+          row of keys that could not do it.
+        */}
+        <section>
+          <h3 className="mb-1 text-sm font-semibold">On-screen Keyboard</h3>
+          <p className="mb-3 text-[10px] text-muted-foreground">
+            A keyboard built for a terminal, in place of your phone&apos;s.
+            Every key on it composes with Ctrl and Alt, which the platform
+            keyboard cannot do — and there is a board of the keystrokes Claude
+            Code and Codex ask for. No dictation and no swipe typing; the
+            composer still uses your own keyboard for those.
+          </p>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs" id="setting-screen-keyboard">
+                Use it
+              </Label>
+              <Switch
+                aria-labelledby="setting-screen-keyboard"
+                checked={screenKeyboardOpen}
+                onCheckedChange={setScreenKeyboardOpen}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-xs" id="setting-cursor-pad">
+                  Cursor pad
+                </Label>
+                <p
+                  className="text-[10px] text-muted-foreground"
+                  id="setting-cursor-pad-hint"
+                >
+                  A thumb stick for the arrow keys. Push to move, further to go
+                  faster, press the middle for Enter.
+                </p>
+              </div>
+              <Switch
+                aria-labelledby="setting-cursor-pad"
+                aria-describedby="setting-cursor-pad-hint"
+                checked={cursorPadOpen}
+                onCheckedChange={setCursorPadOpen}
+              />
+            </div>
+            {cursorPadOpen && (
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Pad side</Label>
+                <div className="flex gap-1.5">
+                  {(["left", "right"] as const).map((side) => (
+                    <button
+                      key={side}
+                      type="button"
+                      aria-pressed={cursorPadSide === side}
+                      onClick={() => setCursorPadSide(side)}
+                      className={cn(
+                        "min-h-11 rounded-md border px-3 text-xs capitalize transition-colors",
+                        focusRing,
+                        cursorPadSide === side
+                          ? "border-primary bg-primary/10"
+                          : "opacity-60",
+                      )}
+                    >
+                      {side}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 

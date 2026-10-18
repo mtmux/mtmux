@@ -88,6 +88,51 @@ const SECTIONS: CheatsheetSection[] = [
         effect: "Latches for the next key in this row only",
       },
       { gesture: "···", effect: "Every key there is. Pin the ones you use" },
+      {
+        gesture: "⌨",
+        effect: "Swap your phone's keyboard for one that can send Ctrl",
+      },
+    ],
+  },
+  {
+    /*
+     * The one section here that is not about a gesture.
+     *
+     * It is in the cheat sheet anyway because the board's two best tricks are
+     * invisible: holding a letter to get its control code, and the modifier
+     * that arms once and locks on a second tap. Both are printed on the keys —
+     * the `^C` in a corner, the bar under a locked modifier — and neither is
+     * something anybody reads as an instruction until it is written down once.
+     */
+    title: "On the on-screen keyboard",
+    entries: [
+      {
+        gesture: "Hold a letter",
+        effect: "Sends its control code — hold c for ^C, u for ^U",
+      },
+      {
+        gesture: "ctrl, alt or ⇧",
+        effect: "Once for the next key; twice to lock it until you tap again",
+      },
+      {
+        gesture: "agent",
+        effect: "Esc Esc, ⇧Tab, ⌥⏎ and the digits that answer an option list",
+      },
+      {
+        gesture: "Hold ⌫ or an arrow",
+        effect: "Repeats, like a keyboard does",
+      },
+    ],
+  },
+  {
+    title: "On the cursor pad",
+    entries: [
+      {
+        gesture: "Push it",
+        effect: "Arrow keys — further is faster, and it repeats while held",
+      },
+      { gesture: "Press the middle", effect: "Enter" },
+      { gesture: "⇄", effect: "Moves the pad to your other hand" },
     ],
   },
   {

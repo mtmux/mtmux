@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { LayerName } from "@/components/mobile/screen-keyboard-layouts";
 
 /**
  * A key the toolbar can send, and where it belongs in the sheet.
@@ -273,6 +274,29 @@ interface SettingsStore {
   gestures: GestureSettings;
   hapticEnabled: boolean;
   autoZoom: boolean;
+  /**
+   * Whether the app's own keyboard is up.
+   *
+   * Persisted, unlike every other open/closed flag in the app, which live in
+   * `ui-store` and reset on reload. This one is a *preference* wearing the
+   * clothes of a toggle: somebody who types on our board rather than the
+   * platform's wants it there the next time they open the app, and having to
+   * find the button again after every reload is how a better keyboard loses
+   * to a worse one that is already on screen.
+   */
+  screenKeyboardOpen: boolean;
+  /** Which board it was last showing. Agent users live on one of the three. */
+  screenKeyboardLayer: LayerName;
+  /** Whether the cursor pad is floating over the terminal. Persisted, as above. */
+  cursorPadOpen: boolean;
+  /**
+   * Which side the pad sits on.
+   *
+   * There is no right default — it is which hand is holding the phone — so it
+   * is draggable, and the drag is remembered. Right, because most people are
+   * right-handed, and that is the only reason.
+   */
+  cursorPadSide: "left" | "right";
   setToolbarKeys: (keys: ToolbarKey[]) => void;
   toggleToolbarKey: (id: string) => void;
   resetToolbarKeys: () => void;
@@ -282,6 +306,12 @@ interface SettingsStore {
   ) => void;
   setHapticEnabled: (enabled: boolean) => void;
   setAutoZoom: (enabled: boolean) => void;
+  setScreenKeyboardOpen: (open: boolean) => void;
+  toggleScreenKeyboard: () => void;
+  setScreenKeyboardLayer: (layer: LayerName) => void;
+  setCursorPadOpen: (open: boolean) => void;
+  toggleCursorPad: () => void;
+  setCursorPadSide: (side: "left" | "right") => void;
 }
 
 /**
@@ -350,6 +380,10 @@ export const useSettingsStore = create<SettingsStore>()(
       },
       hapticEnabled: true,
       autoZoom: true,
+      screenKeyboardOpen: false,
+      screenKeyboardLayer: "letters",
+      cursorPadOpen: false,
+      cursorPadSide: "right",
       setToolbarKeys: (toolbarKeys) => set({ toolbarKeys }),
       toggleToolbarKey: (id) =>
         set((s) => ({
@@ -362,6 +396,15 @@ export const useSettingsStore = create<SettingsStore>()(
         set((s) => ({ gestures: { ...s.gestures, [key]: value } })),
       setHapticEnabled: (hapticEnabled) => set({ hapticEnabled }),
       setAutoZoom: (autoZoom) => set({ autoZoom }),
+      setScreenKeyboardOpen: (screenKeyboardOpen) =>
+        set({ screenKeyboardOpen }),
+      toggleScreenKeyboard: () =>
+        set((s) => ({ screenKeyboardOpen: !s.screenKeyboardOpen })),
+      setScreenKeyboardLayer: (screenKeyboardLayer) =>
+        set({ screenKeyboardLayer }),
+      setCursorPadOpen: (cursorPadOpen) => set({ cursorPadOpen }),
+      toggleCursorPad: () => set((s) => ({ cursorPadOpen: !s.cursorPadOpen })),
+      setCursorPadSide: (cursorPadSide) => set({ cursorPadSide }),
     }),
     {
       name: "ccremote-settings",

@@ -24,16 +24,18 @@ of leaving the app.
 
 ## The keyboard toolbar
 
-A bar above the on-screen keyboard, in three parts. The two **pinned** buttons
-never scroll away:
+A bar above whichever keyboard is up, in three parts. The **pinned** buttons at
+each end never scroll away:
 
-- **Copy mode**, at the start. It captures the pane's text into a view you can
+- **⌨**, at the start — the [on-screen keyboard](#the-on-screen-keyboard).
+- **Copy mode**, beside it. It captures the pane's text into a view you can
   select out of, which on a phone is the only way to get anything out of the
   terminal at all — the pane is a canvas, so there is nothing to press and hold
   over. While tmux is in its own copy mode this slot becomes an amber chip that
   leaves it, because until you do the terminal looks focused and silently eats
   everything you type.
-- **`?`**, at the end. The gesture cheat sheet — see [Gestures](#gestures).
+- **`⋯`** and **`?`**, at the other end: every key there is, and the cheat
+  sheet — see [Gestures](#gestures).
 
 Between them, a strip that scrolls sideways:
 
@@ -53,11 +55,112 @@ that are already escape sequences, such as `Tab` and the arrows, are sent
 unchanged. Either latch clears after one key. Buttons that need the relay are
 disabled while disconnected.
 
+That limitation — a sticky Ctrl that cannot reach anything you actually *type* —
+is not a bug in the latch. Characters from the phone's keyboard arrive inside
+xterm and never pass through this app, so there is nothing for it to modify.
+The fix is to stop borrowing the platform's keyboard, which is the next section.
+
+## The on-screen keyboard
+
+The **⌨** button, pinned at the start of the toolbar, swaps your phone's
+keyboard for one built for a terminal. Every keystroke on it is encoded by the
+app rather than by the platform, which is the whole point: `Ctrl+C`, `Alt+f`,
+`Shift+Tab`, `Ctrl+Alt+Backspace` and `Esc Esc` all work, on every browser,
+with no per-platform special cases.
+
+What comes with that for free is most of the reason to use it: no autocorrect
+rewriting a flag, no autocapitalising the first word of a command, no
+zoom-on-focus, no IME eating an `Enter` — and a keyboard whose height the app
+knows, so the terminal above is **resized** rather than covered. tmux gets a
+real `SIGWINCH`; your prompt does not end up underneath the keys.
+
+Three boards, switched from the row along the top:
+
+| Board     | What is on it                                                                         |
+| --------- | ------------------------------------------------------------------------------------- |
+| **abc**   | QWERTY, plus `ctrl`, `alt`, `⇧`, `space`, `/`, `.` and `⏎`                            |
+| **?123**  | Digits, the shell punctuation, brackets and quotes                                     |
+| **agent** | Every keystroke Claude Code and Codex ask for — see [Agent CLIs](#the-agent-board)     |
+
+Two things on it are worth knowing because they are not obvious:
+
+- **Hold a letter to send its control code.** Hold `c` for `^C`, `u` for `^U`,
+  `w` for `^W`. The small `^C` printed in the corner of each key is the hint.
+  This is faster than a modifier for the thing people actually do.
+- **Modifiers arm once, then lock.** Tap `ctrl` and it applies to the next key
+  only; tap it again and it stays on — a bar appears under it — until you tap a
+  third time. The keycaps change to show what will be sent: with Ctrl armed,
+  `q` reads `^Q`.
+
+Holding `⌫` or an arrow repeats it, as a hardware keyboard does.
+
+The command bar is hidden while this keyboard is up. It exists to compose a line
+when the platform keyboard is the only way to type, and the board types straight
+into the pty — two text fields an inch apart, one of which raises a *second*
+keyboard over the first, is not an improvement.
+
+What it does not have: dictation, swipe typing, or your personal dictionary.
+Those belong to your own keyboard, which is one tap away, and the
+[command composer](#the-command-bar) still uses it.
+
+### The agent board
+
+| Row | Keys |
+| --- | --- |
+| 1 | `Esc Esc` `⇧Tab` `Tab` `⌥⏎` `⏎` `⌫` `^C` `^D` `^Z` `^L` |
+| 2 | `1` `2` `3` `4` `5` `y` `n` `^R` `^O` `^P` |
+| 3 | `↑` `↓` `←` `→` `Home` `End` `PgUp` `PgDn` `^A` `^E` |
+| 4 | `/` `@` `#` `!` `~` `-` `_` `^U` `^W` `^K` |
+
+Each of those is a keystroke one of these CLIs documents, and each was either
+impossible from a phone or several taps into a sheet:
+
+- **`⇧Tab`** (`CSI Z`) cycles Claude Code's permission modes, and steps back a
+  field in Codex.
+- **`Esc Esc`** rewinds to edit your previous message.
+- **`⌥⏎`** is a newline that does not submit — the whole of writing a
+  multi-line prompt on a phone.
+- **`1`–`5`, `y`, `n`** answer the option lists and the yes/no prompts. The
+  arrows and `⏎` beside them are the other way through the same list, and the
+  cursor pad is the third.
+- **`/` `@` `#` `!`** open slash commands, the file picker, memory and bash
+  mode. All four are two taps deep on an iOS keyboard.
+
+## The cursor pad
+
+A thumb stick that floats over the terminal, from the **gamepad** button on the
+keyboard's top row or from Settings. It exists for one job: getting through the
+lists an agent CLI asks its questions as.
+
+- **Push it** for the arrow keys. Further is faster — the repeat rate ramps
+  from one nudge at the edge of the deadzone to about eighteen rows a second at
+  the rim — and it repeats while held, after the same short pause a hardware
+  keyboard takes.
+- **Press the middle** for `Enter`, because that is what you were navigating
+  towards. A press that goes nowhere and is let go quickly is an `Enter`;
+  anything else is a push.
+- **`esc` and `tab`** sit above it, since those lists use all three.
+- **⇄** moves the pad to your other hand, and it stays there.
+
+It resolves a diagonal push to one axis rather than firing two keys, because a
+terminal has four arrow keys and no diagonal — and a push that fires two is how
+a selection lands a row from where you were aiming. A thumb resting inside the
+deadzone does nothing at all.
+
+It floats rather than taking a row because every pixel of footer is a pixel of
+terminal. The trade is that it covers a corner of the output, which is why it is
+translucent until touched, can be moved, and has its own close button.
+
 ## The command bar
 
 An auto-resizing text area for typing a whole command instead of fighting
 autocorrect a character at a time. `Enter` sends it, `Shift+Enter` inserts a
-newline. It carries its own `^C`, `↑` and `Tab` buttons.
+newline.
+
+Hidden while the on-screen keyboard is up, which is also where its old `^C`,
+`↑` and `Tab` buttons went: they duplicated the toolbar 46px below, and `↑` was
+actively misleading — it sent `\x1b[A` to the pty, so it recalled shell history
+while the field it sat inside stayed empty.
 
 ## The tmux sheet
 
@@ -87,8 +190,9 @@ Configurable in Settings:
 | Swipe left/right | Switch pane if the window has more than one, otherwise switch session |
 | Pinch            | Change font size                                                      |
 
-The `?` in the keyboard toolbar prints this table on the phone itself, filtered
-to the gestures you have left switched on — a gesture is the one kind of control
+The `?` in the keyboard toolbar prints this table on the phone itself — along
+with what the on-screen keyboard and the cursor pad do — filtered to the
+gestures you have left switched on — a gesture is the one kind of control
 that cannot label itself, and a cheat sheet that teaches one you have turned off
 is worse than none.
 

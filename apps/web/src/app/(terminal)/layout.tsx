@@ -22,7 +22,10 @@ import { MobileNav } from "@/components/mobile/mobile-nav";
 import { CommandComposer } from "@/components/mobile/command-composer";
 import { KeyboardToolbar } from "@/components/mobile/keyboard-toolbar";
 import { MobileCommandBar } from "@/components/mobile/mobile-command-bar";
+import { ScreenKeyboard } from "@/components/mobile/screen-keyboard";
+import { CursorPad } from "@/components/mobile/cursor-pad";
 import { useUiStore } from "@/stores/ui-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { useAlertStore } from "@/stores/alert-store";
 import { getTerminalHandle } from "@/components/terminal/terminal-handle";
 import {
@@ -128,6 +131,20 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   }, []);
   const isMobile = useStableMediaQuery(MOBILE_MEDIA_QUERY);
   /*
+   * A viewport with no height to spare.
+   *
+   * A phone in landscape has about 340 usable CSS pixels, and the keyboard
+   * toolbar is 46 of them. That 46px is the difference between four rows of
+   * terminal and seven, so while our own board is up — which carries Esc, Tab,
+   * the arrows, `^C` and far more besides — the toolbar stands down. It is a
+   * subset of the board for keys, and the board has its own way out.
+   *
+   * Only while short. In portrait there is room for both, and the toolbar has
+   * the four things the board does not: copy mode, paste, search and the
+   * splits.
+   */
+  const shortViewport = useStableMediaQuery("(max-height: 520px)");
+  /*
    * Field by field, not `useConnectionStore()`.
    *
    * This component renders `AppShell` → header → children → the entire
@@ -143,6 +160,15 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   const reconnectCount = useConnectionStore((s) => s.reconnectCount);
   const hostname = useConnectionStore((s) => s.hostname);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  /*
+   * Both persisted, both read here rather than inside the footer's children.
+   *
+   * They have to be: the keyboard being up is what decides whether the command
+   * bar and the bottom nav render at all, and that is a decision only the thing
+   * assembling the footer can make.
+   */
+  const screenKeyboardOpen = useSettingsStore((s) => s.screenKeyboardOpen);
+  const cursorPadOpen = useSettingsStore((s) => s.cursorPadOpen);
 
   useMobileHistory();
 
@@ -424,22 +450,39 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
   // carry them — a send button that does nothing is worse than no button.
   const canType = !isReadOnly(capabilities);
 
+  const onTerminal = mobileTab === "terminal";
+
   const toolbar = isMobile ? (
     <div>
-      {mobileTab === "terminal" && activeSessionId && canType && (
+      {/*
+        The one-line command bar steps aside for our keyboard.
+
+        Not because it would not fit, but because it would not make sense: it
+        exists to compose a line and send it when the platform keyboard is the
+        only way to type, and the board below types straight into the pty. Two
+        text-entry surfaces an inch apart, one of which raises a *second*
+        keyboard over ours, is the kind of thing that makes an interface feel
+        untrustworthy.
+      */}
+      {onTerminal && activeSessionId && canType && !screenKeyboardOpen && (
         <MobileCommandBar />
       )}
-      {mobileTab === "terminal" && canType && (
+      {onTerminal && canType && !(screenKeyboardOpen && shortViewport) && (
         <KeyboardToolbar
           onSearchOpen={() => useUiStore.getState().setTerminalSearchOpen(true)}
           onCopy={handleCopySelection}
         />
       )}
-      {/* Hidden by CSS while the keyboard is up — see globals.css. The
-          wrapper exists so the nav itself stays a plain component. */}
-      <div className="mtmux-hide-when-keyboard">
-        <MobileNav activeTab={mobileTab} onTabChange={setMobileTab} />
-      </div>
+      {onTerminal && canType && screenKeyboardOpen && <ScreenKeyboard />}
+      {/* Hidden by CSS while the platform keyboard is up — see globals.css —
+          and not rendered at all while ours is, for the same reason: the nav
+          is 56px of tab bar nobody is looking at mid-keystroke. The wrapper
+          exists so the nav itself stays a plain component. */}
+      {!screenKeyboardOpen && (
+        <div className="mtmux-hide-when-keyboard">
+          <MobileNav activeTab={mobileTab} onTabChange={setMobileTab} />
+        </div>
+      )}
     </div>
   ) : undefined;
 
@@ -449,6 +492,15 @@ function TerminalLayoutInner({ children }: { children: React.ReactNode }) {
       <ErrorBoundary fallbackMessage="Terminal crashed">
         {children}
       </ErrorBoundary>
+      {/*
+        The cursor pad floats over the terminal, so it is rendered here — inside
+        `AppShell`'s `<main>`, alongside the overlays — and not in the footer
+        with the keyboard it is toggled from. See the note at the top of
+        `cursor-pad.tsx`: the footer's `backdrop-filter` creates a stacking
+        context, which left the pad painted above the terminal and hit-tested
+        below it.
+      */}
+      {isMobile && onTerminal && canType && cursorPadOpen && <CursorPad />}
       <CommandPalette />
       <CommandComposer />
       <KeyboardShortcutsDialog />

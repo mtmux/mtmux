@@ -100,6 +100,54 @@ asserts the CSS contract. Everything below is the part that needs a phone.
 - [ ] iPhone, composer closed, keyboard closed: the bottom padding clears the
       home indicator.
 
+## The on-screen keyboard, on real hardware
+
+The encoder is exhaustively unit-tested and the lab suite proves every byte
+reaches a real pty through a real browser. What neither can reach is a platform
+keyboard: `inputmode="none"` is honoured by the _device's_ IME, and headless
+Chromium has no IME at all.
+
+- [ ] iPhone (Safari): tap ⌨. If the platform keyboard was up it goes away, and
+      tapping the terminal afterwards must **not** bring it back. The cursor in
+      the pane keeps blinking — the textarea is still focused, which is the
+      whole reason this uses `inputmode` instead of a blur.
+- [ ] iPhone: the board and the toolbar together must clear the home indicator,
+      and `⏎` must be reachable with the thumb of the hand holding the phone.
+- [ ] Pixel (Chrome): the same, plus — Gboard's own suggestion strip must not
+      appear over our board.
+- [ ] Either phone: type a command and check the terminal did not scroll or
+      zoom while you did it. The board sets `touch-action: none`, so a swipe
+      across the keys must not move the page.
+- [ ] Hold `c` and confirm Android's context menu does **not** appear over the
+      key. (`onContextMenu` is prevented; this is the one place that matters.)
+- [ ] Hold `⌫` on a long line. It must repeat smoothly and stop the instant you
+      lift, with nothing left repeating into the shell.
+- [ ] Drag off a key before releasing. Nothing is sent — that is the escape
+      hatch for a mis-aimed thumb, and it is the only way out.
+- [ ] Turn haptics on. One buzz per key, and **no** buzz per repeat tick.
+- [ ] Rotate to landscape. The board goes compact (34px rows) and the terminal
+      is still readable; rotate back and it returns to 44px.
+- [ ] In a real Claude Code option prompt: answer it with `2` on the agent
+      board, then answer the next one with the cursor pad and `⏎`. Both must
+      land on the option you aimed at.
+- [ ] Send `⇧Tab` in Claude Code and watch the permission mode actually cycle.
+      This is the keystroke the whole agent board exists for.
+
+## The cursor pad, on real hardware
+
+- [ ] Rest a thumb in the middle for two seconds and lift. Nothing is sent —
+      not an arrow, not an Enter.
+- [ ] Push to the rim and hold. The repeat accelerates; let go and it stops
+      within one tick.
+- [ ] Push up, then slide to the left without lifting. It must change to `←`
+      cleanly, with no diagonal and no double-fire at the corner.
+- [ ] Push past the rim and keep going off the edge of the screen. It keeps
+      steering — that is pointer capture — and stops on release.
+- [ ] Take a call, or swipe up for the app switcher, mid-push. Coming back, the
+      pad must be idle and nothing left repeating.
+- [ ] Flip it to the left side and confirm it does not sit over anything you
+      need, in both orientations.
+
 ## `mtmux start` with nobody at the machine
 
 - [ ] Run it under systemd (or `nohup`, or a detached tmux pane) so there is no

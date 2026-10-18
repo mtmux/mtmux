@@ -15,6 +15,7 @@ import {
   ZoomOut,
   MoreHorizontal,
   HelpCircle,
+  Keyboard,
 } from "lucide-react";
 import { cn } from "@repo/ui/lib/utils";
 import { triggerHaptic } from "@repo/ui/components/haptic-button";
@@ -47,6 +48,8 @@ export function KeyboardToolbar({
 }: KeyboardToolbarProps) {
   const toolbarKeys = useSettingsStore((s) => s.toolbarKeys);
   const hapticEnabled = useSettingsStore((s) => s.hapticEnabled);
+  const screenKeyboardOpen = useSettingsStore((s) => s.screenKeyboardOpen);
+  const toggleScreenKeyboard = useSettingsStore((s) => s.toggleScreenKeyboard);
   const [stickyCtrl, setStickyCtrl] = useState(false);
   const [stickyAlt, setStickyAlt] = useState(false);
   const [keySheetOpen, setKeySheetOpen] = useState(false);
@@ -166,7 +169,35 @@ export function KeyboardToolbar({
         the rendered pane is a WebGL canvas, so there is nothing to
         press-and-hold — and an icon nobody recognises is a feature nobody has.
       */}
-      <div className="flex shrink-0 items-center border-r border-border px-1">
+      <div className="flex shrink-0 items-center gap-0.5 border-r border-border px-1">
+        {/*
+          The app's own keyboard, pinned where it cannot scroll away.
+
+          It is the answer to the limitation documented on `sendKey` above —
+          that the sticky Ctrl in this row cannot reach anything typed on the
+          platform's keyboard, because those characters never pass through this
+          app at all. Our board does not have that problem, and this is the one
+          control that gets you to it, so it does not live in the scrolling
+          strip where most of this row's keys can be swiped past.
+        */}
+        <button
+          className={cn(
+            iconBtnClass,
+            screenKeyboardOpen && "border-primary bg-primary/20 text-primary",
+          )}
+          aria-label={
+            screenKeyboardOpen
+              ? "Hide the on-screen keyboard"
+              : "Show the on-screen keyboard"
+          }
+          aria-pressed={screenKeyboardOpen}
+          onClick={() => {
+            if (hapticEnabled) triggerHaptic();
+            toggleScreenKeyboard();
+          }}
+        >
+          <Keyboard className="h-4 w-4" />
+        </button>
         {inCopyMode ? (
           <button
             className="flex h-11 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/15 px-2.5 text-xs font-medium text-amber-600 transition-transform active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:text-amber-400"
