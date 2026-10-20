@@ -11,6 +11,63 @@ release that shipped them.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-20
+
+### Added
+
+- **A keyboard that can send Ctrl.** The sticky Ctrl in the mobile toolbar has
+  always carried an admission in its own source: it reaches the keys in that
+  row and nothing else, because a character typed on the phone's keyboard
+  arrives inside xterm and never passes through this app. So "Ctrl, then `c`"
+  sent a literal `c`, and the whole answer to "how do I interrupt something
+  from my phone" was one fixed button. The fix is to stop borrowing the
+  platform's keyboard: the **⌨** button, pinned at the start of the toolbar,
+  opens the app's own board, and every keystroke on it goes through one
+  encoder — so `Ctrl+C`, `Alt+f`, `Shift+Tab`, `Ctrl+Alt+Backspace` and
+  `ESC ESC` work, on every engine, with no per-platform special cases.
+
+  What comes with that is most of the reason to use it: no autocorrect
+  rewriting a flag, no autocapital on the first word of a command, no IME
+  eating an `Enter`, and a keyboard whose height is known — so the terminal
+  above it is **resized**, and tmux gets a real `SIGWINCH`, rather than being
+  covered by it.
+
+  Three boards. `abc` and `?123` are an ordinary phone keyboard that happens
+  to send bytes; **`agent`** is the one that did not exist anywhere — `Esc
+Esc`, `⇧Tab`, `⌥⏎`, the digits that answer an option list, `y`/`n`, the
+  arrows and the readline keys, on one screen. Holding a letter sends its
+  control code, which is faster than any modifier for the thing people
+  actually do, and the modifiers arm for one key then lock on a second tap,
+  with the keycaps changing to show what will be sent.
+
+- **A cursor pad for the arrow keys.** A thumb stick floating over the
+  terminal, for the other half of answering an agent's question: push for the
+  arrows, further for faster, press the middle for `Enter`, with `esc` and
+  `tab` beside it. A diagonal push resolves to one axis rather than firing two
+  keys, because a terminal has four arrow keys and no diagonal — and firing
+  two is how a list selection lands a row from where the thumb was aiming. It
+  floats rather than taking a row, because every pixel of footer is a pixel of
+  terminal.
+
+### Fixed
+
+- **The board left no terminal at all in landscape.** On a 340px viewport the
+  terminal element measured _zero_ pixels high: `AppShell` gives the footer
+  whatever it asks for and the flexible middle whatever is left. Keycap height
+  is now arithmetic on the visual viewport rather than a breakpoint — a
+  breakpoint picks one of two heights for a continuum, so it is wrong just
+  above and just below wherever it is put — and the keyboard toolbar stands
+  down while the board is up on a short screen, which is the difference between
+  four rows of terminal and seven.
+
+- **The cursor pad was painted over the terminal and hit-tested underneath
+  it.** The footer carries `backdrop-blur`, and `backdrop-filter` creates a
+  stacking context, so the pad's `z-index` never escaped the footer — and the
+  footer as a whole paints below `<main>`. Chromium delivered the press
+  anyway; WebKit did not, and `elementFromPoint` in the middle of the pad
+  returned the xterm canvas. It is anchored to `<main>` now, where paint order
+  and hit testing agree on every engine rather than on one.
+
 ## [0.12.2] — 2026-09-23
 
 ### Security
