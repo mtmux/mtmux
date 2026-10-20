@@ -11,6 +11,43 @@ release that shipped them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A device you were using was asked about again every couple of minutes.**
+  `mtmux start` raised "A device you know is connecting" for a phone that had
+  never gone anywhere, over and over, and no setting would stop it.
+
+  One approval is meant to cover a device "for as long as it stays connected,
+  and for two minutes after the last of its sockets closes". The second half
+  worked; the first did not. The cover was re-stamped only when _another_
+  socket arrived while one was already live — which is what happens on a laptop
+  with several tabs, and never on a phone. A browser there holds one socket, so
+  nothing turned up to re-stamp anything and the approval lapsed two minutes
+  after the pairing while the device sat there in use. Every screen lock, cell
+  handover and tab switch after that read as a device arriving from nowhere.
+
+  Presence is now sampled — every 15 seconds the gate looks at which devices
+  are actually connected and keeps their covers open — rather than inferred
+  from traffic that a phone does not generate. Reconnect events were the wrong
+  signal and could not be the right one: the only event a lone socket fires
+  while it is _present_ is its own connect.
+
+- **`reconnectPolicy: trust` did nothing for a device paired over the LAN.**
+  `trust` waives the question for devices this machine knows, and it read
+  "knows" from the peer list in `config.json` — which a LAN pairing never joins,
+  deliberately, because its token lives in relay memory and is meant to be
+  forgotten on restart. So the one setting that turns these prompts off did not
+  apply to the commonest way into the product, and nothing said so. A device
+  admitted by hand during this run now counts as known for as long as the
+  process lives, which is what `trust` is a statement about. Removing a device
+  drops that along with its token, its keys and its peer record, so "removed"
+  still means removed.
+
+- The terminal now says, once per run and only after it has asked twice about
+  the same device, where the off-switch is — `a` on the live panel, or
+  `mtmux config set reconnectPolicy trust`. A security prompt whose only escape
+  is in the docs is one people learn to answer without reading.
+
 ## [0.13.1] — 2026-10-20
 
 ### Fixed

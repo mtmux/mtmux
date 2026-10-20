@@ -185,6 +185,27 @@ for a stated reason, not skipped.
 - [ ] Raise a request and lock the phone until it expires. Unlock: the dialog is
       gone and a notice says it was denied.
 
+## Staying paired on a real phone
+
+The automated version of this is `apps/cli`'s connection-gate unit tests and a
+pty-driven probe against a real `mtmux start`. Neither can hold a _phone_, and
+the thing that was broken was specifically what a phone does to a socket.
+
+- [ ] Pair a phone over the LAN and work in it for five minutes. Nothing should
+      ask about it again.
+- [ ] Lock the screen for ten seconds and unlock. Straight back in, no
+      question.
+- [ ] Switch to another app for five minutes, then come back. This one _should_
+      ask — that is `confirm` doing its job — and the terminal should say, once,
+      where the off-switch is.
+- [ ] Press `a` on the live panel, then repeat the five-minute switch. Now it
+      comes back in silence. This is the case that used to be impossible to
+      reach for a LAN pairing.
+- [ ] Walk out of wifi range onto cellular and back with the tab open. Each
+      handover reconnects the socket; none of them should raise a prompt.
+- [ ] With `a` on, remove the device from the panel (`r`). Reconnecting from it
+      must raise the question again, not walk in on the earlier approval.
+
 ## The re-armed code
 
 - [ ] `mtmux start`. Confirm stdout holds the banner and nothing else; the

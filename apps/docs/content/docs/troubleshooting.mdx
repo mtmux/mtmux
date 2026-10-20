@@ -86,6 +86,23 @@ mtmux start --host 0.0.0.0
 
 ## Pairing
 
+### It keeps asking me to allow a device I am already using
+
+Fixed in 0.13.2 — upgrade with `npm i -g mtmux@latest`.
+
+One approval covers a device for as long as it stays connected and for two
+minutes after its last socket closes, but before 0.13.2 "stays connected" was
+inferred from new sockets arriving. A phone holds exactly one, so nothing
+re-stamped the approval and it lapsed about two minutes after pairing, while the
+device was in use. Every screen lock and cell handover then raised "A device you
+know is connecting".
+
+If you are on 0.13.2 or later and still want fewer questions, that is the
+`reconnectPolicy` setting rather than a bug: press `a` on the live panel, or
+`mtmux config set reconnectPolicy trust`, and devices this machine knows come
+back without being asked about. A device you paired over the LAN counts as
+known for as long as that `mtmux start` keeps running.
+
 ### "Pairing code is invalid or already used"
 
 LAN nonces are single-use and only one is live at a time. Once a device signs

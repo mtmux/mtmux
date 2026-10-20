@@ -407,10 +407,10 @@ did.
 **`reconnectPolicy`** — whether a device this machine already trusts is asked
 about when it connects.
 
-| Value               | Meaning                                                                 |
-| ------------------- | ----------------------------------------------------------------------- |
-| `confirm` (default) | Every connection raises a question here before the device is let in.    |
-| `trust`             | A device **already on this machine's device list** comes straight back. |
+| Value               | Meaning                                                              |
+| ------------------- | -------------------------------------------------------------------- |
+| `confirm` (default) | Every connection raises a question here before the device is let in. |
+| `trust`             | A device **this machine already knows** comes straight back.         |
 
 One default, on every run, with or without a terminal. This used to depend on
 whether stdout was a tty — a run under systemd, `nohup` or a detached pane
@@ -423,11 +423,19 @@ says so once, and `--confirm-reconnect` / `--trust-reconnect` beat the setting
 for a single run.
 
 `trust` is a **reconnect** policy and nothing wider. It waives the question for
-devices on this machine's own list — the ones `mtmux devices` shows. It does
-not, and never could sensibly, waive it for a credential this machine has no
-record of: a token copied off a shared laptop, or one belonging to a device you
-removed an hour ago whose token has not yet aged out. Those are asked about
-under either setting. The one thing admitted outright is the machine's own
+devices on this machine's own list — the ones `mtmux devices` shows — and for
+any device you admitted by hand during this run of `mtmux start`. The second
+half matters more than it sounds: a device paired over the LAN has no entry on
+that list at all, by design, because its token lives in relay memory and is
+meant to be forgotten on restart. Until 0.13.2 that made `trust` a setting that
+did nothing for the commonest way into the product, with no way to tell from
+the outside that it had not applied.
+
+It does not, and never could sensibly, waive the question for a credential this
+machine has no record of: a token copied off a shared laptop, or one belonging
+to a device you removed an hour ago whose token has not yet aged out. Those are
+asked about under either setting, and removing a device drops what this run had
+decided about it along with everything else. The one thing admitted outright is the machine's own
 token presented from the machine itself, because whoever can read it out of
 `~/.mtmux/config.json` can run `tmux attach` and skip this product entirely.
 
@@ -437,6 +445,13 @@ whether the person holding it now is you is the question. One answer covers a
 device for as long as it stays connected and for two minutes after its last
 socket closes, so tabs, the candidate race and a reconnect on a train do not
 each ring the bell.
+
+"As long as it stays connected" is measured by looking, every few seconds, at
+which devices are actually here. Until 0.13.2 it was inferred from new sockets
+arriving instead, which is the same thing on a laptop with several tabs open and
+nothing like it on a phone: one socket, nothing else turning up to re-stamp the
+approval, and so a question about your own phone roughly two minutes after you
+paired it — then again at every screen lock and cell handover.
 
 The prompt shows no comparison code, because there is nothing to compare: the
 device already proved itself cryptographically — its key schedule is what

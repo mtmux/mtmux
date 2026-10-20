@@ -44,6 +44,7 @@
     "help": "node dist/bin.js --help",
     "smoke": "node scripts/smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",
+    "smoke:reconnect": "node scripts/reconnect-smoke.mjs",
     "test": "vitest run && pnpm build && pnpm smoke",
     "pack:dryrun": "npm pack --dry-run",
     "prepublishOnly": "MTMUX_BUILD_API_URL= pnpm build",

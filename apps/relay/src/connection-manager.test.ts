@@ -16,6 +16,7 @@ import {
   closeRevokedConnections,
 } from "./connection-manager.js";
 import { FULL_GRANT, allowsSessionName } from "./grant.js";
+import { issueSessionToken, sessionTokenId } from "./pairing-local.js";
 import type { RateLimiter } from "./rate-limiter.js";
 
 vi.mock("./tmux-clone.js", () => ({
@@ -220,6 +221,32 @@ describe("connectionSummary", () => {
       remoteAddress: "192.168.1.50",
       scope: { kind: "all" },
     });
+  });
+
+  /**
+   * The identity the CLI's connection gate is keyed by, and the one it samples
+   * presence with, have to be the same string.
+   *
+   * `makeConnectionGate` remembers an approval under the device id it was asked
+   * about, and keeps that approval alive for as long as the device appears in
+   * this list. If the two ever stop agreeing, nothing breaks loudly: the sweep
+   * simply never matches, approvals lapse under a device that is sitting right
+   * there, and the owner is asked to admit their own phone every couple of
+   * minutes. That was the bug, and this is the join it turned on.
+   */
+  it("reports the device id the token was registered under", () => {
+    const { token } = issueSessionToken(
+      60_000,
+      Date.now(),
+      FULL_GRANT,
+      "iPhone",
+      "browser-abc",
+    );
+    const conn = createConnection(fakeWs([]), limiter, "192.168.1.50");
+    conn.authenticated = true;
+    conn.tokenId = sessionTokenId(token);
+
+    expect(connectionDetails()[0]?.deviceId).toBe("browser-abc");
   });
 
   it("names a share's sessions, so a scoped row reads as scoped", () => {

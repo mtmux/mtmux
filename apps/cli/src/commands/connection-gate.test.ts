@@ -102,6 +102,113 @@ describe("the connection gate", () => {
     expect(ask).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * The case every phone is, and the one the grace was getting wrong.
+   *
+   * A browser on a phone holds *one* socket. Nothing else arrives to re-stamp
+   * the approval while it sits there, so a cover that is only refreshed when a
+   * second socket turns up expires two minutes after the pairing — and the
+   * next screen lock, cell handover or tab switch is a fresh prompt about a
+   * device that never went anywhere. That is the "it asks every few minutes"
+   * report, and it is not what `ADMIT_GRACE_MS` says it does.
+   */
+  it("keeps covering a lone socket that stays connected", async () => {
+    vi.useFakeTimers();
+    const ask = vi.fn(async () => true);
+    let online: string[] = [];
+    const gate = makeConnectionGate({
+      asks: () => true,
+      connected: () => online,
+      ask,
+    });
+    expect(await gate.admit(socket())).toBe(true);
+    // Its socket is up now, and it is the only one it will ever open.
+    online = ["device-1"];
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    // The screen locks: the socket goes, the phone comes straight back.
+    online = [];
+    vi.advanceTimersByTime(5_000);
+    expect(await gate.admit(socket())).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again when a device that was connected has really gone", async () => {
+    // The other half of the same rule: presence is what holds the cover open,
+    // so once it stops the window has to start closing.
+    vi.useFakeTimers();
+    const ask = vi.fn(async () => true);
+    let online: string[] = [];
+    const gate = makeConnectionGate({
+      asks: () => true,
+      connected: () => online,
+      ask,
+    });
+    expect(await gate.admit(socket())).toBe(true);
+    online = ["device-1"];
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    online = [];
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    expect(await gate.admit(socket())).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * A LAN pairing has no peer record — `pairing-local.ts` mints a device id and
+   * keeps the token in memory, and nothing is written to `config.json`. So
+   * `known()` says no about a device the owner approved by hand a minute ago,
+   * and `trust` could not waive its reconnects: the one setting that turns the
+   * prompt off did nothing for the commonest way into the product.
+   */
+  it("lets trust cover a device this run approved, with no peer record", async () => {
+    vi.useFakeTimers();
+    const ask = vi.fn(async () => true);
+    const gate = makeConnectionGate({
+      asks: () => false,
+      connected: () => [],
+      known: () => false,
+      ask,
+    });
+    gate.approve("device-1");
+    // Long past the grace the pairing seeded, so only recognition can carry it.
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(await gate.admit(socket())).toBe(true);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("forgets a device the owner removed, approval and all", async () => {
+    // A LAN pairing has no token the owner can revoke, so removing it can only
+    // hang up the socket — and the credential is good for another day. The
+    // approval must not be what lets it back in.
+    const ask = vi.fn(async () => true);
+    const gate = makeConnectionGate({
+      asks: () => false,
+      connected: () => [],
+      known: () => false,
+      ask,
+    });
+    gate.approve("device-1");
+    gate.forget("device-1");
+    expect(await gate.admit(socket())).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("still asks about an approved device when the policy is confirm", async () => {
+    // Recognition is not trust. It only decides whether the *policy* gets to
+    // waive the question, never the question itself.
+    vi.useFakeTimers();
+    const ask = vi.fn(async () => true);
+    const gate = makeConnectionGate({
+      asks: () => true,
+      connected: () => [],
+      known: () => false,
+      ask,
+    });
+    gate.approve("device-1");
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(await gate.admit(socket())).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
   it("asks again once the device has been gone long enough", async () => {
     vi.useFakeTimers();
     const ask = vi.fn(async () => true);

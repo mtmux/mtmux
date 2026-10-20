@@ -449,6 +449,32 @@ function say(...lines: string[]): void {
   screen.log(...lines);
 }
 
+/**
+ * Where the off-switch for reconnect prompts is, said once per run.
+ *
+ * Only on the *second* time a device is asked about, because the first is the
+ * question working as intended and a machine that explains itself before it
+ * has been a nuisance is just noisier. `confirm` is the default and it is the
+ * right default, but a security prompt whose only escape is in the docs is one
+ * people answer without reading — which costs more than the prompt buys.
+ */
+let stopAskingHintShown = false;
+
+function sayHowToStopAsking(): void {
+  if (stopAskingHintShown) return;
+  stopAskingHintShown = true;
+  say(
+    kleur.dim("    Asked every time it comes back. ") +
+      (panel
+        ? kleur.bold("a") + kleur.dim(" on the panel stops that, or ")
+        : kleur.dim("Start with ") +
+          kleur.bold("--trust-reconnect") +
+          kleur.dim(", or ")) +
+      kleur.bold("mtmux config set reconnectPolicy trust") +
+      kleur.dim("."),
+  );
+}
+
 /** The live panel, once the relay exists. Null when it declined to start. */
 let panel: DevicePanel | null = null;
 
@@ -1326,6 +1352,24 @@ export function devicesOnline(count: number): string {
  */
 const ADMIT_GRACE_MS = 120_000;
 
+/**
+ * How often the gate looks to see which devices are still here.
+ *
+ * The sentence above — "for as long as it stays connected" — was not true
+ * without this, and the gap is the whole of the "it asks again every few
+ * minutes" report. The cover used to be re-stamped only when *another* socket
+ * arrived while one was already live, which happens on a laptop with several
+ * tabs and never on a phone: a browser there holds one socket, so nothing
+ * arrived to re-stamp anything and the approval quietly lapsed two minutes
+ * after the pairing while the device sat there in use. The next screen lock,
+ * cell handover or tab switch then read as a device coming back from nowhere.
+ *
+ * So presence is sampled instead of inferred from traffic. Well under
+ * `ADMIT_GRACE_MS`, so a sample can be missed without the window closing early,
+ * and far too coarse to be a clock anyone could read anything off.
+ */
+const PRESENCE_SAMPLE_MS = 15_000;
+
 /** A refusal stands this long, so a rejected device cannot ring the bell again. */
 const REFUSAL_GRACE_MS = 15_000;
 
@@ -1346,6 +1390,19 @@ export type ConnectionGate = {
    * it is about to open is not a second question about the same act.
    */
   approve: (deviceId: string) => void;
+  /**
+   * Forget everything this gate decided about a device.
+   *
+   * What "removed" has to mean here. Revoking a device's token stops it
+   * authenticating, so most removals never reach the gate again — but a LAN
+   * pairing has no peer record and therefore no token the owner can revoke,
+   * and its credential outlives the removal by up to a day. Without this, a
+   * device the owner had just struck off would be readmitted in silence on the
+   * strength of having been approved earlier in the same run.
+   */
+  forget: (deviceId: string) => void;
+  /** Stop sampling presence. For shutdown, and for a test that owns the clock. */
+  stop: () => void;
 };
 
 /**
@@ -1395,8 +1452,53 @@ export function makeConnectionGate(deps: {
     { answer: Promise<boolean>; until: number; approved: boolean }
   >();
 
+  /**
+   * Devices a human admitted during this run.
+   *
+   * Needed because `known()` reads the *peer list*, and a LAN pairing writes no
+   * peer record at all — `pairing-local.ts` mints a device id and keeps the
+   * token in memory, deliberately, so that restarting the machine forgets it.
+   * The effect was that `trust` could not waive a reconnect for a device the
+   * owner had approved by hand a minute earlier: the one setting that turns
+   * these prompts off did nothing for the commonest way into the product, and
+   * there was no way to tell from the outside that it had not applied.
+   *
+   * A device that was asked about and let in has connected and has been
+   * consented to, which is exactly what `trust` is a statement about. Held in
+   * memory and never written down, so it means "in this run" and nothing more.
+   */
+  const admittedHere = new Set<string>();
+
   const keyFor = (req: ConnectionRequest): string =>
     req.deviceId ?? (req.tokenId ? `token:${req.tokenId}` : "machine-token");
+
+  /**
+   * Re-stamp the cover for every device that is still connected.
+   *
+   * Reading `connected()` on a timer rather than off a connection event, and
+   * that is not laziness: the events are connect and disconnect, and the only
+   * one a lone socket ever fires while it is *present* is its own connect. A
+   * cover refreshed on events would therefore expire under precisely the
+   * device this is meant to protect. Sampling asks the question the window is
+   * phrased in — is it here now? — and a throw is ignored, because a gate that
+   * cannot read the connection list must not start closing doors.
+   */
+  const sampleSweep = (): void => {
+    let online: string[];
+    try {
+      online = deps.connected();
+    } catch {
+      return;
+    }
+    const until = Date.now() + ADMIT_GRACE_MS;
+    for (const deviceId of online) {
+      const record = decided.get(deviceId);
+      if (record?.approved) record.until = until;
+    }
+  };
+  const sampler = setInterval(sampleSweep, PRESENCE_SAMPLE_MS);
+  // So the sampler can never be the reason `mtmux start` will not exit.
+  sampler.unref?.();
 
   const covered = (key: string, deviceId: string | null): boolean => {
     const record = decided.get(key);
@@ -1415,11 +1517,21 @@ export function makeConnectionGate(deps: {
 
   return {
     approve(deviceId) {
+      admittedHere.add(deviceId);
       decided.set(deviceId, {
         answer: Promise.resolve(true),
         until: Date.now() + ADMIT_GRACE_MS,
         approved: true,
       });
+    },
+
+    forget(deviceId) {
+      admittedHere.delete(deviceId);
+      decided.delete(deviceId);
+    },
+
+    stop() {
+      clearInterval(sampler);
     },
 
     admit(req) {
@@ -1474,7 +1586,10 @@ export function makeConnectionGate(deps: {
        * is for — so it is asked about whatever the policy says.
        */
       const recognised =
-        req.deviceId !== null ? deps.known?.(req.deviceId) !== false : false;
+        req.deviceId !== null
+          ? deps.known?.(req.deviceId) !== false ||
+            admittedHere.has(req.deviceId)
+          : false;
 
       // The policy is read now, not captured: `a` in the live panel flips it
       // without a restart, and a gate holding the value it booted with would
@@ -1485,6 +1600,17 @@ export function makeConnectionGate(deps: {
         (req.deviceId ? deps.nameFor?.(req.deviceId) : null) ||
         req.label ||
         "An unnamed device";
+
+      /*
+       * Is this the same device being asked about a second time?
+       *
+       * Read before the question, because answering it adds the device to
+       * `admittedHere` and the fact would be gone by the time there is
+       * anything to print. It buys one dim line, once a run — but a control
+       * whose off-switch is invisible is a control people route around, and
+       * the route around this one is to stop reading the question.
+       */
+      const again = req.deviceId !== null && admittedHere.has(req.deviceId);
 
       const asking = deps.ask
         ? deps.ask(req, named)
@@ -1529,6 +1655,7 @@ export function makeConnectionGate(deps: {
             );
             if (answer.approved) {
               say(kleur.green(`  ✓ ${named} let in.`));
+              if (again) sayHowToStopAsking();
               return true;
             }
             if (answer.reason === "no-tty") {
@@ -1564,6 +1691,7 @@ export function makeConnectionGate(deps: {
         (ok) => {
           record.approved = ok;
           record.until = Date.now() + (ok ? ADMIT_GRACE_MS : REFUSAL_GRACE_MS);
+          if (ok && req.deviceId) admittedHere.add(req.deviceId);
         },
         () => decided.delete(key),
       );
@@ -2649,11 +2777,16 @@ export async function start(opts: StartOpts) {
         if (peer.directToken) relay.revokeSessionToken?.(peer.directToken);
         hosted?.agent.removeSessionKeys(peer.deviceId);
         await configStore.removePeer(peer.deviceId);
+        connectionGate?.forget(peer.deviceId);
       }
       // Anything still holding a socket — the machine's own token, a share —
       // is hung up. Revoking closed the paired ones already, so this is the
       // remainder rather than a second pass over the same list.
       for (const device of relay.connectionDetails?.() ?? []) {
+        // A LAN pairing has no peer record, so the loop above never saw it.
+        // Hanging up is all this can do about its credential — forgetting the
+        // approval is what stops it coming straight back in without a word.
+        if (device.deviceId) connectionGate?.forget(device.deviceId);
         if (device.id) await relay.disconnectConnection?.(device.id);
       }
       await refreshPeers();
@@ -2676,6 +2809,10 @@ export async function start(opts: StartOpts) {
       // opening a sealed stream to loopback at all, and closes the one it has.
       hosted?.agent.removeSessionKeys(deviceId);
       await configStore.removePeer(deviceId);
+      // And the fourth: whatever this run already decided about it. Otherwise
+      // a device struck off a minute after it was approved walks back in on
+      // that approval.
+      connectionGate?.forget(deviceId);
       await refreshPeers();
       return true;
     },
@@ -2820,6 +2957,10 @@ export async function start(opts: StartOpts) {
     say("\n  Stopping…");
     stopHeartbeat?.();
     stopMirror?.();
+    // The presence sampler is unref'd, so this is tidiness rather than a leak
+    // — but a gate still sampling while the relay is being torn down is a
+    // reader of state nobody is maintaining any more.
+    connectionGate?.stop();
     approveControl.close();
     hosted?.stop();
     // `hosted` is null on the late-tunnel path — hosting threw and the agent
