@@ -11,6 +11,8 @@ release that shipped them.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-10-20
+
 ### Fixed
 
 - **0.13.0 could not start at all.** `mtmux start` died before serving
