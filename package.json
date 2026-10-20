@@ -34,6 +34,7 @@
     "cli:start": "pnpm --filter mtmux run start",
     "cli:test": "pnpm --filter mtmux run test",
     "cli:smoke": "pnpm --filter mtmux run smoke",
+    "cli:smoke:pack": "pnpm --filter mtmux run smoke:pack",
     "cli:help": "pnpm --filter mtmux run help"
   },
   "devDependencies": {

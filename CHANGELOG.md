@@ -11,6 +11,38 @@ release that shipped them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **0.13.0 could not start at all.** `mtmux start` died before serving
+  anything:
+
+  ```
+  ENOENT: no such file or directory, open
+  '…/mtmux/dist/web/apps/web/.next/server/preview-props.json'
+  ```
+
+  `apps/cli/package.json` declared `"next": "^16.2.12"`, and `dist/web` is a
+  Next **build output** — a tree of manifests whose shape belongs to the exact
+  Next that emitted it. So `npm i -g mtmux` resolved the caret to 16.4.2,
+  hoisted it to `node_modules/next`, and the CLI's `import("next")` found that
+  rather than the 16.2.12 the bundle was built by. 16.4's `setupFsCheck` reads
+  `server/preview-props.json`, which 16.2 never writes. `next`, `react` and
+  `react-dom` are now pinned to the exact versions that build the bundle.
+
+  Two gates so it cannot come back. `assertFrameworkPins` runs first in the
+  CLI build and fails in milliseconds if the declared version is not the one
+  that produced `dist/web` — a range, or a drift between `apps/web` and
+  `apps/cli`, is now a build error rather than a broken tarball.
+
+  And `pnpm cli:smoke:pack`, which packs the real tarball, installs it into a
+  throwaway directory with npm resolving from the registry, and boots _that_
+  copy from outside the repo. That is the gap this escaped through: the
+  existing smoke test boots `dist/bin.js` **inside** this repo, where
+  `node_modules` is the lockfile's own tree and therefore always agrees with
+  whatever just built the bundle. Nothing resolved a dependency the way a user
+  does, so no test could have caught it — lint, typecheck, build, the unit
+  suite and two-OS smoke were all green on the release that shipped broken.
+
 ## [0.13.0] — 2026-10-20
 
 ### Added

@@ -1,7 +1,8 @@
 import { execSync } from "node:child_process";
 import { cp, rm, mkdir, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const REPO = path.resolve(ROOT, "../..");
@@ -40,6 +41,11 @@ function run(cmd, opts = {}) {
   execSync(cmd, { stdio: "inherit", ...opts });
 }
 
+// First, and deliberately: it reads nothing but the installed versions, so a
+// skew is caught in milliseconds instead of after a two-minute Next build.
+console.log("→ check framework pins");
+assertFrameworkPins();
+
 await rm(path.join(ROOT, "dist"), { recursive: true, force: true });
 // tsc's incremental cache assumes the dist tree it remembers is still on disk.
 // We just wiped it, so the cache must go too — otherwise tsc skips emit.
@@ -65,6 +71,67 @@ await build({
   },
   logLevel: "info",
 });
+
+/**
+ * The framework versions must be pinned to the ones that built the bundle.
+ *
+ * ## What happened without this
+ *
+ * `apps/cli/package.json` declared `"next": "^16.2.12"`, and `dist/web` is a
+ * Next *build output* — a tree of manifests whose shape belongs to the exact
+ * Next that emitted it. So a user's `npm i -g mtmux` resolved the caret to
+ * 16.4.2, hoisted it to `node_modules/next`, and `start.ts`'s `import("next")`
+ * found that instead of anything we shipped. 16.4's `setupFsCheck` reads
+ * `.next/server/preview-props.json`, which 16.2 never writes, and `mtmux
+ * start` died on `app.prepare()` for everyone:
+ *
+ *     ENOENT: no such file or directory, open
+ *     '…/mtmux/dist/web/apps/web/.next/server/preview-props.json'
+ *
+ * That shipped in 0.13.0. Nothing caught it, and the reason is worth stating:
+ * `pnpm cli:smoke` boots the built CLI *inside this repo*, where
+ * `node_modules/next` is the lockfile's copy and therefore always matches the
+ * build. The skew only exists after a real install from the registry, which no
+ * test does. A caret on a framework whose compiled output you ship is not a
+ * compatible range — it is a promise that a stranger's `npm install` will pick
+ * the version your artifacts were made for.
+ *
+ * Hence the gate rather than a comment next to the pin. A pin can be bumped to
+ * a caret by a dependabot PR, or drift when `apps/web` moves and `apps/cli`
+ * does not, and either way the result is a published tarball that cannot boot.
+ * This fails the build instead, which is the only place that sees both numbers.
+ */
+function assertFrameworkPins() {
+  const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
+  const pkg = readJson(path.join(ROOT, "package.json"));
+  // Resolved from `apps/web`, because that is the workspace whose install
+  // produced `dist/web`.
+  const fromWeb = createRequire(path.join(REPO, "apps/web/package.json"));
+  const problems = [];
+
+  for (const name of ["next", "react", "react-dom"]) {
+    const declared = pkg.dependencies?.[name];
+    const built = readJson(fromWeb.resolve(`${name}/package.json`)).version;
+
+    if (declared !== built) {
+      problems.push(
+        `  ${name}: apps/cli declares ${JSON.stringify(declared)}, but ` +
+          `dist/web was built by ${built}`,
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      "framework versions are not pinned to the build:\n" +
+        problems.join("\n") +
+        "\n\nThese ship as a prebuilt Next output, so the declared version " +
+        "must be the exact version that emitted it — a range lets a user's " +
+        "install pick a Next that cannot read our manifests. Set the exact " +
+        "version in apps/cli/package.json. See the note on this function.",
+    );
+  }
+}
 
 console.log("→ build web (standalone)");
 // CRITICAL: Next.js inlines NEXT_PUBLIC_* into the client bundle at build

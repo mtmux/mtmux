@@ -94,3 +94,13 @@ jobs:
       - run: pnpm cli:build
       - run: node apps/cli/dist/bin.js version
       - run: pnpm cli:smoke
+      # Linux only: it packs 25MB and runs a real `npm install` from the
+      # registry, and the faults it catches — a dependency range resolving to a
+      # version our prebuilt Next output cannot be served by, a file missing
+      # from `files` — are not OS-specific. See the note at the top of
+      # `apps/cli/scripts/pack-smoke.mjs`: this is the only job that boots the
+      # CLI the way a user installs it, and 0.13.0 shipped unable to start
+      # because nothing did.
+      - name: Packaged install smoke
+        if: runner.os == 'Linux'
+        run: pnpm cli:smoke:pack
