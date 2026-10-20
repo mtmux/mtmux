@@ -73,6 +73,31 @@ function wait(sessionId: string, minutes = 5, signal?: AbortSignal) {
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
+/**
+ * Wait for the approver's poll to be parked, rather than guessing how long
+ * that takes.
+ *
+ * `settle()` above is a flat 30ms, and for this one fact — the long-poll has
+ * reached the server and is holding the window — 30ms is a guess about a
+ * loopback round trip on a machine nobody is measuring. It held here and
+ * failed on a loaded CI runner: the poll had not landed, `offer` correctly
+ * reported that nobody was waiting, and the assertion read
+ * `expected null to be false` — a right answer to a question asked too early.
+ *
+ * Only this direction is a condition. "The approver has gone away" deliberately
+ * is not: an aborted `fetch` is not visible to the server until the poll's own
+ * timeout elapses, so the tests that abort still hand the window over while it
+ * is nominally open — which is the case they exist to cover.
+ */
+async function parked(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (control.state().waiting) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error("timed out waiting for an approver to park");
+}
+
 describe("the guard", () => {
   it("refuses a request with no bearer", async () => {
     const res = await call(APPROVE_STATE_PATH, { token: null });
@@ -109,7 +134,7 @@ describe("the window", () => {
   it("reports an open window once an approver is parked", async () => {
     const controller = new AbortController();
     void wait("s1", 5, controller.signal).catch(() => {});
-    await settle();
+    await parked();
 
     const body = (await (await call(APPROVE_STATE_PATH)).json()) as {
       waiting: boolean;
@@ -127,7 +152,7 @@ describe("the window", () => {
   it("refuses a second approver with 409", async () => {
     const controller = new AbortController();
     void wait("s1", 5, controller.signal).catch(() => {});
-    await settle();
+    await parked();
 
     const res = await wait("s2");
     expect(res.status).toBe(409);
@@ -140,13 +165,13 @@ describe("the window", () => {
   it("lets the same approver re-poll, which is what --keep does", async () => {
     const first = new AbortController();
     void wait("s1", 5, first.signal).catch(() => {});
-    await settle();
+    await parked();
     first.abort();
     await settle();
 
     const second = new AbortController();
     const polled = wait("s1", 5, second.signal).catch(() => "aborted");
-    await settle();
+    await parked();
     expect(control.state().waiting).toBe(true);
     second.abort();
     await polled;
@@ -172,7 +197,7 @@ describe("offering a request", () => {
   it("hands a parked poll the request, and returns the decision", async () => {
     const controller = new AbortController();
     const polled = wait("s1", 5, controller.signal);
-    await settle();
+    await parked();
 
     const decision = control.offer(REQUEST);
     const body = (await (await polled).json()) as {
@@ -194,7 +219,7 @@ describe("offering a request", () => {
   it("delivers a request that arrived between polls", async () => {
     const first = new AbortController();
     void wait("s1", 5, first.signal).catch(() => {});
-    await settle();
+    await parked();
     first.abort();
     await settle();
 
@@ -217,7 +242,7 @@ describe("offering a request", () => {
   it("treats anything that is not an explicit true as a refusal", async () => {
     const controller = new AbortController();
     const polled = wait("s1", 5, controller.signal);
-    await settle();
+    await parked();
     const decision = control.offer(REQUEST);
     const body = (await (await polled).json()) as { id: string };
 
@@ -230,7 +255,7 @@ describe("offering a request", () => {
   it("times out as a refusal rather than hanging", async () => {
     const controller = new AbortController();
     void wait("s1", 5, controller.signal).catch(() => {});
-    await settle();
+    await parked();
 
     // offerTimeoutMs is 400 in these tests.
     expect(await control.offer(REQUEST)).toBe(false);
@@ -244,7 +269,7 @@ describe("offering a request", () => {
   it("counts an approver disconnecting as a refusal, never an approval", async () => {
     const controller = new AbortController();
     void wait("s1", 5, controller.signal).catch(() => {});
-    await settle();
+    await parked();
 
     const decision = control.offer(REQUEST);
     await settle();
@@ -256,7 +281,7 @@ describe("offering a request", () => {
   it("refuses a second request while one is in front of a human", async () => {
     const controller = new AbortController();
     void wait("s1", 5, controller.signal).catch(() => {});
-    await settle();
+    await parked();
 
     const first = control.offer(REQUEST);
     await settle();
@@ -273,7 +298,7 @@ describe("offering a request", () => {
     // ask was refused outright by a question already decided elsewhere.
     const windowCtl = new AbortController();
     void wait("s1", 5, windowCtl.signal).catch(() => {});
-    await settle();
+    await parked();
 
     const raced = new AbortController();
     const abandoned = control.offer(REQUEST, { signal: raced.signal });
@@ -295,7 +320,7 @@ describe("offering a request", () => {
   it("refuses a decision from a session that does not hold the window", async () => {
     const controller = new AbortController();
     const polled = wait("s1", 5, controller.signal);
-    await settle();
+    await parked();
     const decision = control.offer(REQUEST);
     const body = (await (await polled).json()) as { id: string };
 
@@ -311,7 +336,7 @@ describe("offering a request", () => {
   it("stops offering once the window is closed", async () => {
     const controller = new AbortController();
     void wait("s1", 5, controller.signal).catch(() => {});
-    await settle();
+    await parked();
     control.close();
     await settle();
 
