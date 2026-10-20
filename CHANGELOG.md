@@ -11,6 +11,8 @@ release that shipped them.
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-10-20
+
 ### Fixed
 
 - **A device you were using was asked about again every couple of minutes.**
